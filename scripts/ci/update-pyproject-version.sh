@@ -12,8 +12,8 @@ echo "Branch name: ${branch_name}"
 base_version=$(echo "$current_version" | sed -E 's/(\.dev[0-9]{8}\+[0-9]+|a[0-9]{8})$//')
 
 suffix=""
-if [[ "$branch_name" == "develop" ]]; then
-  # Develop branch: use dev versioning with build number
+if [[ "$branch_name" == "develop" || "$branch_name" == "test-macos-publish" ]]; then
+  # Develop branch (and throwaway test-macos-publish): use dev versioning with build number
   suffix=".dev$(date +%Y%m%d)+${GITHUB_RUN_NUMBER}"
 elif [[ "$branch_name" == "nightly" ]]; then
   # Nightly branch: use alpha versioning

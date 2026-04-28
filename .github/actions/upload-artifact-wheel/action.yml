@@ -8,7 +8,8 @@ runs:
       shell: bash
       if:
         github.event_name == 'push' && (github.ref_name == 'develop' || github.ref_name ==
-        'nightly' || github.ref_name == 'master' || github.ref_name == 'test-ci')
+        'nightly' || github.ref_name == 'master' || github.ref_name == 'test-ci' ||
+        github.ref_name == 'test-macos-publish')
       id: vars
       run: |
         if [ ! -d "./dist" ]; then
@@ -28,7 +29,8 @@ runs:
     - name: Upload wheel artifact
       if:
         github.event_name == 'push' && (github.ref_name == 'develop' || github.ref_name ==
-        'nightly' || github.ref_name == 'master' || github.ref_name == 'test-ci')
+        'nightly' || github.ref_name == 'master' || github.ref_name == 'test-ci' ||
+        github.ref_name == 'test-macos-publish')
       # https://github.com/actions/upload-artifact
       # Use wildcard to flatten dist/ prefix: path before first wildcard is stripped
       uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
