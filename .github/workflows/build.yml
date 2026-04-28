@@ -6,7 +6,7 @@ permissions: # Principle of least privilege
 
 on:
   push:
-    branches: [master, nightly, develop, test-ci, test-pre-commit]
+    branches: [master, nightly, develop, test-ci, test-pre-commit, test-linux-arm-publish]
   pull_request:
     branches-ignore: [master, nightly]
 
@@ -159,7 +159,10 @@ jobs:
         run: cargo vet --locked
 
   build-linux-x86:
-    if: github.ref != 'refs/heads/test-pre-commit' && needs.plan.outputs.run-tests == 'true'
+    if: >
+      github.ref != 'refs/heads/test-pre-commit' &&
+      github.ref != 'refs/heads/test-linux-arm-publish' &&
+      needs.plan.outputs.run-tests == 'true'
     strategy:
       fail-fast: false
       # PRs build on 3.13 only: ruff target-version=py312 guards syntax in pre-commit,
@@ -427,7 +430,8 @@ jobs:
       needs.plan.outputs.run-tests == 'true' &&
       github.event_name == 'push' &&
       github.ref != 'refs/heads/develop' &&
-      github.ref != 'refs/heads/test-pre-commit'
+      github.ref != 'refs/heads/test-pre-commit' &&
+      github.ref != 'refs/heads/test-linux-arm-publish'
     strategy:
       fail-fast: false
       matrix:
@@ -586,7 +590,9 @@ jobs:
       needs.plan.outputs.run-tests == 'true' &&
       !(
         (github.event_name == 'push' &&
-          (github.ref_name == 'develop' || github.ref_name == 'test-pre-commit'))
+          (github.ref_name == 'develop' ||
+            github.ref_name == 'test-pre-commit' ||
+            github.ref_name == 'test-linux-arm-publish'))
         || (github.event_name == 'pull_request' &&
           github.base_ref == 'develop')
       )
@@ -675,6 +681,66 @@ jobs:
       # - build-macos # macOS builds moved to nightly only
     if: >
       github.event_name == 'push' && github.ref == 'refs/heads/develop'
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      CLOUDFLARE_R2_URL: ${{ secrets.CLOUDFLARE_R2_URL }}
+      CLOUDFLARE_R2_REGION: "auto"
+      CLOUDFLARE_R2_BUCKET_NAME: "packages"
+    steps:
+      # https://github.com/step-security/harden-runner
+      - uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        with:
+          egress-policy: ${{ env.EGRESS_POLICY }}
+          allowed-endpoints: >-
+            ${{ vars.COMMON_ALLOWED_ENDPOINTS }}
+            ${{ vars.CI_ALLOWED_ENDPOINTS }}
+            ${{ secrets.CLOUDFLARE_R2_ALLOWED_HOST }}:443
+
+      - name: Checkout repository
+        # https://github.com/actions/checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Download built wheels
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist
+          pattern: "nautilus_trader-*.whl"
+          merge-multiple: true
+
+      # https://github.com/actions/attest-build-provenance
+      - name: Attest wheel provenance
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          subject-path: 'dist/nautilus_trader-*.whl'
+
+      - name: Publish wheels to Cloudflare R2
+        uses: ./.github/actions/publish-wheels
+
+      - name: Fetch and delete artifacts for current run
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          bash ./scripts/ci/publish-wheels-delete-artifacts.sh
+
+  publish-wheels-linux-arm:
+    # Throwaway job: publishes Linux ARM wheels only from the test-linux-arm-publish branch.
+    # Mirrors publish-wheels-develop but depends solely on build-linux-arm.
+    name: publish-wheels-linux-arm
+    runs-on: ubuntu-latest
+    environment: r2-develop
+    permissions:
+      actions: write # Required for deleting artifacts
+      contents: read
+      id-token: write # Required for attestations
+      attestations: write # Required for attestations
+    needs:
+      - build-linux-arm
+    if: >
+      github.event_name == 'push' && github.ref == 'refs/heads/test-linux-arm-publish'
     env:
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
