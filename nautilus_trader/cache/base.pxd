@@ -70,6 +70,9 @@ cdef class CacheFacade:
     cpdef dict[Decimal, list[Order]] own_ask_orders(self, InstrumentId instrument_id, set[OrderStatus] status=*, uint64_t accepted_buffer_ns=*, uint64_t ts_now=*)
     cpdef QuoteTick quote_tick(self, InstrumentId instrument_id, int index=*)
     cpdef TradeTick trade_tick(self, InstrumentId instrument_id, int index=*)
+    cpdef Price execution_bid_price(self, InstrumentId instrument_id)
+    cpdef Price execution_ask_price(self, InstrumentId instrument_id)
+    cpdef Price execution_last_price(self, InstrumentId instrument_id)
     cpdef MarkPriceUpdate mark_price(self, InstrumentId instrument_id, int index=*)
     cpdef IndexPriceUpdate index_price(self, InstrumentId instrument_id, int index=*)
     cpdef FundingRateUpdate funding_rate(self, InstrumentId instrument_id, int index=*)
@@ -113,6 +116,16 @@ cdef class CacheFacade:
         Currency to_currency,
     )
     cpdef void clear_mark_xrates(self)
+    cpdef void set_execution_prices(
+        self,
+        InstrumentId instrument_id,
+        Price bid_price,
+        Price ask_price,
+        Price last_price,
+        uint64_t ts_event,
+    )
+    cpdef void clear_execution_prices(self)
+    cpdef void clear_execution_prices_for(self, InstrumentId instrument_id)
 
 # -- INSTRUMENT QUERIES ---------------------------------------------------------------------------
 

@@ -3968,6 +3968,7 @@ cdef class OrderMatchingEngine:
         self._last_quote_ask_raw = 0
         self._has_quote_context = False
         self._tob_initialized = False
+        self.cache.clear_execution_prices_for(self.instrument.id)
 
         self._position_count = 0
         self._order_count = 0
@@ -4436,6 +4437,7 @@ cdef class OrderMatchingEngine:
             self._has_quote_context = True
 
         self.iterate(tick.ts_init)
+        self._update_execution_price_context(tick.ts_event)
 
     cpdef void process_trade_tick(self, TradeTick tick):
         """
@@ -4508,6 +4510,7 @@ cdef class OrderMatchingEngine:
                     self._core.set_ask_raw(best_ask.raw)
 
             self._clock.set_time(tick.ts_init)
+            self._update_execution_price_context(tick.ts_event, tick.price)
             return
 
         aggressor_side = tick.aggressor_side
@@ -4584,6 +4587,8 @@ cdef class OrderMatchingEngine:
             elif aggressor_side == AggressorSide.NO_AGGRESSOR:
                 self._core.set_bid_raw(original_bid)
                 self._core.set_ask_raw(original_ask)
+
+        self._update_execution_price_context(tick.ts_event, tick.price)
 
     cpdef void process_bar(self, Bar bar):
         """
@@ -4740,6 +4745,21 @@ cdef class OrderMatchingEngine:
         # Reset flag after bar processing for correct inter-bar behavior
         self._fill_at_market = True
 
+    cdef void _update_execution_price_context(self, uint64_t ts_event, Price last_price = None):
+        cdef Price bid_price = self._book.best_bid_price()
+        cdef Price ask_price = self._book.best_ask_price()
+
+        if last_price is None and self._core.is_last_initialized:
+            last_price = self._core.last
+
+        self.cache.set_execution_prices(
+            self.instrument.id,
+            bid_price,
+            ask_price,
+            last_price,
+            ts_event,
+        )
+
     cdef TradeTick _create_base_trade_tick(self, Bar bar, Quantity size):
         return TradeTick(
             bar.bar_type.instrument_id,
@@ -4760,6 +4780,7 @@ cdef class OrderMatchingEngine:
             self._book.update_trade_tick(tick)
             self.iterate(tick.ts_init)
             self._core.set_last_raw(bar._mem.open.raw)
+            self._update_execution_price_context(tick.ts_event, tick.price)
 
     cdef void _process_trade_bar_high(self, Bar bar, TradeTick tick):
         if bar._mem.high.raw > self._core.last_raw:
@@ -4773,6 +4794,7 @@ cdef class OrderMatchingEngine:
             self._book.update_trade_tick(tick)
             self.iterate(tick.ts_init)
             self._core.set_last_raw(bar._mem.high.raw)
+            self._update_execution_price_context(tick.ts_event, tick.price)
 
     cdef void _process_trade_bar_low(self, Bar bar, TradeTick tick):
         if bar._mem.low.raw < self._core.last_raw:
@@ -4786,6 +4808,7 @@ cdef class OrderMatchingEngine:
             self._book.update_trade_tick(tick)
             self.iterate(tick.ts_init)
             self._core.set_last_raw(bar._mem.low.raw)
+            self._update_execution_price_context(tick.ts_event, tick.price)
 
     cdef void _process_trade_bar_close(self, Bar bar, TradeTick tick, Quantity close_size = None):
         if bar._mem.close.raw != self._core.last_raw:
@@ -4805,6 +4828,7 @@ cdef class OrderMatchingEngine:
             self._book.update_trade_tick(tick)
             self.iterate(tick.ts_init)
             self._core.set_last_raw(bar._mem.close.raw)
+            self._update_execution_price_context(tick.ts_event, tick.price)
 
     cdef void _process_quote_ticks_from_bar(self):
         if self._last_bid_bar is None or self._last_ask_bar is None:
@@ -4872,6 +4896,7 @@ cdef class OrderMatchingEngine:
         self._fill_at_market = True  # Gap from previous bar
         self._book.update_quote_tick(tick)
         self.iterate(tick.ts_init)
+        self._update_execution_price_context(tick.ts_event)
 
     cdef void _process_quote_bar_high(self, QuoteTick tick):
         self._fill_at_market = False  # Market moving through prices
@@ -4879,6 +4904,7 @@ cdef class OrderMatchingEngine:
         tick._mem.ask_price = self._last_ask_bar._mem.high
         self._book.update_quote_tick(tick)
         self.iterate(tick.ts_init)
+        self._update_execution_price_context(tick.ts_event)
 
     cdef void _process_quote_bar_low(self, QuoteTick tick):
         self._fill_at_market = False  # Market moving through prices
@@ -4886,6 +4912,7 @@ cdef class OrderMatchingEngine:
         tick._mem.ask_price = self._last_ask_bar._mem.low
         self._book.update_quote_tick(tick)
         self.iterate(tick.ts_init)
+        self._update_execution_price_context(tick.ts_event)
 
     cdef void _process_quote_bar_close(self, QuoteTick tick, Quantity bid_close_size = None, Quantity ask_close_size = None):
         self._fill_at_market = False  # Market moving through prices
@@ -4903,6 +4930,7 @@ cdef class OrderMatchingEngine:
         self._last_quote_ask_raw = tick._mem.ask_price.raw
         self._has_quote_context = True
         self.iterate(tick.ts_init)
+        self._update_execution_price_context(tick.ts_event)
 
     # -- TRADING COMMANDS -----------------------------------------------------------------------------
 

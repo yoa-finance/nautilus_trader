@@ -49,12 +49,12 @@ fn main() {
     println!("cargo:rerun-if-changed=Cargo.toml");
     println!("cargo:rerun-if-changed=../Cargo.toml");
 
-    let nautilus_version = "1.225.0"; // Hardcode to avoid including pyproject.toml in package
+    let nautilus_version = "1.225.0.post1+stratneo.1"; // Hardcode to avoid including pyproject.toml in package
 
     // Verify the hardcoded version matches the version from the top-level pyproject.toml
     if let Some(pyproject_version) = try_read_pyproject_version() {
         assert!(
-            pyproject_version.starts_with(nautilus_version),
+            pyproject_version == nautilus_version,
             "Version mismatch: pyproject.toml={pyproject_version}, hardcoded={nautilus_version}",
         );
     }

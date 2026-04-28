@@ -3861,6 +3861,29 @@ def test_bar_execution_respects_size_increment(volume: str) -> None:
     matching_engine.process_bar(bar)
 
 
+def test_bar_execution_updates_execution_price_context_and_clears_on_reset() -> None:
+    # Arrange
+    matching_engine = _create_bar_execution_matching_engine()
+    bar = _create_bar_with_volume("1.000")
+    instrument_id = matching_engine.instrument.id
+
+    # Act
+    matching_engine.process_bar(bar)
+
+    # Assert
+    assert matching_engine.cache.execution_bid_price(instrument_id) == matching_engine.best_bid_price()
+    assert matching_engine.cache.execution_ask_price(instrument_id) == matching_engine.best_ask_price()
+    assert matching_engine.cache.execution_last_price(instrument_id) == bar.close
+
+    # Act
+    matching_engine.reset()
+
+    # Assert
+    assert matching_engine.cache.execution_bid_price(instrument_id) is None
+    assert matching_engine.cache.execution_ask_price(instrument_id) is None
+    assert matching_engine.cache.execution_last_price(instrument_id) is None
+
+
 @pytest.mark.parametrize(
     ("order_side", "opposite_side"),
     [

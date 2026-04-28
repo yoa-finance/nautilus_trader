@@ -1925,6 +1925,91 @@ class TestRiskEngineWithCashAccount:
         assert order.status == OrderStatus.DENIED
         assert self.exec_engine.command_count == 0  # Order should not reach execution
 
+    def test_submit_market_buy_when_only_execution_price_context_exists_then_denies(self):
+        # Arrange
+        self.cache.add_instrument(_ADAUSDT_BINANCE)
+
+        self.exec_engine.deregister_client(self.exec_client)
+
+        exec_client = MockExecutionClient(
+            client_id=ClientId("BINANCE"),
+            venue=Venue("BINANCE"),
+            account_type=AccountType.CASH,
+            base_currency=None,
+            msgbus=self.msgbus,
+            cache=self.cache,
+            clock=self.clock,
+        )
+        self.exec_engine.register_client(exec_client)
+        self.exec_client = exec_client
+
+        account_state = AccountState(
+            account_id=AccountId("BINANCE-001"),
+            account_type=AccountType.CASH,
+            base_currency=None,
+            reported=True,
+            balances=[
+                AccountBalance(
+                    Money(0, USDT),
+                    Money(0, USDT),
+                    Money(0, USDT),
+                ),
+                AccountBalance(
+                    Money(0, ADA),
+                    Money(0, ADA),
+                    Money(0, ADA),
+                ),
+            ],
+            margins=[],
+            info={},
+            event_id=UUID4(),
+            ts_event=0,
+            ts_init=0,
+        )
+        self.portfolio.update_account(account_state)
+
+        self.cache.set_execution_prices(
+            _ADAUSDT_BINANCE.id,
+            Price.from_str("0.2499"),
+            Price.from_str("0.2500"),
+            Price.from_str("0.2500"),
+            0,
+        )
+
+        self.exec_engine.start()
+
+        strategy = Strategy()
+        strategy.register(
+            trader_id=self.trader_id,
+            portfolio=self.portfolio,
+            msgbus=self.msgbus,
+            cache=self.cache,
+            clock=self.clock,
+        )
+
+        order = strategy.order_factory.market(
+            _ADAUSDT_BINANCE.id,
+            OrderSide.BUY,
+            Quantity.from_int(100),
+        )
+
+        submit_order = SubmitOrder(
+            trader_id=self.trader_id,
+            strategy_id=strategy.id,
+            order=order,
+            command_id=UUID4(),
+            ts_init=self.clock.timestamp_ns(),
+        )
+
+        # Act
+        self.risk_engine.execute(submit_order)
+
+        # Assert
+        assert order.status == OrderStatus.DENIED
+        assert isinstance(order.last_event, OrderDenied)
+        assert "NOTIONAL_EXCEEDS_FREE_BALANCE" in order.last_event.reason
+        assert self.exec_engine.command_count == 0
+
     def test_submit_order_when_quote_quantity_buy_within_balance_then_allows(self):
         # Arrange - Setup crypto instrument for quote quantity orders
         # Create ETHUSD with SIM venue to match the test account (USD not USDT to match account currency)

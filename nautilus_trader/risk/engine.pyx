@@ -755,25 +755,36 @@ cdef class RiskEngine(Component):
             if order.order_type == OrderType.MARKET or order.order_type == OrderType.MARKET_TO_LIMIT:
                 if last_px is None:
                     # Determine entry price
-                    last_quote = self._cache.quote_tick(instrument.id)
+                    if order.side == OrderSide.BUY:
+                        last_px = self._cache.execution_ask_price(instrument.id)
+                    elif order.side == OrderSide.SELL:
+                        last_px = self._cache.execution_bid_price(instrument.id)
+                    else:  # pragma: no cover (design-time error)
+                        raise RuntimeError(f"invalid `OrderSide`")
 
-                    if last_quote is not None:
-                        if order.side == OrderSide.BUY:
-                            last_px = last_quote.ask_price
-                        elif order.side == OrderSide.SELL:
-                            last_px = last_quote.bid_price
-                        else:  # pragma: no cover (design-time error)
-                            raise RuntimeError(f"invalid `OrderSide`")
-                    else:
-                        last_trade = self._cache.trade_tick(instrument.id)
+                    if last_px is None:
+                        last_px = self._cache.execution_last_price(instrument.id)
 
-                        if last_trade is not None:
-                            last_px = last_trade.price
+                    if last_px is None:
+                        last_quote = self._cache.quote_tick(instrument.id)
+
+                        if last_quote is not None:
+                            if order.side == OrderSide.BUY:
+                                last_px = last_quote.ask_price
+                            elif order.side == OrderSide.SELL:
+                                last_px = last_quote.bid_price
+                            else:  # pragma: no cover (design-time error)
+                                raise RuntimeError(f"invalid `OrderSide`")
                         else:
-                            self._log.warning(
-                                f"Cannot check MARKET order risk: no prices for {instrument.id}",
-                            )
-                            continue  # Cannot check order risk
+                            last_trade = self._cache.trade_tick(instrument.id)
+
+                            if last_trade is not None:
+                                last_px = last_trade.price
+                            else:
+                                self._log.warning(
+                                    f"Cannot check MARKET order risk: no prices for {instrument.id}",
+                                )
+                                continue  # Cannot check order risk
             elif order.order_type == OrderType.STOP_MARKET or order.order_type == OrderType.MARKET_IF_TOUCHED:
                 last_px = order.trigger_price
             elif order.order_type == OrderType.TRAILING_STOP_MARKET or order.order_type == OrderType.TRAILING_STOP_LIMIT:

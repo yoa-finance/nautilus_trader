@@ -133,6 +133,10 @@ cdef class Cache(CacheFacade):
         self._bars: dict[BarType, deque[Bar]] = {}
         self._bars_bid: dict[InstrumentId, Bar] = {}
         self._bars_ask: dict[InstrumentId, Bar] = {}
+        self._execution_bid_prices: dict[InstrumentId, Price] = {}
+        self._execution_ask_prices: dict[InstrumentId, Price] = {}
+        self._execution_last_prices: dict[InstrumentId, Price] = {}
+        self._execution_price_timestamps: dict[InstrumentId, int] = {}
         self._accounts: dict[AccountId, Account] = {}
         self._orders: dict[ClientOrderId, Order] = {}
         self._order_lists: dict[OrderListId, OrderList] = {}
@@ -1207,6 +1211,10 @@ cdef class Cache(CacheFacade):
         self._bars.clear()
         self._bars_bid.clear()
         self._bars_ask.clear()
+        self._execution_bid_prices.clear()
+        self._execution_ask_prices.clear()
+        self._execution_last_prices.clear()
+        self._execution_price_timestamps.clear()
         self._accounts.clear()
         self._orders.clear()
         self._order_lists.clear()
@@ -1679,6 +1687,77 @@ cdef class Cache(CacheFacade):
             self._trade_ticks[instrument_id] = ticks
 
         ticks.appendleft(tick)
+
+    cpdef void set_execution_prices(
+        self,
+        InstrumentId instrument_id,
+        Price bid_price,
+        Price ask_price,
+        Price last_price,
+        uint64_t ts_event,
+    ):
+        """
+        Set the current executable price context for the given instrument.
+
+        Parameters
+        ----------
+        instrument_id : InstrumentId
+            The instrument ID for the execution price context.
+        bid_price : Price or ``None``
+            The current executable bid price.
+        ask_price : Price or ``None``
+            The current executable ask price.
+        last_price : Price or ``None``
+            The current executable last price.
+        ts_event : uint64_t
+            The market-data event timestamp for the price context.
+
+        """
+        Condition.not_none(instrument_id, "instrument_id")
+
+        if bid_price is None:
+            self._execution_bid_prices.pop(instrument_id, None)
+        else:
+            self._execution_bid_prices[instrument_id] = bid_price
+
+        if ask_price is None:
+            self._execution_ask_prices.pop(instrument_id, None)
+        else:
+            self._execution_ask_prices[instrument_id] = ask_price
+
+        if last_price is None:
+            self._execution_last_prices.pop(instrument_id, None)
+        else:
+            self._execution_last_prices[instrument_id] = last_price
+
+        self._execution_price_timestamps[instrument_id] = ts_event
+
+    cpdef void clear_execution_prices(self):
+        """
+        Clear all executable price context.
+
+        """
+        self._execution_bid_prices.clear()
+        self._execution_ask_prices.clear()
+        self._execution_last_prices.clear()
+        self._execution_price_timestamps.clear()
+
+    cpdef void clear_execution_prices_for(self, InstrumentId instrument_id):
+        """
+        Clear executable price context for the given instrument.
+
+        Parameters
+        ----------
+        instrument_id : InstrumentId
+            The instrument ID for the execution price context.
+
+        """
+        Condition.not_none(instrument_id, "instrument_id")
+
+        self._execution_bid_prices.pop(instrument_id, None)
+        self._execution_ask_prices.pop(instrument_id, None)
+        self._execution_last_prices.pop(instrument_id, None)
+        self._execution_price_timestamps.pop(instrument_id, None)
 
     cpdef void add_mark_price(self, MarkPriceUpdate mark_price):
         """
@@ -3131,6 +3210,60 @@ cdef class Cache(CacheFacade):
             return ticks[index]
         except IndexError:
             return None
+
+    cpdef Price execution_bid_price(self, InstrumentId instrument_id):
+        """
+        Return the current executable bid price for the given instrument.
+
+        Parameters
+        ----------
+        instrument_id : InstrumentId
+            The instrument ID for the price to get.
+
+        Returns
+        -------
+        Price or ``None``
+
+        """
+        Condition.not_none(instrument_id, "instrument_id")
+
+        return self._execution_bid_prices.get(instrument_id)
+
+    cpdef Price execution_ask_price(self, InstrumentId instrument_id):
+        """
+        Return the current executable ask price for the given instrument.
+
+        Parameters
+        ----------
+        instrument_id : InstrumentId
+            The instrument ID for the price to get.
+
+        Returns
+        -------
+        Price or ``None``
+
+        """
+        Condition.not_none(instrument_id, "instrument_id")
+
+        return self._execution_ask_prices.get(instrument_id)
+
+    cpdef Price execution_last_price(self, InstrumentId instrument_id):
+        """
+        Return the current executable last price for the given instrument.
+
+        Parameters
+        ----------
+        instrument_id : InstrumentId
+            The instrument ID for the price to get.
+
+        Returns
+        -------
+        Price or ``None``
+
+        """
+        Condition.not_none(instrument_id, "instrument_id")
+
+        return self._execution_last_prices.get(instrument_id)
 
     cpdef MarkPriceUpdate mark_price(self, InstrumentId instrument_id, int index = 0):
         """

@@ -473,6 +473,7 @@ cdef class OrderMatchingEngine:
     cdef void _process_trade_bar_high(self, Bar bar, TradeTick tick)
     cdef void _process_trade_bar_low(self, Bar bar, TradeTick tick)
     cdef void _process_trade_bar_close(self, Bar bar, TradeTick tick, Quantity close_size=*)
+    cdef void _update_execution_price_context(self, uint64_t ts_event, Price last_price=*)
     cdef void _process_quote_ticks_from_bar(self)
     cdef QuoteTick _create_base_quote_tick(self, Quantity bid_size, Quantity ask_size)
     cdef void _process_quote_bar_open(self, QuoteTick tick)
