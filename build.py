@@ -335,7 +335,7 @@ def _build_distribution(extensions: list[Extension]) -> Distribution:
 
     distribution = Distribution(
         {
-            "name": "nautilus_trader",
+            "name": "nautilus-trader-stratneo",
             "ext_modules": cythonize(
                 module_list=extensions,
                 compiler_directives=CYTHON_COMPILER_DIRECTIVES,
