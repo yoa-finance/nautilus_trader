@@ -37,17 +37,6 @@ fn build_populated_cache() -> Cache {
     cache
 }
 
-fn build_single_instrument_historical_order_cache() -> (Cache, InstrumentId) {
-    let instrument = InstrumentId::from("SYMBOL-0.VENUE-0");
-    let orders = create_order_list_sample(1, 1, 100_000);
-    let mut cache = Cache::default();
-    for order in orders {
-        cache.add_order(order, None, None, false).unwrap();
-    }
-
-    (cache, instrument)
-}
-
 fn bench_set_intersections(c: &mut Criterion) {
     let cache = build_populated_cache();
 
@@ -88,19 +77,5 @@ fn bench_set_intersections(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_state_scoped_queries(c: &mut Criterion) {
-    let (cache, instrument) = build_single_instrument_historical_order_cache();
-
-    let mut group = c.benchmark_group("Cache state scoped queries");
-
-    group.bench_function("open orders over 100k historical orders", |b| {
-        b.iter(|| {
-            black_box(cache.orders_open(None, Some(black_box(&instrument)), None, None, None));
-        });
-    });
-
-    group.finish();
-}
-
-criterion_group!(benches, bench_set_intersections, bench_state_scoped_queries);
+criterion_group!(benches, bench_set_intersections);
 criterion_main!(benches);

@@ -16,10 +16,10 @@ runs:
           exit 1
         fi
 
-        ASSET_PATH=$(find ./dist -name "*.whl" -type f | sort | head -n 1)
+        ASSET_PATH=$(find ./dist -name "nautilus_trader-*.whl" -type f | xargs ls -t 2>/dev/null | head -n 1)
 
         if [ -z "$ASSET_PATH" ]; then
-          echo "Error: No wheel files found in dist directory"
+          echo "Error: No nautilus_trader wheel files found in dist directory"
           exit 1
         fi
 
@@ -34,4 +34,4 @@ runs:
       uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
       with:
         name: ${{ env.ASSET_NAME }}
-        path: dist/*.whl
+        path: dist/nautilus_trader-*.whl

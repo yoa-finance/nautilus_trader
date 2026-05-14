@@ -353,35 +353,6 @@ fn test_order_when_accepted(mut cache: Cache, audusd_sim: CurrencyPair) {
 }
 
 #[rstest]
-fn test_order_id_queries_return_defensive_snapshots(mut cache: Cache, audusd_sim: CurrencyPair) {
-    let mut order = OrderTestBuilder::new(OrderType::Limit)
-        .instrument_id(audusd_sim.id)
-        .side(OrderSide::Buy)
-        .price(Price::from("1.00000"))
-        .quantity(Quantity::from(100_000))
-        .build();
-
-    cache.add_order(order.clone(), None, None, false).unwrap();
-    order
-        .apply(OrderEventAny::Submitted(OrderSubmitted::default()))
-        .unwrap();
-    cache.update_order(&order).unwrap();
-    order
-        .apply(OrderEventAny::Accepted(OrderAccepted::default()))
-        .unwrap();
-    cache.update_order(&order).unwrap();
-
-    let mut open_ids = cache.client_order_ids_open(None, Some(&audusd_sim.id), None, None);
-    open_ids.clear();
-
-    assert!(cache.is_order_open(&order.client_order_id()));
-    assert_eq!(
-        cache.orders_open(None, Some(&audusd_sim.id), None, None, None),
-        vec![&order],
-    );
-}
-
-#[rstest]
 fn test_client_order_ids_filtering(mut cache: Cache) {
     // Build a small deterministic universe: 2 venues × 3 instruments × 2 orders
     let venue_a = Venue::from("VENUE-A");

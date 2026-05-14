@@ -6,9 +6,8 @@ NIGHTLY_LOOKBACK=30
 
 echo "Cleaning up old wheels in Cloudflare R2..."
 
-r2_prefix="${CLOUDFLARE_R2_PREFIX:-simple/nautilus-trader-stratneo}"
 branch_name="${GITHUB_REF_NAME}" # Get the current branch
-files=$(aws s3 ls "s3://${CLOUDFLARE_R2_BUCKET_NAME}/${r2_prefix}/" \
+files=$(aws s3 ls "s3://${CLOUDFLARE_R2_BUCKET_NAME}/${CLOUDFLARE_R2_PREFIX:-simple/nautilus-trader}/" \
   --endpoint-url="${CLOUDFLARE_R2_URL}" --cli-connect-timeout 10 --cli-read-timeout 60 | awk '{print $4}')
 if [ -z "$files" ]; then
   echo "No files found for cleanup"
@@ -53,7 +52,7 @@ if [[ "$branch_name" == "develop" ]]; then
         echo "Deleting old .dev wheel: $file"
         success=false
         for i in {1..5}; do
-          if aws s3 rm "s3://${CLOUDFLARE_R2_BUCKET_NAME}/${r2_prefix}/$file" \
+          if aws s3 rm "s3://${CLOUDFLARE_R2_BUCKET_NAME}/${CLOUDFLARE_R2_PREFIX:-simple/nautilus-trader}/$file" \
             --endpoint-url="${CLOUDFLARE_R2_URL}" --cli-connect-timeout 10 --cli-read-timeout 60; then
             success=true
             break
@@ -116,7 +115,7 @@ if [[ "$branch_name" == "nightly" ]]; then
         echo "Deleting old .a wheel: $file"
         success=false
         for i in {1..5}; do
-          if aws s3 rm "s3://${CLOUDFLARE_R2_BUCKET_NAME}/${r2_prefix}/$file" \
+          if aws s3 rm "s3://${CLOUDFLARE_R2_BUCKET_NAME}/${CLOUDFLARE_R2_PREFIX:-simple/nautilus-trader}/$file" \
             --endpoint-url="${CLOUDFLARE_R2_URL}" --cli-connect-timeout 10 --cli-read-timeout 60; then
             success=true
             break

@@ -647,7 +647,6 @@ jobs:
       CLOUDFLARE_R2_URL: ${{ secrets.CLOUDFLARE_R2_URL }}
       CLOUDFLARE_R2_REGION: "auto"
       CLOUDFLARE_R2_BUCKET_NAME: "packages"
-      CLOUDFLARE_R2_PREFIX: "simple/nautilus-trader-stratneo"
     steps:
       # https://github.com/step-security/harden-runner
       - uses: step-security/harden-runner@a90bcbc6539c36a85cdfeb73f7e2f433735f215b # v2.15.0
@@ -668,14 +667,14 @@ jobs:
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           path: dist
-          pattern: "*.whl"
+          pattern: "nautilus_trader-*.whl"
           merge-multiple: true
 
       # https://github.com/actions/attest-build-provenance
       - name: Attest wheel provenance
         uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
         with:
-          subject-path: 'dist/*.whl'
+          subject-path: 'dist/nautilus_trader-*.whl'
 
       - name: Publish wheels to Cloudflare R2
         uses: ./.github/actions/publish-wheels
@@ -770,7 +769,6 @@ jobs:
       CLOUDFLARE_R2_URL: ${{ secrets.CLOUDFLARE_R2_URL }}
       CLOUDFLARE_R2_REGION: "auto"
       CLOUDFLARE_R2_BUCKET_NAME: "packages"
-      CLOUDFLARE_R2_PREFIX: "simple/nautilus-trader-stratneo"
     steps:
       # https://github.com/step-security/harden-runner
       - uses: step-security/harden-runner@a90bcbc6539c36a85cdfeb73f7e2f433735f215b # v2.15.0
@@ -791,14 +789,14 @@ jobs:
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           path: dist
-          pattern: "*.whl"
+          pattern: "nautilus_trader-*.whl"
           merge-multiple: true
 
       # https://github.com/actions/attest-build-provenance
       - name: Attest wheel provenance
         uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
         with:
-          subject-path: 'dist/*.whl'
+          subject-path: 'dist/nautilus_trader-*.whl'
 
       - name: Publish wheels to Cloudflare R2
         uses: ./.github/actions/publish-wheels
@@ -832,7 +830,6 @@ jobs:
       CLOUDFLARE_R2_URL: ${{ secrets.CLOUDFLARE_R2_URL }}
       CLOUDFLARE_R2_REGION: "auto"
       CLOUDFLARE_R2_BUCKET_NAME: "packages"
-      CLOUDFLARE_R2_PREFIX: "simple/nautilus-trader-stratneo"
     steps:
       # https://github.com/step-security/harden-runner
       - uses: step-security/harden-runner@a90bcbc6539c36a85cdfeb73f7e2f433735f215b # v2.15.0
@@ -866,14 +863,14 @@ jobs:
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           path: dist
-          pattern: "*.whl"
+          pattern: "nautilus_trader-*.whl"
           merge-multiple: true
 
       # https://github.com/actions/attest-build-provenance
       - name: Attest wheel provenance
         uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
         with:
-          subject-path: 'dist/*.whl'
+          subject-path: 'dist/nautilus_trader-*.whl'
 
       - name: Publish wheels to Cloudflare R2
         uses: ./.github/actions/publish-wheels
@@ -887,7 +884,7 @@ jobs:
           set +e
           success=false
           for i in {1..5}; do
-            gh release upload "$TAG_NAME" dist/*.whl --clobber --repo "$GITHUB_REPOSITORY"
+            gh release upload "$TAG_NAME" dist/nautilus_trader-*.whl --clobber --repo "$GITHUB_REPOSITORY"
             status=$?
             if [ $status -eq 0 ]; then
               success=true

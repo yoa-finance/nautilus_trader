@@ -3,10 +3,9 @@ set -euo pipefail
 
 echo "Verifying uploaded files in Cloudflare R2..."
 
-r2_prefix="${CLOUDFLARE_R2_PREFIX:-simple/nautilus-trader-stratneo}"
 ok=false
 for i in {1..5}; do
-  if aws s3 ls "s3://${CLOUDFLARE_R2_BUCKET_NAME}/${r2_prefix}/" \
+  if aws s3 ls "s3://${CLOUDFLARE_R2_BUCKET_NAME}/${CLOUDFLARE_R2_PREFIX:-simple/nautilus-trader}/" \
     --endpoint-url="${CLOUDFLARE_R2_URL}" --cli-connect-timeout 10 --cli-read-timeout 60; then
     ok=true
     break
@@ -23,7 +22,7 @@ fi
 # Verify index.html exists
 ok_index=false
 for i in {1..5}; do
-  if aws s3 ls "s3://${CLOUDFLARE_R2_BUCKET_NAME}/${r2_prefix}/index.html" \
+  if aws s3 ls "s3://${CLOUDFLARE_R2_BUCKET_NAME}/${CLOUDFLARE_R2_PREFIX:-simple/nautilus-trader}/index.html" \
     --endpoint-url="${CLOUDFLARE_R2_URL}" --cli-connect-timeout 10 --cli-read-timeout 60; then
     ok_index=true
     break

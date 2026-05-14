@@ -3,11 +3,7 @@ set -euo pipefail
 
 echo "Generating package index..."
 
-r2_prefix="${CLOUDFLARE_R2_PREFIX:-simple/nautilus-trader-stratneo}"
-dist_dir="${DIST_DIR:-dist}"
-wheel_glob="${WHEEL_GLOB:-*.whl}"
-package_title="${PACKAGE_INDEX_TITLE:-${r2_prefix##*/}}"
-bucket_path="s3://${CLOUDFLARE_R2_BUCKET_NAME}/${r2_prefix}/"
+bucket_path="s3://${CLOUDFLARE_R2_BUCKET_NAME}/${CLOUDFLARE_R2_PREFIX:-simple/nautilus-trader}/"
 index_file="index.html"
 
 # Create a temporary directory for downloads
@@ -21,8 +17,8 @@ if aws s3 ls "${bucket_path}${index_file}" --endpoint-url="${CLOUDFLARE_R2_URL}"
 else
   echo "No existing index.html found, creating a new one..."
   echo '<!DOCTYPE html>' > "$index_file"
-  echo "<html><head><title>${package_title} Packages</title></head>" >> "$index_file"
-  echo "<body><h1>Packages for ${package_title}</h1></body></html>" >> "$index_file"
+  echo '<html><head><title>NautilusTrader Packages</title></head>' >> "$index_file"
+  echo '<body><h1>Packages for nautilus_trader</h1></body></html>' >> "$index_file"
 fi
 
 # Extract existing hashes from index.html
@@ -41,15 +37,15 @@ fi
 
 # Create new index.html
 echo '<!DOCTYPE html>' > "${index_file}.new"
-echo "<html><head><title>${package_title} Packages</title></head>" >> "${index_file}.new"
-echo "<body><h1>Packages for ${package_title}</h1>" >> "${index_file}.new"
+echo '<html><head><title>NautilusTrader Packages</title></head>' >> "${index_file}.new"
+echo '<body><h1>Packages for nautilus_trader</h1>' >> "${index_file}.new"
 
 # Map to store final hashes we'll use
 declare -A final_hashes=()
 
 # First, calculate hashes for all new/updated wheels
 # These will override any existing hashes for the same filename
-for file in "$dist_dir"/$wheel_glob; do
+for file in dist/nautilus_trader-*.whl; do
   if [[ -f "$file" ]]; then
     filename=$(basename "$file")
     hash=$(sha256sum "$file" | awk '{print $1}')
@@ -59,7 +55,7 @@ for file in "$dist_dir"/$wheel_glob; do
 done
 
 # Get list of all wheel files in bucket
-existing_files=$(aws s3 ls "${bucket_path}" --endpoint-url="${CLOUDFLARE_R2_URL}" | awk '{print $4}' | grep -E '\.whl$' || true)
+existing_files=$(aws s3 ls "${bucket_path}" --endpoint-url="${CLOUDFLARE_R2_URL}" | grep 'nautilus_trader-.*\.whl$' | awk '{print $4}')
 
 # For existing files, use hash from index if we don't have a new one
 for file in $existing_files; do

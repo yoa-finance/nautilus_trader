@@ -3,22 +3,18 @@ set -euo pipefail
 
 echo "Uploading new wheels to Cloudflare R2..."
 
-r2_prefix="${CLOUDFLARE_R2_PREFIX:-simple/nautilus-trader-stratneo}"
-dist_dir="${DIST_DIR:-dist}"
-wheel_glob="${WHEEL_GLOB:-*.whl}"
-
-echo "${dist_dir}/ contents:"
-ls -la "$dist_dir/"
-find "$dist_dir/" -type f -name "$wheel_glob" -ls
+echo "dist/ contents:"
+ls -la dist/
+find dist/ -type f -name "nautilus_trader-*.whl" -ls
 
 # Verify wheels exist
-if ! find "$dist_dir/" -type f -name "$wheel_glob" -print -quit | grep -q .; then
-  echo "ERROR: No wheels found in ${dist_dir}/"
+if ! find dist/ -type f -name "nautilus_trader-*.whl" -print -quit | grep -q .; then
+  echo "ERROR: No wheels found in dist/"
   exit 1
 fi
 
 wheel_count=0
-for file in "$dist_dir"/$wheel_glob; do
+for file in dist/nautilus_trader-*.whl; do
   echo "File details for $file:"
   ls -l "$file"
   file "$file"
@@ -36,7 +32,7 @@ for file in "$dist_dir"/$wheel_glob; do
   set +e
   success=false
   for i in {1..5}; do
-    aws s3 cp "$file" "s3://${CLOUDFLARE_R2_BUCKET_NAME}/${r2_prefix}/" \
+    aws s3 cp "$file" "s3://${CLOUDFLARE_R2_BUCKET_NAME}/${CLOUDFLARE_R2_PREFIX:-simple/nautilus-trader}/" \
       --endpoint-url="${CLOUDFLARE_R2_URL}" \
       --content-type "application/zip"
     status=$?

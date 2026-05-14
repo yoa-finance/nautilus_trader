@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-r2_prefix="${CLOUDFLARE_R2_PREFIX:-simple/nautilus-trader-stratneo}"
 success=false
 for i in {1..5}; do
-  if aws s3 cp index.html "s3://${CLOUDFLARE_R2_BUCKET_NAME}/${r2_prefix}/index.html" \
+  if aws s3 cp index.html "s3://${CLOUDFLARE_R2_BUCKET_NAME}/${CLOUDFLARE_R2_PREFIX:-simple/nautilus-trader}/index.html" \
     --endpoint-url="${CLOUDFLARE_R2_URL}" \
     --content-type "text/html; charset=utf-8" \
     --cache-control "no-cache, max-age=60, must-revalidate" \

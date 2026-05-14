@@ -2320,115 +2320,162 @@ impl Cache {
 
     // -- IDENTIFIER QUERIES ----------------------------------------------------------------------
 
-    fn intersect_candidate_sets<T>(candidates: Vec<&AHashSet<T>>) -> AHashSet<T>
-    where
-        T: Copy + Eq + std::hash::Hash,
-    {
-        let Some(smallest) = candidates.iter().copied().min_by_key(|set| set.len()) else {
-            return AHashSet::new();
-        };
-
-        if smallest.is_empty() {
-            return AHashSet::new();
-        }
-
-        let mut result = (*smallest).clone();
-        for candidate in candidates {
-            if std::ptr::eq(candidate, smallest) {
-                continue;
-            }
-            result.retain(|id| candidate.contains(id));
-            if result.is_empty() {
-                break;
-            }
-        }
-
-        result
-    }
-
-    fn query_order_ids(
+    fn build_order_query_filter_set(
         &self,
-        state_ids: &AHashSet<ClientOrderId>,
         venue: Option<&Venue>,
         instrument_id: Option<&InstrumentId>,
         strategy_id: Option<&StrategyId>,
         account_id: Option<&AccountId>,
-    ) -> AHashSet<ClientOrderId> {
-        let mut candidates = Vec::with_capacity(5);
-        candidates.push(state_ids);
+    ) -> Option<AHashSet<ClientOrderId>> {
+        let mut query: Option<AHashSet<ClientOrderId>> = None;
 
         if let Some(venue) = venue {
-            let Some(venue_orders) = self.index.venue_orders.get(venue) else {
-                return AHashSet::new();
-            };
-            candidates.push(venue_orders);
+            query = Some(
+                self.index
+                    .venue_orders
+                    .get(venue)
+                    .cloned()
+                    .unwrap_or_default(),
+            );
         }
 
         if let Some(instrument_id) = instrument_id {
-            let Some(instrument_orders) = self.index.instrument_orders.get(instrument_id) else {
-                return AHashSet::new();
-            };
-            candidates.push(instrument_orders);
+            let instrument_orders = self
+                .index
+                .instrument_orders
+                .get(instrument_id)
+                .cloned()
+                .unwrap_or_default();
+
+            if let Some(existing_query) = &mut query {
+                *existing_query = existing_query
+                    .intersection(&instrument_orders)
+                    .copied()
+                    .collect();
+            } else {
+                query = Some(instrument_orders);
+            }
         }
 
         if let Some(strategy_id) = strategy_id {
-            let Some(strategy_orders) = self.index.strategy_orders.get(strategy_id) else {
-                return AHashSet::new();
-            };
-            candidates.push(strategy_orders);
+            let strategy_orders = self
+                .index
+                .strategy_orders
+                .get(strategy_id)
+                .cloned()
+                .unwrap_or_default();
+
+            if let Some(existing_query) = &mut query {
+                *existing_query = existing_query
+                    .intersection(&strategy_orders)
+                    .copied()
+                    .collect();
+            } else {
+                query = Some(strategy_orders);
+            }
         }
 
         if let Some(account_id) = account_id {
-            let Some(account_orders) = self.index.account_orders.get(account_id) else {
-                return AHashSet::new();
-            };
-            candidates.push(account_orders);
+            let account_orders = self
+                .index
+                .account_orders
+                .get(account_id)
+                .cloned()
+                .unwrap_or_default();
+
+            if let Some(existing_query) = &mut query {
+                *existing_query = existing_query
+                    .intersection(&account_orders)
+                    .copied()
+                    .collect();
+            } else {
+                query = Some(account_orders);
+            }
         }
 
-        Self::intersect_candidate_sets(candidates)
+        query
     }
 
-    fn query_position_ids(
+    fn build_position_query_filter_set(
         &self,
-        state_ids: &AHashSet<PositionId>,
         venue: Option<&Venue>,
         instrument_id: Option<&InstrumentId>,
         strategy_id: Option<&StrategyId>,
         account_id: Option<&AccountId>,
-    ) -> AHashSet<PositionId> {
-        let mut candidates = Vec::with_capacity(5);
-        candidates.push(state_ids);
+    ) -> Option<AHashSet<PositionId>> {
+        let mut query: Option<AHashSet<PositionId>> = None;
 
         if let Some(venue) = venue {
-            let Some(venue_positions) = self.index.venue_positions.get(venue) else {
-                return AHashSet::new();
-            };
-            candidates.push(venue_positions);
+            query = Some(
+                self.index
+                    .venue_positions
+                    .get(venue)
+                    .cloned()
+                    .unwrap_or_default(),
+            );
         }
 
         if let Some(instrument_id) = instrument_id {
-            let Some(instrument_positions) = self.index.instrument_positions.get(instrument_id)
-            else {
-                return AHashSet::new();
-            };
-            candidates.push(instrument_positions);
+            let instrument_positions = self
+                .index
+                .instrument_positions
+                .get(instrument_id)
+                .cloned()
+                .unwrap_or_default();
+
+            if let Some(existing_query) = query {
+                query = Some(
+                    existing_query
+                        .intersection(&instrument_positions)
+                        .copied()
+                        .collect(),
+                );
+            } else {
+                query = Some(instrument_positions);
+            }
         }
 
         if let Some(strategy_id) = strategy_id {
-            let Some(strategy_positions) = self.index.strategy_positions.get(strategy_id) else {
-                return AHashSet::new();
-            };
-            candidates.push(strategy_positions);
+            let strategy_positions = self
+                .index
+                .strategy_positions
+                .get(strategy_id)
+                .cloned()
+                .unwrap_or_default();
+
+            if let Some(existing_query) = query {
+                query = Some(
+                    existing_query
+                        .intersection(&strategy_positions)
+                        .copied()
+                        .collect(),
+                );
+            } else {
+                query = Some(strategy_positions);
+            }
         }
 
         if let Some(account_id) = account_id {
-            let Some(account_positions) = self.index.account_positions.get(account_id) else {
-                return AHashSet::new();
-            };
-            candidates.push(account_positions);
+            let account_positions = self
+                .index
+                .account_positions
+                .get(account_id)
+                .cloned()
+                .unwrap_or_default();
+
+            if let Some(existing_query) = query {
+                query = Some(
+                    existing_query
+                        .intersection(&account_positions)
+                        .copied()
+                        .collect(),
+                );
+            } else {
+                query = Some(account_positions);
+            }
         }
 
-        Self::intersect_candidate_sets(candidates)
+        query
     }
 
     /// Retrieves orders corresponding to the `client_order_ids`, optionally filtering by `side`.
@@ -2494,13 +2541,12 @@ impl Cache {
         strategy_id: Option<&StrategyId>,
         account_id: Option<&AccountId>,
     ) -> AHashSet<ClientOrderId> {
-        self.query_order_ids(
-            &self.index.orders,
-            venue,
-            instrument_id,
-            strategy_id,
-            account_id,
-        )
+        let query =
+            self.build_order_query_filter_set(venue, instrument_id, strategy_id, account_id);
+        match query {
+            Some(query) => self.index.orders.intersection(&query).copied().collect(),
+            None => self.index.orders.clone(),
+        }
     }
 
     /// Returns the `ClientOrderId`s of all open orders.
@@ -2512,13 +2558,17 @@ impl Cache {
         strategy_id: Option<&StrategyId>,
         account_id: Option<&AccountId>,
     ) -> AHashSet<ClientOrderId> {
-        self.query_order_ids(
-            &self.index.orders_open,
-            venue,
-            instrument_id,
-            strategy_id,
-            account_id,
-        )
+        let query =
+            self.build_order_query_filter_set(venue, instrument_id, strategy_id, account_id);
+        match query {
+            Some(query) => self
+                .index
+                .orders_open
+                .intersection(&query)
+                .copied()
+                .collect(),
+            None => self.index.orders_open.clone(),
+        }
     }
 
     /// Returns the `ClientOrderId`s of all closed orders.
@@ -2530,13 +2580,17 @@ impl Cache {
         strategy_id: Option<&StrategyId>,
         account_id: Option<&AccountId>,
     ) -> AHashSet<ClientOrderId> {
-        self.query_order_ids(
-            &self.index.orders_closed,
-            venue,
-            instrument_id,
-            strategy_id,
-            account_id,
-        )
+        let query =
+            self.build_order_query_filter_set(venue, instrument_id, strategy_id, account_id);
+        match query {
+            Some(query) => self
+                .index
+                .orders_closed
+                .intersection(&query)
+                .copied()
+                .collect(),
+            None => self.index.orders_closed.clone(),
+        }
     }
 
     /// Returns the `ClientOrderId`s of all locally active orders.
@@ -2551,13 +2605,17 @@ impl Cache {
         strategy_id: Option<&StrategyId>,
         account_id: Option<&AccountId>,
     ) -> AHashSet<ClientOrderId> {
-        self.query_order_ids(
-            &self.index.orders_active_local,
-            venue,
-            instrument_id,
-            strategy_id,
-            account_id,
-        )
+        let query =
+            self.build_order_query_filter_set(venue, instrument_id, strategy_id, account_id);
+        match query {
+            Some(query) => self
+                .index
+                .orders_active_local
+                .intersection(&query)
+                .copied()
+                .collect(),
+            None => self.index.orders_active_local.clone(),
+        }
     }
 
     /// Returns the `ClientOrderId`s of all emulated orders.
@@ -2569,13 +2627,17 @@ impl Cache {
         strategy_id: Option<&StrategyId>,
         account_id: Option<&AccountId>,
     ) -> AHashSet<ClientOrderId> {
-        self.query_order_ids(
-            &self.index.orders_emulated,
-            venue,
-            instrument_id,
-            strategy_id,
-            account_id,
-        )
+        let query =
+            self.build_order_query_filter_set(venue, instrument_id, strategy_id, account_id);
+        match query {
+            Some(query) => self
+                .index
+                .orders_emulated
+                .intersection(&query)
+                .copied()
+                .collect(),
+            None => self.index.orders_emulated.clone(),
+        }
     }
 
     /// Returns the `ClientOrderId`s of all in-flight orders.
@@ -2587,13 +2649,17 @@ impl Cache {
         strategy_id: Option<&StrategyId>,
         account_id: Option<&AccountId>,
     ) -> AHashSet<ClientOrderId> {
-        self.query_order_ids(
-            &self.index.orders_inflight,
-            venue,
-            instrument_id,
-            strategy_id,
-            account_id,
-        )
+        let query =
+            self.build_order_query_filter_set(venue, instrument_id, strategy_id, account_id);
+        match query {
+            Some(query) => self
+                .index
+                .orders_inflight
+                .intersection(&query)
+                .copied()
+                .collect(),
+            None => self.index.orders_inflight.clone(),
+        }
     }
 
     /// Returns `PositionId`s of all positions.
@@ -2605,13 +2671,12 @@ impl Cache {
         strategy_id: Option<&StrategyId>,
         account_id: Option<&AccountId>,
     ) -> AHashSet<PositionId> {
-        self.query_position_ids(
-            &self.index.positions,
-            venue,
-            instrument_id,
-            strategy_id,
-            account_id,
-        )
+        let query =
+            self.build_position_query_filter_set(venue, instrument_id, strategy_id, account_id);
+        match query {
+            Some(query) => self.index.positions.intersection(&query).copied().collect(),
+            None => self.index.positions.clone(),
+        }
     }
 
     /// Returns the `PositionId`s of all open positions.
@@ -2623,13 +2688,17 @@ impl Cache {
         strategy_id: Option<&StrategyId>,
         account_id: Option<&AccountId>,
     ) -> AHashSet<PositionId> {
-        self.query_position_ids(
-            &self.index.positions_open,
-            venue,
-            instrument_id,
-            strategy_id,
-            account_id,
-        )
+        let query =
+            self.build_position_query_filter_set(venue, instrument_id, strategy_id, account_id);
+        match query {
+            Some(query) => self
+                .index
+                .positions_open
+                .intersection(&query)
+                .copied()
+                .collect(),
+            None => self.index.positions_open.clone(),
+        }
     }
 
     /// Returns the `PositionId`s of all closed positions.
@@ -2641,13 +2710,17 @@ impl Cache {
         strategy_id: Option<&StrategyId>,
         account_id: Option<&AccountId>,
     ) -> AHashSet<PositionId> {
-        self.query_position_ids(
-            &self.index.positions_closed,
-            venue,
-            instrument_id,
-            strategy_id,
-            account_id,
-        )
+        let query =
+            self.build_position_query_filter_set(venue, instrument_id, strategy_id, account_id);
+        match query {
+            Some(query) => self
+                .index
+                .positions_closed
+                .intersection(&query)
+                .copied()
+                .collect(),
+            None => self.index.positions_closed.clone(),
+        }
     }
 
     /// Returns the `ComponentId`s of all actors.
@@ -3015,16 +3088,18 @@ impl Cache {
         account_id: Option<&AccountId>,
         side: Option<OrderSide>,
     ) -> Vec<&OrderAny> {
+        let query =
+            self.build_order_query_filter_set(venue, instrument_id, strategy_id, account_id);
         let exec_algorithm_order_ids = self.index.exec_algorithm_orders.get(exec_algorithm_id);
+
+        if let Some(query) = query
+            && let Some(exec_algorithm_order_ids) = exec_algorithm_order_ids
+        {
+            let _exec_algorithm_order_ids = exec_algorithm_order_ids.intersection(&query);
+        }
+
         if let Some(exec_algorithm_order_ids) = exec_algorithm_order_ids {
-            let client_order_ids = self.query_order_ids(
-                exec_algorithm_order_ids,
-                venue,
-                instrument_id,
-                strategy_id,
-                account_id,
-            );
-            self.get_orders_for_ids(&client_order_ids, side)
+            self.get_orders_for_ids(exec_algorithm_order_ids, side)
         } else {
             Vec::new()
         }
