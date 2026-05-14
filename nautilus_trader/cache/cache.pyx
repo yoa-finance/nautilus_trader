@@ -156,6 +156,7 @@ cdef class Cache(CacheFacade):
         self._index_order_client: dict[ClientOrderId, ClientId] = {}
         self._index_position_strategy: dict[PositionId, StrategyId] = {}
         self._index_position_orders: dict[PositionId, set[ClientOrderId]] = {}
+        self._index_position_open_passive_reduce_only_orders: dict[PositionId, set[ClientOrderId]] = {}
         self._index_instrument_orders: dict[InstrumentId, set[ClientOrderId]] = {}
         self._index_instrument_positions: dict[InstrumentId, set[PositionId]] = {}
         self._index_instrument_position_snapshots: dict[InstrumentId, set[PositionId]] = {}
@@ -504,6 +505,7 @@ cdef class Cache(CacheFacade):
         cdef:
             AccountId account_id
             Order order
+            Order indexed_order
             Position position
         for account_id in self._accounts:
             if Venue(account_id.get_issuer()) not in self._index_venue_account:
@@ -656,6 +658,33 @@ cdef class Cache(CacheFacade):
                     f"{repr(position_id)} not found in self._cached_positions"
                 )
                 error_count += 1
+
+        for position_id, client_order_ids in self._index_position_open_passive_reduce_only_orders.items():
+            if position_id not in self._index_position_orders:
+                self._log.error(
+                    f"{failure} in _index_position_open_passive_reduce_only_orders: "
+                    f"{repr(position_id)} not found in self._index_position_orders"
+                )
+                error_count += 1
+
+            for client_order_id in client_order_ids:
+                indexed_order = self._orders.get(client_order_id)
+                if indexed_order is None:
+                    self._log.error(
+                        f"{failure} in _index_position_open_passive_reduce_only_orders: "
+                        f"{repr(client_order_id)} not found in self._cached_orders"
+                    )
+                    error_count += 1
+                elif not (
+                    indexed_order.is_reduce_only
+                    and indexed_order.is_open_c()
+                    and indexed_order.is_passive_c()
+                ):
+                    self._log.error(
+                        f"{failure} in _index_position_open_passive_reduce_only_orders: "
+                        f"{repr(client_order_id)} is not open passive reduce-only"
+                    )
+                    error_count += 1
 
         for instrument_id, client_order_ids in self._index_instrument_orders.items():
             for client_order_id in client_order_ids:
@@ -944,7 +973,12 @@ cdef class Cache(CacheFacade):
         Condition.not_none(client_order_id, "client_order_id")
 
         # Check if order exists and is safe to purge before popping
-        cdef Order order = self._orders.get(client_order_id)
+        cdef:
+            Order order = self._orders.get(client_order_id)
+            PositionId position_id = self._index_order_position.get(client_order_id)
+
+        if position_id is None and order is not None:
+            position_id = order.position_id
 
         if order is not None and order.is_open_c():
             self._log.warning(f"Order {client_order_id} found open when purging, skipping purge")
@@ -970,12 +1004,14 @@ cdef class Cache(CacheFacade):
                     if not account_orders:
                         self._index_account_orders.pop(order.account_id, None)
 
-            if order.position_id is not None:
-                position_orders = self._index_position_orders.get(order.position_id)
+            if position_id is not None:
+                position_orders = self._index_position_orders.get(position_id)
                 if position_orders is not None:
                     position_orders.discard(client_order_id)
                     if not position_orders:
-                        self._index_position_orders.pop(order.position_id, None)
+                        self._index_position_orders.pop(position_id, None)
+
+                self._sync_position_open_passive_reduce_only_order(position_id, client_order_id, order)
 
             if order.exec_algorithm_id is not None:
                 exec_algo_orders = self._index_exec_algorithm_orders.get(order.exec_algorithm_id)
@@ -1002,6 +1038,9 @@ cdef class Cache(CacheFacade):
             self._log.info(f"Purged order {client_order_id}", LogColor.BLUE)
 
         # Always clean up order indices (even if order was not in cache)
+        if position_id is not None:
+            self._sync_position_open_passive_reduce_only_order(position_id, client_order_id)
+
         self._index_order_position.pop(client_order_id, None)
         self._index_order_client.pop(client_order_id, None)
         self._index_client_order_ids.pop(client_order_id, None)
@@ -1083,6 +1122,7 @@ cdef class Cache(CacheFacade):
         # Always clean up position indices (even if position not in cache)
         self._index_position_strategy.pop(position_id, None)
         self._index_position_orders.pop(position_id, None)
+        self._index_position_open_passive_reduce_only_orders.pop(position_id, None)
         self._index_positions.discard(position_id)
         self._index_positions_open.discard(position_id)
         self._index_positions_closed.discard(position_id)
@@ -1163,6 +1203,7 @@ cdef class Cache(CacheFacade):
         self._index_order_client.clear()
         self._index_position_strategy.clear()
         self._index_position_orders.clear()
+        self._index_position_open_passive_reduce_only_orders.clear()
         self._index_instrument_orders.clear()
         self._index_instrument_positions.clear()
         self._index_instrument_position_snapshots.clear()
@@ -1369,6 +1410,7 @@ cdef class Cache(CacheFacade):
             index_position_orders = self._index_position_orders[position_id]
             for client_order_id in position.client_order_ids_c():
                 index_position_orders.add(client_order_id)
+                self._sync_position_open_passive_reduce_only_order(position_id, client_order_id)
 
             # 4: Build _index_instrument_positions -> {InstrumentId, {PositionId}}
             if position.instrument_id not in self._index_instrument_positions:
@@ -1396,6 +1438,36 @@ cdef class Cache(CacheFacade):
 
             # 10: Build _index_strategies -> {StrategyId}
             self._index_strategies.add(position.strategy_id)
+
+    cdef void _sync_position_open_passive_reduce_only_order(
+        self,
+        PositionId position_id,
+        ClientOrderId client_order_id,
+        Order order = None,
+    ):
+        if position_id is None:
+            return
+
+        if order is None:
+            order = self._orders.get(client_order_id)
+
+        cdef set position_orders = self._index_position_open_passive_reduce_only_orders.get(position_id)
+        if (
+            order is not None
+            and order.is_reduce_only
+            and order.is_open_c()
+            and order.is_passive_c()
+        ):
+            if not position_orders:
+                self._index_position_open_passive_reduce_only_orders[position_id] = {client_order_id}
+            else:
+                position_orders.add(client_order_id)
+            return
+
+        if position_orders is not None:
+            position_orders.discard(client_order_id)
+            if not position_orders:
+                self._index_position_open_passive_reduce_only_orders.pop(position_id, None)
 
     cdef void _assign_position_id_to_contingencies(self, Order order):
         cdef:
@@ -2296,6 +2368,8 @@ cdef class Cache(CacheFacade):
         else:
             position_orders.add(client_order_id)
 
+        self._sync_position_open_passive_reduce_only_order(position_id, client_order_id)
+
         # Index: StrategyId -> set[PositionId]
         cdef set strategy_positions = self._index_strategy_positions.get(strategy_id)
         if not strategy_positions:
@@ -2559,6 +2633,7 @@ cdef class Cache(CacheFacade):
 
         """
         Condition.not_none(order, "order")
+        cdef PositionId position_id
 
         # Update venue order ID
         if order.venue_order_id is not None and order.venue_order_id not in self._index_venue_order_ids:
@@ -2603,6 +2678,12 @@ cdef class Cache(CacheFacade):
                 self._index_account_orders[order.account_id] = set()
 
             self._index_account_orders[order.account_id].add(order.client_order_id)
+
+        position_id = self._index_order_position.get(order.client_order_id)
+        if position_id is None and order.position_id is not None and order.position_id in self._index_position_orders:
+            position_id = order.position_id
+        if position_id is not None:
+            self._sync_position_open_passive_reduce_only_order(position_id, order.client_order_id, order)
 
         # Update own book
         if self._own_order_books:
@@ -4844,6 +4925,41 @@ cdef class Cache(CacheFacade):
                     f"Order {client_order_id} missing in cache for position {position_id}. "
                     "Valid for spread leg fills."
                 )
+
+        return orders
+
+    cpdef list open_passive_reduce_only_orders_for_position(self, PositionId position_id):
+        """
+        Return open passive reduce-only orders for the given position ID.
+
+        Parameters
+        ----------
+        position_id : PositionId
+            The position ID for the orders.
+
+        Returns
+        -------
+        list[Order]
+
+        """
+        Condition.not_none(position_id, "position_id")
+
+        cdef set client_order_ids = self._index_position_open_passive_reduce_only_orders.get(position_id)
+        if not client_order_ids:
+            return []
+
+        cdef:
+            list orders = []
+            Order order
+        for client_order_id in client_order_ids:
+            order = self._orders.get(client_order_id)
+            if (
+                order is not None
+                and order.is_reduce_only
+                and order.is_open_c()
+                and order.is_passive_c()
+            ):
+                orders.append(order)
 
         return orders
 

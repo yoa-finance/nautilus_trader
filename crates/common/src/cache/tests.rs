@@ -678,6 +678,139 @@ fn test_orders_for_position(mut cache: Cache, audusd_sim: CurrencyPair) {
 }
 
 #[rstest]
+fn test_open_passive_reduce_only_orders_for_position(mut cache: Cache, audusd_sim: CurrencyPair) {
+    let position_id = PositionId::test_default();
+    let account_id = AccountId::new("SIM-001");
+
+    let mut reduce_only_order = OrderTestBuilder::new(OrderType::Limit)
+        .instrument_id(audusd_sim.id)
+        .side(OrderSide::Sell)
+        .price(Price::from("1.00000"))
+        .quantity(Quantity::from(100_000))
+        .client_order_id(ClientOrderId::new("O-RO-LIMIT"))
+        .reduce_only(true)
+        .build();
+    cache
+        .add_order(reduce_only_order.clone(), Some(position_id), None, false)
+        .unwrap();
+
+    assert!(
+        cache
+            .open_passive_reduce_only_orders_for_position(&position_id)
+            .is_empty()
+    );
+
+    reduce_only_order
+        .apply(TestOrderEventStubs::submitted(
+            &reduce_only_order,
+            account_id,
+        ))
+        .unwrap();
+    cache.update_order(&reduce_only_order).unwrap();
+    reduce_only_order
+        .apply(TestOrderEventStubs::accepted(
+            &reduce_only_order,
+            account_id,
+            VenueOrderId::new("V-RO-LIMIT"),
+        ))
+        .unwrap();
+    cache.update_order(&reduce_only_order).unwrap();
+
+    assert_eq!(
+        cache.open_passive_reduce_only_orders_for_position(&position_id),
+        vec![&reduce_only_order]
+    );
+
+    let mut market_reduce_only_order = OrderTestBuilder::new(OrderType::Market)
+        .instrument_id(audusd_sim.id)
+        .side(OrderSide::Sell)
+        .quantity(Quantity::from(100_000))
+        .client_order_id(ClientOrderId::new("O-RO-MARKET"))
+        .reduce_only(true)
+        .build();
+    cache
+        .add_order(
+            market_reduce_only_order.clone(),
+            Some(position_id),
+            None,
+            false,
+        )
+        .unwrap();
+    market_reduce_only_order
+        .apply(TestOrderEventStubs::submitted(
+            &market_reduce_only_order,
+            account_id,
+        ))
+        .unwrap();
+    cache.update_order(&market_reduce_only_order).unwrap();
+    market_reduce_only_order
+        .apply(TestOrderEventStubs::accepted(
+            &market_reduce_only_order,
+            account_id,
+            VenueOrderId::new("V-RO-MARKET"),
+        ))
+        .unwrap();
+    cache.update_order(&market_reduce_only_order).unwrap();
+
+    let mut non_reduce_only_order = OrderTestBuilder::new(OrderType::Limit)
+        .instrument_id(audusd_sim.id)
+        .side(OrderSide::Sell)
+        .price(Price::from("1.00010"))
+        .quantity(Quantity::from(100_000))
+        .client_order_id(ClientOrderId::new("O-LIMIT"))
+        .build();
+    cache
+        .add_order(
+            non_reduce_only_order.clone(),
+            Some(position_id),
+            None,
+            false,
+        )
+        .unwrap();
+    non_reduce_only_order
+        .apply(TestOrderEventStubs::submitted(
+            &non_reduce_only_order,
+            account_id,
+        ))
+        .unwrap();
+    cache.update_order(&non_reduce_only_order).unwrap();
+    non_reduce_only_order
+        .apply(TestOrderEventStubs::accepted(
+            &non_reduce_only_order,
+            account_id,
+            VenueOrderId::new("V-LIMIT"),
+        ))
+        .unwrap();
+    cache.update_order(&non_reduce_only_order).unwrap();
+
+    assert_eq!(
+        cache.open_passive_reduce_only_orders_for_position(&position_id),
+        vec![&reduce_only_order]
+    );
+
+    reduce_only_order
+        .apply(TestOrderEventStubs::canceled(
+            &reduce_only_order,
+            account_id,
+            Some(VenueOrderId::new("V-RO-LIMIT")),
+        ))
+        .unwrap();
+    cache.update_order(&reduce_only_order).unwrap();
+
+    assert!(
+        cache
+            .open_passive_reduce_only_orders_for_position(&position_id)
+            .is_empty()
+    );
+
+    let historical_orders = cache.orders_for_position(&position_id);
+    assert_eq!(historical_orders.len(), 3);
+    assert!(historical_orders.contains(&&reduce_only_order));
+    assert!(historical_orders.contains(&&market_reduce_only_order));
+    assert!(historical_orders.contains(&&non_reduce_only_order));
+}
+
+#[rstest]
 fn test_correct_order_indexing(mut cache: Cache) {
     let binance = Venue::from("BINANCE");
     let bybit = Venue::from("BYBIT");

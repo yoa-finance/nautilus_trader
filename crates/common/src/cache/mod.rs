@@ -181,6 +181,39 @@ impl Cache {
         }
     }
 
+    fn order_is_open_passive_reduce_only(order: &OrderAny) -> bool {
+        order.is_reduce_only() && order.is_open() && order.is_passive()
+    }
+
+    fn set_position_open_passive_reduce_only_order(
+        &mut self,
+        position_id: PositionId,
+        client_order_id: ClientOrderId,
+        should_index: bool,
+    ) {
+        if should_index {
+            self.index
+                .position_open_passive_reduce_only_orders
+                .entry(position_id)
+                .or_default()
+                .insert(client_order_id);
+            return;
+        }
+
+        if let Some(position_orders) = self
+            .index
+            .position_open_passive_reduce_only_orders
+            .get_mut(&position_id)
+        {
+            position_orders.remove(&client_order_id);
+            if position_orders.is_empty() {
+                self.index
+                    .position_open_passive_reduce_only_orders
+                    .remove(&position_id);
+            }
+        }
+    }
+
     /// Returns the cache instances memory address.
     #[must_use]
     pub fn memory_address(&self) -> String {
@@ -475,11 +508,26 @@ impl Cache {
                 .insert(*position_id, position.strategy_id);
 
             // 3: Build index.position_orders -> {PositionId, {ClientOrderId}}
+            let client_order_ids = position.client_order_ids();
             self.index
                 .position_orders
                 .entry(*position_id)
                 .or_default()
-                .extend(position.client_order_ids());
+                .extend(client_order_ids.iter().copied());
+
+            for client_order_id in client_order_ids {
+                if self
+                    .orders
+                    .get(&client_order_id)
+                    .is_some_and(Self::order_is_open_passive_reduce_only)
+                {
+                    self.index
+                        .position_open_passive_reduce_only_orders
+                        .entry(*position_id)
+                        .or_default()
+                        .insert(client_order_id);
+                }
+            }
 
             // 4: Build index.instrument_positions -> {InstrumentId, {PositionId}}
             self.index
@@ -753,6 +801,34 @@ impl Cache {
                     "{failure} in `index.position_orders`: {position_id} not found in `self.positions`",
                 );
                 error_count += 1;
+            }
+        }
+
+        for (position_id, client_order_ids) in &self.index.position_open_passive_reduce_only_orders
+        {
+            if !self.index.position_orders.contains_key(position_id) {
+                log::error!(
+                    "{failure} in `index.position_open_passive_reduce_only_orders`: {position_id} not found in `index.position_orders`",
+                );
+                error_count += 1;
+            }
+
+            for client_order_id in client_order_ids {
+                match self.orders.get(client_order_id) {
+                    Some(order) if Self::order_is_open_passive_reduce_only(order) => {}
+                    Some(_) => {
+                        log::error!(
+                            "{failure} in `index.position_open_passive_reduce_only_orders`: {client_order_id} is not open passive reduce-only",
+                        );
+                        error_count += 1;
+                    }
+                    None => {
+                        log::error!(
+                            "{failure} in `index.position_open_passive_reduce_only_orders`: {client_order_id} not found in `self.orders`",
+                        );
+                        error_count += 1;
+                    }
+                }
             }
         }
 
@@ -1033,6 +1109,12 @@ impl Cache {
     pub fn purge_order(&mut self, client_order_id: ClientOrderId) {
         // Check if order exists and is safe to purge before removing
         let order = self.orders.get(&client_order_id).cloned();
+        let position_id = self
+            .index
+            .order_position
+            .get(&client_order_id)
+            .copied()
+            .or_else(|| order.as_ref().and_then(|ord| ord.position_id()));
 
         // Prevent purging open orders
         if let Some(ref ord) = order
@@ -1072,13 +1154,19 @@ impl Cache {
             }
 
             // Remove from position orders index if associated with a position
-            if let Some(position_id) = ord.position_id()
+            if let Some(position_id) = position_id
                 && let Some(position_orders) = self.index.position_orders.get_mut(&position_id)
             {
                 position_orders.remove(&client_order_id);
                 if position_orders.is_empty() {
                     self.index.position_orders.remove(&position_id);
                 }
+
+                self.set_position_open_passive_reduce_only_order(
+                    position_id,
+                    client_order_id,
+                    false,
+                );
             }
 
             // Remove from exec algorithm orders index if it has an exec algorithm
@@ -1126,6 +1214,10 @@ impl Cache {
         }
 
         // Always clean up order indices (even if order was not in cache)
+        if let Some(position_id) = position_id {
+            self.set_position_open_passive_reduce_only_order(position_id, client_order_id, false);
+        }
+
         self.index.order_position.remove(&client_order_id);
         let strategy_id = self.index.order_strategy.remove(&client_order_id);
         self.index.order_client.remove(&client_order_id);
@@ -1223,6 +1315,9 @@ impl Cache {
         // Always clean up position indices (even if position not in cache)
         self.index.position_strategy.remove(&position_id);
         self.index.position_orders.remove(&position_id);
+        self.index
+            .position_open_passive_reduce_only_orders
+            .remove(&position_id);
         self.index.positions.remove(&position_id);
         self.index.positions_open.remove(&position_id);
         self.index.positions_closed.remove(&position_id);
@@ -1832,6 +1927,7 @@ impl Cache {
         let strategy_id = order.strategy_id();
         let exec_algorithm_id = order.exec_algorithm_id();
         let exec_spawn_id = order.exec_spawn_id();
+        let should_index_open_passive_reduce_only = Self::order_is_open_passive_reduce_only(&order);
 
         if !replace_existing {
             check_key_not_in_map(
@@ -1937,6 +2033,14 @@ impl Cache {
 
         self.orders.insert(client_order_id, order);
 
+        if let Some(position_id) = self.index.order_position.get(&client_order_id).copied() {
+            self.set_position_open_passive_reduce_only_order(
+                position_id,
+                client_order_id,
+                should_index_open_passive_reduce_only,
+            );
+        }
+
         Ok(())
     }
 
@@ -1991,6 +2095,14 @@ impl Cache {
             .entry(*position_id)
             .or_default()
             .insert(*client_order_id);
+
+        if let Some(order) = self.orders.get(client_order_id) {
+            self.set_position_open_passive_reduce_only_order(
+                *position_id,
+                *client_order_id,
+                Self::order_is_open_passive_reduce_only(order),
+            );
+        }
 
         // Index: StrategyId -> set[PositionId]
         self.index
@@ -2137,6 +2249,24 @@ impl Cache {
                 .entry(account_id)
                 .or_default()
                 .insert(client_order_id);
+        }
+
+        let position_id = self
+            .index
+            .order_position
+            .get(&client_order_id)
+            .copied()
+            .or_else(|| {
+                order
+                    .position_id()
+                    .filter(|position_id| self.index.position_orders.contains_key(position_id))
+            });
+        if let Some(position_id) = position_id {
+            self.set_position_open_passive_reduce_only_order(
+                position_id,
+                client_order_id,
+                Self::order_is_open_passive_reduce_only(order),
+            );
         }
 
         // Update own book
@@ -2819,6 +2949,27 @@ impl Cache {
             }
             None => Vec::new(),
         }
+    }
+
+    /// Returns references to open passive reduce-only orders for the `position_id`.
+    #[must_use]
+    pub fn open_passive_reduce_only_orders_for_position(
+        &self,
+        position_id: &PositionId,
+    ) -> Vec<&OrderAny> {
+        let Some(client_order_ids) = self
+            .index
+            .position_open_passive_reduce_only_orders
+            .get(position_id)
+        else {
+            return Vec::new();
+        };
+
+        client_order_ids
+            .iter()
+            .filter_map(|client_order_id| self.orders.get(client_order_id))
+            .filter(|order| Self::order_is_open_passive_reduce_only(order))
+            .collect()
     }
 
     /// Returns whether an order with the `client_order_id` exists.

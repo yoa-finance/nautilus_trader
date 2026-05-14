@@ -22,7 +22,7 @@ use std::hint::black_box;
 use criterion::{Criterion, criterion_group, criterion_main};
 use nautilus_common::cache::Cache;
 use nautilus_model::{
-    identifiers::{InstrumentId, Venue},
+    identifiers::{InstrumentId, PositionId, Venue},
     orders::stubs::create_order_list_sample,
 };
 
@@ -46,6 +46,19 @@ fn build_single_instrument_historical_order_cache() -> (Cache, InstrumentId) {
     }
 
     (cache, instrument)
+}
+
+fn build_single_position_historical_order_cache() -> (Cache, PositionId) {
+    let position_id = PositionId::from("P-HISTORICAL");
+    let orders = create_order_list_sample(1, 1, 100_000);
+    let mut cache = Cache::default();
+    for order in orders {
+        cache
+            .add_order(order, Some(position_id), None, false)
+            .unwrap();
+    }
+
+    (cache, position_id)
 }
 
 fn bench_set_intersections(c: &mut Criterion) {
@@ -90,6 +103,7 @@ fn bench_set_intersections(c: &mut Criterion) {
 
 fn bench_state_scoped_queries(c: &mut Criterion) {
     let (cache, instrument) = build_single_instrument_historical_order_cache();
+    let (position_cache, position_id) = build_single_position_historical_order_cache();
 
     let mut group = c.benchmark_group("Cache state scoped queries");
 
@@ -98,6 +112,18 @@ fn bench_state_scoped_queries(c: &mut Criterion) {
             black_box(cache.orders_open(None, Some(black_box(&instrument)), None, None, None));
         });
     });
+
+    group.bench_function(
+        "open passive reduce-only orders over 100k historical position orders",
+        |b| {
+            b.iter(|| {
+                black_box(
+                    position_cache
+                        .open_passive_reduce_only_orders_for_position(black_box(&position_id)),
+                );
+            });
+        },
+    );
 
     group.finish();
 }

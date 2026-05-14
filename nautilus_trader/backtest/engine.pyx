@@ -7586,6 +7586,9 @@ cdef class OrderMatchingEngine:
         if position is None:
             return  # Fill completed
 
+        if not self._use_reduce_only:
+            return  # Fill completed
+
         # Check reduce only orders for position
         # Previously all reduce-only orders were force-synced to the net position size,
         # which incorrectly merged quantities across independent bracket orders.
@@ -7598,48 +7601,42 @@ cdef class OrderMatchingEngine:
             Quantity cached_ro_filled
             Quantity cached_parent_filled
             Quantity target_qty
-        for ro_order in self.cache.orders_for_position(position.id):
-            if (
-                self._use_reduce_only
-                and ro_order.is_reduce_only
-                and ro_order.is_open_c()
-                and ro_order.is_passive_c()
-            ):
-                # Skip the order being filled - it's already being processed
-                if ro_order.client_order_id == order.client_order_id:
-                    continue
+        for ro_order in self.cache.open_passive_reduce_only_orders_for_position(position.id):
+            # Skip the order being filled - it's already being processed
+            if ro_order.client_order_id == order.client_order_id:
+                continue
 
-                if position.quantity._mem.raw == 0:
-                    self.cancel_order(ro_order)
-                    continue
+            if position.quantity._mem.raw == 0:
+                self.cancel_order(ro_order)
+                continue
 
-                # Order object may not be updated yet with fills
-                cached_ro_filled = self._cached_filled_qty.get(ro_order.client_order_id, ro_order.filled_qty)
+            # Order object may not be updated yet with fills
+            cached_ro_filled = self._cached_filled_qty.get(ro_order.client_order_id, ro_order.filled_qty)
 
-                # Use Quantity objects for comparisons to handle precision correctly
-                parent_order = None
-                if ro_order.parent_order_id is not None:
-                    parent_order = self.cache.order(ro_order.parent_order_id)
+            # Use Quantity objects for comparisons to handle precision correctly
+            parent_order = None
+            if ro_order.parent_order_id is not None:
+                parent_order = self.cache.order(ro_order.parent_order_id)
 
-                target_qty = position.quantity
-                if parent_order is not None:
-                    cached_parent_filled = self._cached_filled_qty.get(parent_order.client_order_id, parent_order.filled_qty)
+            target_qty = position.quantity
+            if parent_order is not None:
+                cached_parent_filled = self._cached_filled_qty.get(parent_order.client_order_id, parent_order.filled_qty)
 
-                    # Use minimum of parent's filled qty and position qty
-                    if cached_parent_filled < position.quantity:
-                        target_qty = cached_parent_filled
+                # Use minimum of parent's filled qty and position qty
+                if cached_parent_filled < position.quantity:
+                    target_qty = cached_parent_filled
 
-                # Safety clamp: never update total below what's already filled
-                if cached_ro_filled > target_qty:
-                    target_qty = cached_ro_filled
+            # Safety clamp: never update total below what's already filled
+            if cached_ro_filled > target_qty:
+                target_qty = cached_ro_filled
 
-                if ro_order.quantity != target_qty:
-                    self.update_order(
-                        ro_order,
-                        target_qty,
-                        price=ro_order.price if ro_order.has_price_c() else None,
-                        trigger_price=ro_order.trigger_price if ro_order.has_trigger_price_c() else None,
-                    )
+            if ro_order.quantity != target_qty:
+                self.update_order(
+                    ro_order,
+                    target_qty,
+                    price=ro_order.price if ro_order.has_price_c() else None,
+                    trigger_price=ro_order.trigger_price if ro_order.has_trigger_price_c() else None,
+                )
 
 # -- IDENTIFIER GENERATORS ------------------------------------------------------------------------
 
