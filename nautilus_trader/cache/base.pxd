@@ -175,7 +175,6 @@ cdef class CacheFacade:
     cpdef list orders_emulated(self, Venue venue=*, InstrumentId instrument_id=*, StrategyId strategy_id=*, OrderSide side=*, AccountId account_id=*)
     cpdef list orders_inflight(self, Venue venue=*, InstrumentId instrument_id=*, StrategyId strategy_id=*, OrderSide side=*, AccountId account_id=*)
     cpdef list orders_for_position(self, PositionId position_id)
-    cpdef list open_passive_reduce_only_orders_for_position(self, PositionId position_id)
     cpdef bint order_exists(self, ClientOrderId client_order_id)
     cpdef bint is_order_open(self, ClientOrderId client_order_id)
     cpdef bint is_order_closed(self, ClientOrderId client_order_id)

@@ -686,20 +686,6 @@ impl PyCache {
             .collect()
     }
 
-    #[pyo3(name = "open_passive_reduce_only_orders_for_position")]
-    fn py_open_passive_reduce_only_orders_for_position(
-        &self,
-        py: Python,
-        position_id: PositionId,
-    ) -> PyResult<Vec<Py<PyAny>>> {
-        let cache = self.0.borrow();
-        cache
-            .open_passive_reduce_only_orders_for_position(&position_id)
-            .into_iter()
-            .map(|o| order_any_to_pyobject(py, o.clone()))
-            .collect()
-    }
-
     #[pyo3(name = "order_exists")]
     fn py_order_exists(&self, client_order_id: ClientOrderId) -> bool {
         self.0.borrow().order_exists(&client_order_id)
@@ -2084,19 +2070,6 @@ impl Cache {
         position_id: PositionId,
     ) -> PyResult<Vec<Py<PyAny>>> {
         self.orders_for_position(&position_id)
-            .into_iter()
-            .map(|o| order_any_to_pyobject(py, o.clone()))
-            .collect()
-    }
-
-    /// Returns references to open passive reduce-only orders for the `position_id`.
-    #[pyo3(name = "open_passive_reduce_only_orders_for_position")]
-    fn py_open_passive_reduce_only_orders_for_position(
-        &self,
-        py: Python,
-        position_id: PositionId,
-    ) -> PyResult<Vec<Py<PyAny>>> {
-        self.open_passive_reduce_only_orders_for_position(&position_id)
             .into_iter()
             .map(|o| order_any_to_pyobject(py, o.clone()))
             .collect()

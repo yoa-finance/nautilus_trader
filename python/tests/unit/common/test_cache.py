@@ -125,7 +125,6 @@ CACHE_LIST_CASES = [
     ),
     ("orders_for_exec_spawn", (CLIENT_ORDER_ID,)),
     ("orders_for_position", (POSITION_ID,)),
-    ("open_passive_reduce_only_orders_for_position", (POSITION_ID,)),
     ("orders_inflight", ()),
     ("orders_inflight", (VENUE, INSTRUMENT_ID, STRATEGY_ID, ACCOUNT_ID, ORDER_SIDE)),
     ("orders_open", ()),

@@ -32,8 +32,6 @@ pub struct CacheIndex {
     pub(crate) order_client: AHashMap<ClientOrderId, ClientId>,
     pub(crate) position_strategy: AHashMap<PositionId, StrategyId>,
     pub(crate) position_orders: AHashMap<PositionId, AHashSet<ClientOrderId>>,
-    pub(crate) position_open_passive_reduce_only_orders:
-        AHashMap<PositionId, AHashSet<ClientOrderId>>,
     pub(crate) instrument_orders: AHashMap<InstrumentId, AHashSet<ClientOrderId>>,
     pub(crate) instrument_positions: AHashMap<InstrumentId, AHashSet<PositionId>>,
     pub(crate) strategy_orders: AHashMap<StrategyId, AHashSet<ClientOrderId>>,
@@ -71,7 +69,6 @@ impl Default for CacheIndex {
             order_client: AHashMap::new(),
             position_strategy: AHashMap::new(),
             position_orders: AHashMap::new(),
-            position_open_passive_reduce_only_orders: AHashMap::new(),
             instrument_orders: AHashMap::new(),
             instrument_positions: AHashMap::new(),
             strategy_orders: AHashMap::new(),
@@ -110,7 +107,6 @@ impl CacheIndex {
         self.order_client.clear();
         self.position_strategy.clear();
         self.position_orders.clear();
-        self.position_open_passive_reduce_only_orders.clear();
         self.instrument_orders.clear();
         self.instrument_positions.clear();
         self.strategy_orders.clear();

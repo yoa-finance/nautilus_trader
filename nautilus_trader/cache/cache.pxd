@@ -96,7 +96,6 @@ cdef class Cache(CacheFacade):
     cdef dict _index_order_client
     cdef dict _index_position_strategy
     cdef dict _index_position_orders
-    cdef dict _index_position_open_passive_reduce_only_orders
     cdef dict _index_instrument_orders
     cdef dict _index_instrument_positions
     cdef dict _index_instrument_position_snapshots
@@ -162,7 +161,6 @@ cdef class Cache(CacheFacade):
     cdef set _intersect_candidate_sets(self, list candidates)
     cdef set _query_order_ids(self, set state_ids, Venue venue, InstrumentId instrument_id, StrategyId strategy_id, AccountId account_id)
     cdef set _query_position_ids(self, set state_ids, Venue venue, InstrumentId instrument_id, StrategyId strategy_id, AccountId account_id)
-    cdef void _sync_position_open_passive_reduce_only_order(self, PositionId position_id, ClientOrderId client_order_id, Order order=*)
     cdef list _get_orders_for_ids(self, set client_order_ids, OrderSide side)
     cdef list _get_positions_for_ids(self, set position_ids, PositionSide side)
     cdef void _assign_position_id_to_contingencies(self, Order order)

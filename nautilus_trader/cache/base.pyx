@@ -401,10 +401,6 @@ cdef class CacheFacade:
         """Abstract method (implement in subclass)."""
         raise NotImplementedError("method `orders_for_position` must be implemented in the subclass")  # pragma: no cover
 
-    cpdef list open_passive_reduce_only_orders_for_position(self, PositionId position_id):
-        """Abstract method (implement in subclass)."""
-        raise NotImplementedError("method `open_passive_reduce_only_orders_for_position` must be implemented in the subclass")  # pragma: no cover
-
     cpdef bint order_exists(self, ClientOrderId client_order_id):
         """Abstract method (implement in subclass)."""
         raise NotImplementedError("method `order_exists` must be implemented in the subclass")  # pragma: no cover
