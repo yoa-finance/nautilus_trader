@@ -78,6 +78,7 @@ env/
 *.sh
 !scripts/ci/install-cargo-nextest.sh
 !scripts/ci/verify-ci-inputs.sh
+!scripts/release/publish-stratneo-wheel-local.sh
 *tmp/
 *temp/
 

@@ -18,12 +18,14 @@ fi
 
 echo "Validating wheel count in dist/ directory..."
 
-wheel_count=$(find dist/ -name "nautilus_trader-*.whl" -type f | wc -l)
+dist_dir="${DIST_DIR:-dist}"
+wheel_glob="${WHEEL_GLOB:-*.whl}"
+wheel_count=$(find "$dist_dir/" -name "$wheel_glob" -type f | wc -l)
 
 if [ "$wheel_count" -ne "$expected_count" ]; then
   echo "ERROR: Expected $expected_count wheels, found $wheel_count" >&2
   echo "Downloaded wheels:" >&2
-  find dist/ -name "nautilus_trader-*.whl" -type f -ls >&2
+  find "$dist_dir/" -name "$wheel_glob" -type f -ls >&2
   exit 1
 fi
 

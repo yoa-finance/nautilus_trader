@@ -818,6 +818,29 @@ class TestCache:
         assert self.cache.orders_total_count(side=OrderSide.BUY) == 1
         assert self.cache.orders_total_count(side=OrderSide.SELL) == 0
 
+    def test_order_id_queries_return_defensive_snapshots(self):
+        # Arrange
+        order = self.strategy.order_factory.stop_market(
+            AUDUSD_SIM.id,
+            OrderSide.BUY,
+            Quantity.from_int(100_000),
+            Price.from_str("1.00000"),
+        )
+        self.cache.add_order(order, PositionId("P-1"))
+
+        order.apply(TestEventStubs.order_submitted(order))
+        self.cache.update_order(order)
+        order.apply(TestEventStubs.order_accepted(order))
+        self.cache.update_order(order)
+
+        # Act
+        open_ids = self.cache.client_order_ids_open(instrument_id=order.instrument_id)
+        open_ids.clear()
+
+        # Assert
+        assert self.cache.is_order_open(order.client_order_id)
+        assert order in self.cache.orders_open(instrument_id=order.instrument_id)
+
     def test_update_order_for_closed_order(self):
         # Arrange
         order = self.strategy.order_factory.market(
