@@ -14,7 +14,9 @@
 # -------------------------------------------------------------------------------------------------
 
 import heapq
+import os
 import pickle
+import time
 import uuid
 from collections import deque
 from decimal import Decimal
@@ -474,6 +476,20 @@ cdef class BacktestEngine:
 
         """
         return self._kernel.portfolio
+
+    cpdef dict stratneo_profile_snapshot(self):
+        cdef dict venues = {}
+        cdef Venue venue_id
+        cdef SimulatedExchange venue
+        for venue_id, venue in self._venues.items():
+            venues[str(venue_id)] = venue.stratneo_profile_snapshot()
+
+        return {
+            "component": "backtest_engine",
+            "run_config_id": self._run_config_id,
+            "venues": venues,
+            "samples": [],
+        }
 
     def get_log_guard(self) -> nautilus_pyo3.LogGuard | LogGuard | None:
         """
@@ -2860,6 +2876,14 @@ cdef class SimulatedExchange:
         self._message_queue = deque()
         self._inflight_queue: list[tuple[(uint64_t, uint64_t), TradingCommand]] = []
         self._inflight_counter: dict[uint64_t, uint64_t] = {}
+        self._stratneo_profile_enabled = os.environ.get(
+            "NAUTILUS_STRATNEO_PORTFOLIO_PROFILE",
+            "1",
+        ).lower() not in {"0", "false", "no", "off"}
+        self._profile_trading_command_calls = 0
+        self._profile_trading_command_ns = 0
+        self._profile_matching_process_order_calls = 0
+        self._profile_matching_process_order_ns = 0
 
         # For direct communication from SpreadQuoteAggregator
         spread_quote_endpoint = f"SimulatedExchange.process_new_quote.{venue}"
@@ -2873,6 +2897,27 @@ cdef class SimulatedExchange:
             f"oms_type={oms_type_to_str(self.oms_type)}, "
             f"account_type={account_type_to_str(self.account_type)})"
         )
+
+    cpdef dict stratneo_profile_snapshot(self):
+        cdef dict matching_engines = {}
+        cdef InstrumentId instrument_id
+        cdef OrderMatchingEngine matching_engine
+        for instrument_id, matching_engine in self._matching_engines.items():
+            matching_engines[str(instrument_id)] = matching_engine.stratneo_profile_snapshot()
+
+        return {
+            "component": "simulated_exchange",
+            "venue": str(self.id),
+            "enabled": bool(self._stratneo_profile_enabled),
+            "summary": {
+                "trading_command_calls": self._profile_trading_command_calls,
+                "trading_command_total_ms": self._profile_trading_command_ns / 1_000_000.0,
+                "matching_process_order_calls": self._profile_matching_process_order_calls,
+                "matching_process_order_total_ms": self._profile_matching_process_order_ns / 1_000_000.0,
+            },
+            "matching_engines": matching_engines,
+            "samples": [],
+        }
 
 # -- REGISTRATION ---------------------------------------------------------------------------------
 
@@ -3654,6 +3699,12 @@ cdef class SimulatedExchange:
         self._log.info("Reset")
 
     cdef void _process_trading_command(self, TradingCommand command):
+        cdef uint64_t profile_start_ns = 0
+        cdef uint64_t profile_step_start_ns = 0
+        if self._stratneo_profile_enabled:
+            self._profile_trading_command_calls += 1
+            profile_start_ns = time.perf_counter_ns()
+
         cdef Instrument instrument
         cdef OrderMatchingEngine matching_engine = self._matching_engines.get(command.instrument_id)
         if matching_engine is None:
@@ -3663,10 +3714,20 @@ cdef class SimulatedExchange:
             Order order
             list[Order] orders
         if isinstance(command, SubmitOrder):
+            if self._stratneo_profile_enabled:
+                profile_step_start_ns = time.perf_counter_ns()
             matching_engine.process_order(command.order, self.exec_client.account_id)
+            if self._stratneo_profile_enabled:
+                self._profile_matching_process_order_calls += 1
+                self._profile_matching_process_order_ns += time.perf_counter_ns() - profile_step_start_ns
         elif isinstance(command, SubmitOrderList):
             for order in command.order_list.orders:
+                if self._stratneo_profile_enabled:
+                    profile_step_start_ns = time.perf_counter_ns()
                 matching_engine.process_order(order, self.exec_client.account_id)
+                if self._stratneo_profile_enabled:
+                    self._profile_matching_process_order_calls += 1
+                    self._profile_matching_process_order_ns += time.perf_counter_ns() - profile_step_start_ns
         elif isinstance(command, ModifyOrder):
             # Check if order is in SUBMITTED status or PENDING_UPDATE with previous SUBMITTED status
             # (bracket orders not yet at matching engine)
@@ -3684,6 +3745,9 @@ cdef class SimulatedExchange:
             matching_engine.process_cancel_all(command, self.exec_client.account_id)
         elif isinstance(command, BatchCancelOrders):
             matching_engine.process_batch_cancel(command, self.exec_client.account_id)
+
+        if self._stratneo_profile_enabled:
+            self._profile_trading_command_ns += time.perf_counter_ns() - profile_start_ns
 
     cdef void _process_modify_submitted_order(self, ModifyOrder command):
         cdef Order order = self.cache.order(command.client_order_id)
@@ -3973,6 +4037,14 @@ cdef class OrderMatchingEngine:
         self._position_count = 0
         self._order_count = 0
         self._execution_count = 0
+        self._stratneo_profile_enabled = os.environ.get(
+            "NAUTILUS_STRATNEO_PORTFOLIO_PROFILE",
+            "1",
+        ).lower() not in {"0", "false", "no", "off"}
+        self._profile_fill_market_order_calls = 0
+        self._profile_fill_market_order_ns = 0
+        self._profile_fill_order_calls = 0
+        self._profile_fill_order_ns = 0
 
     def __repr__(self) -> str:
         return (
@@ -3981,6 +4053,21 @@ cdef class OrderMatchingEngine:
             f"instrument_id={self.instrument.id.value}, "
             f"raw_id={self.raw_id})"
         )
+
+    cpdef dict stratneo_profile_snapshot(self):
+        return {
+            "component": "order_matching_engine",
+            "instrument_id": str(self.instrument.id),
+            "venue": str(self.venue),
+            "enabled": bool(self._stratneo_profile_enabled),
+            "summary": {
+                "fill_market_order_calls": self._profile_fill_market_order_calls,
+                "fill_market_order_total_ms": self._profile_fill_market_order_ns / 1_000_000.0,
+                "fill_order_calls": self._profile_fill_order_calls,
+                "fill_order_total_ms": self._profile_fill_order_ns / 1_000_000.0,
+            },
+            "samples": [],
+        }
 
     cpdef void reset(self):
         self._log.debug(f"Resetting OrderMatchingEngine {self.instrument.id}")
@@ -5955,12 +6042,19 @@ cdef class OrderMatchingEngine:
             The order to fill.
 
         """
+        cdef uint64_t profile_start_ns = 0
+        if self._stratneo_profile_enabled:
+            self._profile_fill_market_order_calls += 1
+            profile_start_ns = time.perf_counter_ns()
+
         cdef Quantity cached_filled_qty = self._cached_filled_qty.get(order.client_order_id)
         if cached_filled_qty is not None and cached_filled_qty._mem.raw >= order.quantity._mem.raw:
             self._log.debug(
                 f"Ignoring fill as already filled pending application of events: "
                 f"{cached_filled_qty=}, {order.quantity=}, {order.filled_qty=}, {order.leaves_qty=}",
             )
+            if self._stratneo_profile_enabled:
+                self._profile_fill_market_order_ns += time.perf_counter_ns() - profile_start_ns
             return
 
         cdef PositionId venue_position_id = self._get_position_id(order)
@@ -5974,6 +6068,8 @@ cdef class OrderMatchingEngine:
                 f"as would increase position",
             )
             self.cancel_order(order)
+            if self._stratneo_profile_enabled:
+                self._profile_fill_market_order_ns += time.perf_counter_ns() - profile_start_ns
             return  # Order canceled
 
         order.liquidity_side = LiquiditySide.TAKER
@@ -6013,6 +6109,8 @@ cdef class OrderMatchingEngine:
             position=position,
             protection_price=protection_price,
         )
+        if self._stratneo_profile_enabled:
+            self._profile_fill_market_order_ns += time.perf_counter_ns() - profile_start_ns
 
     cdef list[tuple[Price, Quantity]] determine_market_fills_with_simulation(self, Order order):
         """
@@ -7457,6 +7555,11 @@ cdef class OrderMatchingEngine:
         The `liquidity_side` will override anything previously set on the order.
 
         """
+        cdef uint64_t profile_start_ns = 0
+        if self._stratneo_profile_enabled:
+            self._profile_fill_order_calls += 1
+            profile_start_ns = time.perf_counter_ns()
+
         Condition.not_none(order, "order")
         Condition.not_none(last_px, "last_px")
         Condition.not_none(last_qty, "last_qty")
@@ -7485,6 +7588,8 @@ cdef class OrderMatchingEngine:
             if order.quantity._mem.raw <= cached_filled_qty._mem.raw:
                 self._core.delete_order(order)
                 self._cached_filled_qty.pop(order.client_order_id, None)
+                if self._stratneo_profile_enabled:
+                    self._profile_fill_order_ns += time.perf_counter_ns() - profile_start_ns
                 return
 
             leaves_qty = Quantity.from_raw_c(order.quantity._mem.raw - cached_filled_qty._mem.raw, size_prec)
@@ -7495,6 +7600,8 @@ cdef class OrderMatchingEngine:
         # Update _cached_filled_qty first to absorb duplicate or out-of-order fills
         # (seen in sandbox/async environments) and avoid emitting zero/negative fills.
         if last_qty <= 0:
+            if self._stratneo_profile_enabled:
+                self._profile_fill_order_ns += time.perf_counter_ns() - profile_start_ns
             return
 
         # Calculate commission
@@ -7522,6 +7629,8 @@ cdef class OrderMatchingEngine:
             self._cached_filled_qty.pop(order.client_order_id, None)
 
         if not self._support_contingent_orders:
+            if self._stratneo_profile_enabled:
+                self._profile_fill_order_ns += time.perf_counter_ns() - profile_start_ns
             return
 
         # Check contingent orders
@@ -7584,6 +7693,8 @@ cdef class OrderMatchingEngine:
                     )
 
         if position is None:
+            if self._stratneo_profile_enabled:
+                self._profile_fill_order_ns += time.perf_counter_ns() - profile_start_ns
             return  # Fill completed
 
         # Check reduce only orders for position
@@ -7640,6 +7751,9 @@ cdef class OrderMatchingEngine:
                         price=ro_order.price if ro_order.has_price_c() else None,
                         trigger_price=ro_order.trigger_price if ro_order.has_trigger_price_c() else None,
                     )
+
+        if self._stratneo_profile_enabled:
+            self._profile_fill_order_ns += time.perf_counter_ns() - profile_start_ns
 
 # -- IDENTIFIER GENERATORS ------------------------------------------------------------------------
 

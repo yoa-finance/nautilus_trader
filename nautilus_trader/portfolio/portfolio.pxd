@@ -57,16 +57,85 @@ cdef class Portfolio(PortfolioFacade):
 
     cdef dict[InstrumentId, dict[AccountId, Money]] _unrealized_pnls
     cdef dict[InstrumentId, dict[AccountId, Money]] _realized_pnls
-    cdef dict[PositionId, Money] _snapshot_sum_per_position
-    cdef dict[PositionId, Money] _snapshot_last_per_position
-    cdef dict[PositionId, int] _snapshot_processed_counts
-    cdef dict[PositionId, AccountId] _snapshot_account_ids
+    cdef dict[InstrumentId, dict] _snapshot_sum_per_position_by_instrument
+    cdef dict[InstrumentId, dict] _snapshot_last_per_position_by_instrument
+    cdef dict[InstrumentId, dict] _snapshot_processed_counts_by_instrument
+    cdef dict[InstrumentId, dict] _snapshot_account_ids_by_instrument
     cdef dict[InstrumentId, dict[AccountId, Decimal]] _net_positions
     cdef dict[PositionId, object] _bet_positions
     cdef object _index_bet_positions
     cdef set[InstrumentId] _pending_calcs
     cdef dict[InstrumentId, Price] _bar_close_prices
     cdef dict[AccountId, uint64_t] _last_account_state_log_ts
+    cdef bint _stratneo_profile_enabled
+    cdef uint64_t _profile_update_position_calls
+    cdef uint64_t _profile_update_position_ns
+    cdef uint64_t _profile_positions_open_calls
+    cdef uint64_t _profile_positions_open_ns
+    cdef uint64_t _profile_account_positions_open_calls
+    cdef uint64_t _profile_account_positions_open_ns
+    cdef uint64_t _profile_update_net_position_calls
+    cdef uint64_t _profile_update_net_position_ns
+    cdef uint64_t _profile_closed_realized_position_count
+    cdef uint64_t _profile_snapshot_ensure_calls
+    cdef uint64_t _profile_snapshot_ensure_ns
+    cdef uint64_t _profile_snapshot_ids_calls
+    cdef uint64_t _profile_snapshot_ids_ns
+    cdef uint64_t _profile_snapshot_ids_total
+    cdef uint64_t _profile_snapshot_ids_max
+    cdef uint64_t _profile_snapshot_bytes_calls
+    cdef uint64_t _profile_snapshot_bytes_ns
+    cdef uint64_t _profile_snapshot_bytes_total
+    cdef uint64_t _profile_snapshot_bytes_max
+    cdef uint64_t _profile_snapshot_unpickle_count
+    cdef uint64_t _profile_snapshot_unpickle_ns
+    cdef uint64_t _profile_snapshot_rebuilds
+    cdef uint64_t _profile_snapshot_incremental_passes
+    cdef uint64_t _profile_snapshot_membership_calls
+    cdef uint64_t _profile_snapshot_membership_ns
+    cdef uint64_t _profile_snapshot_membership_ids_total
+    cdef uint64_t _profile_snapshot_membership_ids_max
+    cdef uint64_t _profile_cache_position_calls
+    cdef uint64_t _profile_cache_position_ns
+    cdef uint64_t _profile_validate_event_calls
+    cdef uint64_t _profile_validate_event_ns
+    cdef uint64_t _profile_accounts_update_positions_calls
+    cdef uint64_t _profile_accounts_update_positions_ns
+    cdef uint64_t _profile_account_state_generate_calls
+    cdef uint64_t _profile_account_state_generate_ns
+    cdef uint64_t _profile_update_account_calls
+    cdef uint64_t _profile_update_account_ns
+    cdef uint64_t _profile_next_sample_closed_realized
+    cdef uint64_t _profile_last_sample_closed_realized
+    cdef uint64_t _profile_last_sample_update_position_ns
+    cdef uint64_t _profile_last_sample_positions_open_ns
+    cdef uint64_t _profile_last_sample_positions_open_calls
+    cdef uint64_t _profile_last_sample_account_positions_open_ns
+    cdef uint64_t _profile_last_sample_account_positions_open_calls
+    cdef uint64_t _profile_last_sample_update_net_position_ns
+    cdef uint64_t _profile_last_sample_update_net_position_calls
+    cdef uint64_t _profile_last_sample_cache_position_ns
+    cdef uint64_t _profile_last_sample_cache_position_calls
+    cdef uint64_t _profile_last_sample_validate_event_ns
+    cdef uint64_t _profile_last_sample_validate_event_calls
+    cdef uint64_t _profile_last_sample_accounts_update_positions_ns
+    cdef uint64_t _profile_last_sample_accounts_update_positions_calls
+    cdef uint64_t _profile_last_sample_account_state_generate_ns
+    cdef uint64_t _profile_last_sample_account_state_generate_calls
+    cdef uint64_t _profile_last_sample_update_account_ns
+    cdef uint64_t _profile_last_sample_update_account_calls
+    cdef uint64_t _profile_last_sample_snapshot_ensure_ns
+    cdef uint64_t _profile_last_sample_snapshot_ensure_calls
+    cdef uint64_t _profile_last_sample_snapshot_ids_ns
+    cdef uint64_t _profile_last_sample_snapshot_ids_calls
+    cdef uint64_t _profile_last_sample_snapshot_ids_total
+    cdef uint64_t _profile_last_sample_snapshot_bytes_ns
+    cdef uint64_t _profile_last_sample_snapshot_bytes_calls
+    cdef uint64_t _profile_last_sample_snapshot_bytes_total
+    cdef uint64_t _profile_last_sample_snapshot_membership_ns
+    cdef uint64_t _profile_last_sample_snapshot_membership_calls
+    cdef uint64_t _profile_last_sample_snapshot_membership_ids_total
+    cdef list _profile_samples
 
     # -- COMMANDS -------------------------------------------------------------------------------------
 
@@ -82,6 +151,7 @@ cdef class Portfolio(PortfolioFacade):
     cpdef void update_position(self, PositionEvent event)
     cpdef void on_order_event(self, OrderEvent event)
     cpdef void on_position_event(self, PositionEvent event)
+    cpdef dict stratneo_profile_snapshot(self)
 
     # -- INTERNAL -------------------------------------------------------------------------------------
 
@@ -103,12 +173,14 @@ cdef class Portfolio(PortfolioFacade):
     cdef object _get_bet_position(self, Position position, Instrument instrument)
     cdef Money _get_zero_or_none_for_instrument(self, InstrumentId instrument_id, Currency target_currency=*)
     cdef tuple _validate_event_account_and_instrument(self, object event, str caller_name)
+    cdef void _reset_stratneo_portfolio_profile(self)
+    cdef void _maybe_log_stratneo_portfolio_profile_sample(self)
     cdef Money _calculate_realized_pnl(self, InstrumentId instrument_id, AccountId account_id)
     cdef tuple _validate_account_and_instrument(self, InstrumentId instrument_id, AccountId account_id, str caller_name, bint is_error)
     cdef Currency _determine_pnl_currency(self, Account account, Instrument instrument)
     cdef dict _aggregate_pnls_by_instrument(self, list positions, bint is_realized, AccountId account_id, Currency target_currency)
     cdef tuple _process_snapshot_pnl_contributions(self, InstrumentId instrument_id, AccountId account_id, list positions, Currency currency, Account account)
-    cdef object _calculate_snapshot_contribution(self, PositionId position_id, set active_position_ids, list positions, Money sum_pnl, set processed_ids)
+    cdef object _calculate_snapshot_contribution(self, PositionId position_id, set active_position_ids, list positions, Money sum_pnl, dict snapshot_last_per_position, set processed_ids)
     cdef object _process_active_position_realized_pnl(self, list positions, InstrumentId instrument_id, Instrument instrument, Account account, Currency currency, set processed_ids)
     cdef Money _calculate_unrealized_pnl(self, InstrumentId instrument_id, Price price=*, AccountId account_id=*)
     cdef object _calculate_total_unrealized_pnl(self, list positions_open, InstrumentId instrument_id, Instrument instrument, Account account, Currency currency, Price price)

@@ -13,7 +13,9 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
+import os
 import pickle
+import time
 from collections import defaultdict
 from decimal import Decimal
 
@@ -155,16 +157,21 @@ cdef class Portfolio(PortfolioFacade):
 
         self._unrealized_pnls: dict[InstrumentId, dict[AccountId, Money]] = {}
         self._realized_pnls: dict[InstrumentId, dict[AccountId, Money]] = {}
-        self._snapshot_sum_per_position: dict[PositionId, Money] = {}
-        self._snapshot_last_per_position: dict[PositionId, Money] = {}
-        self._snapshot_processed_counts: dict[PositionId, int] = {}
-        self._snapshot_account_ids: dict[PositionId, AccountId] = {}
+        self._snapshot_sum_per_position_by_instrument: dict[InstrumentId, dict[PositionId, Money]] = {}
+        self._snapshot_last_per_position_by_instrument: dict[InstrumentId, dict[PositionId, Money]] = {}
+        self._snapshot_processed_counts_by_instrument: dict[InstrumentId, dict[PositionId, int]] = {}
+        self._snapshot_account_ids_by_instrument: dict[InstrumentId, dict[PositionId, AccountId]] = {}
         self._net_positions: dict[InstrumentId, dict[AccountId, Decimal]] = {}
         self._bet_positions: dict[InstrumentId, object] = {}
         self._index_bet_positions: dict[InstrumentId, set[PositionId]] = defaultdict(set)
         self._pending_calcs: set[InstrumentId] = set()
         self._bar_close_prices: dict[InstrumentId, Price] = {}
         self._last_account_state_log_ts: dict[AccountId, uint64_t] = {}
+        self._stratneo_profile_enabled = os.environ.get(
+            "NAUTILUS_STRATNEO_PORTFOLIO_PROFILE",
+            "1",
+        ).lower() not in {"0", "false", "no", "off"}
+        self._reset_stratneo_portfolio_profile()
 
         self.analyzer = PortfolioAnalyzer()
 
@@ -597,7 +604,17 @@ cdef class Portfolio(PortfolioFacade):
         """
         Condition.not_none(event, "event")
 
+        cdef uint64_t profile_start_ns = 0
+        cdef uint64_t profile_step_start_ns = 0
+        cdef uint64_t profile_elapsed_ns = 0
+        cdef uint64_t profile_snapshot_ids_len = 0
+        if self._stratneo_profile_enabled:
+            self._profile_update_position_calls += 1
+            profile_start_ns = time.perf_counter_ns()
+
         # Fetch all positions for the instrument to calculate global net position
+        if self._stratneo_profile_enabled:
+            profile_step_start_ns = time.perf_counter_ns()
         cdef list all_positions_open = self._cache.positions_open(
             venue=None,  # Faster query filtering
             instrument_id=event.instrument_id,
@@ -605,10 +622,19 @@ cdef class Portfolio(PortfolioFacade):
             side=PositionSide.NO_POSITION_SIDE,
             account_id=None,  # Get all accounts for net position
         )
+        if self._stratneo_profile_enabled:
+            self._profile_positions_open_calls += 1
+            self._profile_positions_open_ns += time.perf_counter_ns() - profile_step_start_ns
+
+        if self._stratneo_profile_enabled:
+            profile_step_start_ns = time.perf_counter_ns()
         self._update_net_position(
             instrument_id=event.instrument_id,
             positions_open=all_positions_open,
         )
+        if self._stratneo_profile_enabled:
+            self._profile_update_net_position_calls += 1
+            self._profile_update_net_position_ns += time.perf_counter_ns() - profile_step_start_ns
 
         # Invalidate cached PnLs for this instrument and account
         # For realized PnL, also check if this is a new position cycle (NETTING OMS)
@@ -621,16 +647,37 @@ cdef class Portfolio(PortfolioFacade):
 
         # Check if this position update represents a new cycle (closed position with realized_pnl)
         # For NETTING OMS, if a position is closed and has snapshots, it might be a new cycle
+        if self._stratneo_profile_enabled:
+            profile_step_start_ns = time.perf_counter_ns()
         updated_position = self._cache.position(event.position_id)
+        if self._stratneo_profile_enabled:
+            self._profile_cache_position_calls += 1
+            self._profile_cache_position_ns += time.perf_counter_ns() - profile_step_start_ns
         if updated_position is not None and updated_position.is_closed_c() and updated_position.realized_pnl is not None:
+            if self._stratneo_profile_enabled:
+                self._profile_closed_realized_position_count += 1
+
             # Ensure snapshot data is cached so we can compare
             self._ensure_snapshot_pnls_cached_for(event.instrument_id)
 
             # Check if this position_id has snapshots
+            if self._stratneo_profile_enabled:
+                profile_step_start_ns = time.perf_counter_ns()
             snapshot_ids = self._cache.position_snapshot_ids(event.instrument_id)
+            if self._stratneo_profile_enabled:
+                profile_elapsed_ns = time.perf_counter_ns() - profile_step_start_ns
+                profile_snapshot_ids_len = len(snapshot_ids)
+                self._profile_snapshot_membership_calls += 1
+                self._profile_snapshot_membership_ns += profile_elapsed_ns
+                self._profile_snapshot_membership_ids_total += profile_snapshot_ids_len
+                if profile_snapshot_ids_len > self._profile_snapshot_membership_ids_max:
+                    self._profile_snapshot_membership_ids_max = profile_snapshot_ids_len
             if event.position_id in snapshot_ids:
                 # Compare with last snapshot PnL - if different, it's a new cycle
-                last_snapshot_pnl = self._snapshot_last_per_position.get(event.position_id)
+                last_snapshot_pnl = self._snapshot_last_per_position_by_instrument.get(
+                    event.instrument_id,
+                    {},
+                ).get(event.position_id)
                 if last_snapshot_pnl is not None and updated_position.realized_pnl is not None:
                     if (
                         updated_position.realized_pnl.currency != last_snapshot_pnl.currency
@@ -657,14 +704,27 @@ cdef class Portfolio(PortfolioFacade):
         cdef:
             Account account
             Instrument instrument
+        if self._stratneo_profile_enabled:
+            profile_step_start_ns = time.perf_counter_ns()
         account, instrument = self._validate_event_account_and_instrument(event, "position")
+        if self._stratneo_profile_enabled:
+            self._profile_validate_event_calls += 1
+            self._profile_validate_event_ns += time.perf_counter_ns() - profile_step_start_ns
         if account is None or instrument is None:
+            if self._stratneo_profile_enabled:
+                self._profile_update_position_ns += time.perf_counter_ns() - profile_start_ns
+                self._maybe_log_stratneo_portfolio_profile_sample()
             return
 
         if account.type != AccountType.MARGIN or not account.calculate_account_state:
+            if self._stratneo_profile_enabled:
+                self._profile_update_position_ns += time.perf_counter_ns() - profile_start_ns
+                self._maybe_log_stratneo_portfolio_profile_sample()
             return  # Nothing to calculate
 
         # Fetch positions filtered by account_id for account-specific update
+        if self._stratneo_profile_enabled:
+            profile_step_start_ns = time.perf_counter_ns()
         cdef list account_positions = self._cache.positions_open(
             venue=None,  # Faster query filtering
             instrument_id=event.instrument_id,
@@ -672,17 +732,40 @@ cdef class Portfolio(PortfolioFacade):
             side=PositionSide.NO_POSITION_SIDE,
             account_id=event.account_id,  # Filter by account_id
         )
+        if self._stratneo_profile_enabled:
+            self._profile_account_positions_open_calls += 1
+            self._profile_account_positions_open_ns += time.perf_counter_ns() - profile_step_start_ns
 
         cdef AccountState account_state
+        if self._stratneo_profile_enabled:
+            profile_step_start_ns = time.perf_counter_ns()
         cdef bint result = self._accounts.update_positions(
             account=account,
             instrument=instrument,
             positions_open=account_positions,
             ts_event=event.ts_event,
         )
+        if self._stratneo_profile_enabled:
+            self._profile_accounts_update_positions_calls += 1
+            self._profile_accounts_update_positions_ns += time.perf_counter_ns() - profile_step_start_ns
         if result:
+            if self._stratneo_profile_enabled:
+                profile_step_start_ns = time.perf_counter_ns()
             account_state = self._accounts.generate_account_state(account, event.ts_event)
+            if self._stratneo_profile_enabled:
+                self._profile_account_state_generate_calls += 1
+                self._profile_account_state_generate_ns += time.perf_counter_ns() - profile_step_start_ns
+
+            if self._stratneo_profile_enabled:
+                profile_step_start_ns = time.perf_counter_ns()
             self._update_account(account_state)
+            if self._stratneo_profile_enabled:
+                self._profile_update_account_calls += 1
+                self._profile_update_account_ns += time.perf_counter_ns() - profile_step_start_ns
+
+        if self._stratneo_profile_enabled:
+            self._profile_update_position_ns += time.perf_counter_ns() - profile_start_ns
+            self._maybe_log_stratneo_portfolio_profile_sample()
 
     cpdef void on_order_event(self, OrderEvent event):
         """
@@ -742,6 +825,333 @@ cdef class Portfolio(PortfolioFacade):
             msg=account_state,
         )
 
+    cdef void _reset_stratneo_portfolio_profile(self):
+        self._profile_update_position_calls = 0
+        self._profile_update_position_ns = 0
+        self._profile_positions_open_calls = 0
+        self._profile_positions_open_ns = 0
+        self._profile_account_positions_open_calls = 0
+        self._profile_account_positions_open_ns = 0
+        self._profile_update_net_position_calls = 0
+        self._profile_update_net_position_ns = 0
+        self._profile_closed_realized_position_count = 0
+        self._profile_snapshot_ensure_calls = 0
+        self._profile_snapshot_ensure_ns = 0
+        self._profile_snapshot_ids_calls = 0
+        self._profile_snapshot_ids_ns = 0
+        self._profile_snapshot_ids_total = 0
+        self._profile_snapshot_ids_max = 0
+        self._profile_snapshot_bytes_calls = 0
+        self._profile_snapshot_bytes_ns = 0
+        self._profile_snapshot_bytes_total = 0
+        self._profile_snapshot_bytes_max = 0
+        self._profile_snapshot_unpickle_count = 0
+        self._profile_snapshot_unpickle_ns = 0
+        self._profile_snapshot_rebuilds = 0
+        self._profile_snapshot_incremental_passes = 0
+        self._profile_snapshot_membership_calls = 0
+        self._profile_snapshot_membership_ns = 0
+        self._profile_snapshot_membership_ids_total = 0
+        self._profile_snapshot_membership_ids_max = 0
+        self._profile_cache_position_calls = 0
+        self._profile_cache_position_ns = 0
+        self._profile_validate_event_calls = 0
+        self._profile_validate_event_ns = 0
+        self._profile_accounts_update_positions_calls = 0
+        self._profile_accounts_update_positions_ns = 0
+        self._profile_account_state_generate_calls = 0
+        self._profile_account_state_generate_ns = 0
+        self._profile_update_account_calls = 0
+        self._profile_update_account_ns = 0
+        self._profile_next_sample_closed_realized = 2000
+        self._profile_last_sample_closed_realized = 0
+        self._profile_last_sample_update_position_ns = 0
+        self._profile_last_sample_positions_open_ns = 0
+        self._profile_last_sample_positions_open_calls = 0
+        self._profile_last_sample_account_positions_open_ns = 0
+        self._profile_last_sample_account_positions_open_calls = 0
+        self._profile_last_sample_update_net_position_ns = 0
+        self._profile_last_sample_update_net_position_calls = 0
+        self._profile_last_sample_cache_position_ns = 0
+        self._profile_last_sample_cache_position_calls = 0
+        self._profile_last_sample_validate_event_ns = 0
+        self._profile_last_sample_validate_event_calls = 0
+        self._profile_last_sample_accounts_update_positions_ns = 0
+        self._profile_last_sample_accounts_update_positions_calls = 0
+        self._profile_last_sample_account_state_generate_ns = 0
+        self._profile_last_sample_account_state_generate_calls = 0
+        self._profile_last_sample_update_account_ns = 0
+        self._profile_last_sample_update_account_calls = 0
+        self._profile_last_sample_snapshot_ensure_ns = 0
+        self._profile_last_sample_snapshot_ensure_calls = 0
+        self._profile_last_sample_snapshot_ids_ns = 0
+        self._profile_last_sample_snapshot_ids_calls = 0
+        self._profile_last_sample_snapshot_ids_total = 0
+        self._profile_last_sample_snapshot_bytes_ns = 0
+        self._profile_last_sample_snapshot_bytes_calls = 0
+        self._profile_last_sample_snapshot_bytes_total = 0
+        self._profile_last_sample_snapshot_membership_ns = 0
+        self._profile_last_sample_snapshot_membership_calls = 0
+        self._profile_last_sample_snapshot_membership_ids_total = 0
+        self._profile_samples = []
+
+    cdef void _maybe_log_stratneo_portfolio_profile_sample(self):
+        if not self._stratneo_profile_enabled:
+            return
+        if self._profile_closed_realized_position_count < self._profile_next_sample_closed_realized:
+            return
+
+        cdef uint64_t closed_delta = (
+            self._profile_closed_realized_position_count
+            - self._profile_last_sample_closed_realized
+        )
+        cdef uint64_t update_position_ns_delta = (
+            self._profile_update_position_ns
+            - self._profile_last_sample_update_position_ns
+        )
+        cdef uint64_t positions_open_ns_delta = (
+            self._profile_positions_open_ns
+            - self._profile_last_sample_positions_open_ns
+        )
+        cdef uint64_t positions_open_calls_delta = (
+            self._profile_positions_open_calls
+            - self._profile_last_sample_positions_open_calls
+        )
+        cdef uint64_t account_positions_open_ns_delta = (
+            self._profile_account_positions_open_ns
+            - self._profile_last_sample_account_positions_open_ns
+        )
+        cdef uint64_t account_positions_open_calls_delta = (
+            self._profile_account_positions_open_calls
+            - self._profile_last_sample_account_positions_open_calls
+        )
+        cdef uint64_t update_net_position_ns_delta = (
+            self._profile_update_net_position_ns
+            - self._profile_last_sample_update_net_position_ns
+        )
+        cdef uint64_t update_net_position_calls_delta = (
+            self._profile_update_net_position_calls
+            - self._profile_last_sample_update_net_position_calls
+        )
+        cdef uint64_t cache_position_ns_delta = (
+            self._profile_cache_position_ns
+            - self._profile_last_sample_cache_position_ns
+        )
+        cdef uint64_t cache_position_calls_delta = (
+            self._profile_cache_position_calls
+            - self._profile_last_sample_cache_position_calls
+        )
+        cdef uint64_t validate_event_ns_delta = (
+            self._profile_validate_event_ns
+            - self._profile_last_sample_validate_event_ns
+        )
+        cdef uint64_t validate_event_calls_delta = (
+            self._profile_validate_event_calls
+            - self._profile_last_sample_validate_event_calls
+        )
+        cdef uint64_t accounts_update_positions_ns_delta = (
+            self._profile_accounts_update_positions_ns
+            - self._profile_last_sample_accounts_update_positions_ns
+        )
+        cdef uint64_t accounts_update_positions_calls_delta = (
+            self._profile_accounts_update_positions_calls
+            - self._profile_last_sample_accounts_update_positions_calls
+        )
+        cdef uint64_t account_state_generate_ns_delta = (
+            self._profile_account_state_generate_ns
+            - self._profile_last_sample_account_state_generate_ns
+        )
+        cdef uint64_t account_state_generate_calls_delta = (
+            self._profile_account_state_generate_calls
+            - self._profile_last_sample_account_state_generate_calls
+        )
+        cdef uint64_t update_account_ns_delta = (
+            self._profile_update_account_ns
+            - self._profile_last_sample_update_account_ns
+        )
+        cdef uint64_t update_account_calls_delta = (
+            self._profile_update_account_calls
+            - self._profile_last_sample_update_account_calls
+        )
+        cdef uint64_t snapshot_ensure_ns_delta = (
+            self._profile_snapshot_ensure_ns
+            - self._profile_last_sample_snapshot_ensure_ns
+        )
+        cdef uint64_t snapshot_ensure_calls_delta = (
+            self._profile_snapshot_ensure_calls
+            - self._profile_last_sample_snapshot_ensure_calls
+        )
+        cdef uint64_t snapshot_ids_ns_delta = (
+            self._profile_snapshot_ids_ns
+            - self._profile_last_sample_snapshot_ids_ns
+        )
+        cdef uint64_t snapshot_ids_calls_delta = (
+            self._profile_snapshot_ids_calls
+            - self._profile_last_sample_snapshot_ids_calls
+        )
+        cdef uint64_t snapshot_ids_total_delta = (
+            self._profile_snapshot_ids_total
+            - self._profile_last_sample_snapshot_ids_total
+        )
+        cdef uint64_t snapshot_bytes_ns_delta = (
+            self._profile_snapshot_bytes_ns
+            - self._profile_last_sample_snapshot_bytes_ns
+        )
+        cdef uint64_t snapshot_bytes_calls_delta = (
+            self._profile_snapshot_bytes_calls
+            - self._profile_last_sample_snapshot_bytes_calls
+        )
+        cdef uint64_t snapshot_bytes_total_delta = (
+            self._profile_snapshot_bytes_total
+            - self._profile_last_sample_snapshot_bytes_total
+        )
+        cdef uint64_t snapshot_membership_ns_delta = (
+            self._profile_snapshot_membership_ns
+            - self._profile_last_sample_snapshot_membership_ns
+        )
+        cdef uint64_t snapshot_membership_calls_delta = (
+            self._profile_snapshot_membership_calls
+            - self._profile_last_sample_snapshot_membership_calls
+        )
+        cdef uint64_t snapshot_membership_ids_total_delta = (
+            self._profile_snapshot_membership_ids_total
+            - self._profile_last_sample_snapshot_membership_ids_total
+        )
+        cdef double snapshot_ids_avg = 0.0
+        cdef double snapshot_bytes_avg = 0.0
+        cdef double snapshot_membership_ids_avg = 0.0
+        if snapshot_ids_calls_delta:
+            snapshot_ids_avg = (
+                <double>snapshot_ids_total_delta
+                / <double>snapshot_ids_calls_delta
+            )
+        if snapshot_bytes_calls_delta:
+            snapshot_bytes_avg = (
+                <double>snapshot_bytes_total_delta
+                / <double>snapshot_bytes_calls_delta
+            )
+        if snapshot_membership_calls_delta:
+            snapshot_membership_ids_avg = (
+                <double>snapshot_membership_ids_total_delta
+                / <double>snapshot_membership_calls_delta
+            )
+
+        self._profile_samples.append({
+            "component": "portfolio",
+            "closed_realized_positions": self._profile_closed_realized_position_count,
+            "closed_delta": closed_delta,
+            "interval_update_position_ms": update_position_ns_delta / 1_000_000.0,
+            "interval_positions_open_ms": positions_open_ns_delta / 1_000_000.0,
+            "interval_positions_open_calls": positions_open_calls_delta,
+            "interval_account_positions_open_ms": account_positions_open_ns_delta / 1_000_000.0,
+            "interval_account_positions_open_calls": account_positions_open_calls_delta,
+            "interval_update_net_position_ms": update_net_position_ns_delta / 1_000_000.0,
+            "interval_update_net_position_calls": update_net_position_calls_delta,
+            "interval_cache_position_ms": cache_position_ns_delta / 1_000_000.0,
+            "interval_cache_position_calls": cache_position_calls_delta,
+            "interval_validate_event_ms": validate_event_ns_delta / 1_000_000.0,
+            "interval_validate_event_calls": validate_event_calls_delta,
+            "interval_accounts_update_positions_ms": accounts_update_positions_ns_delta / 1_000_000.0,
+            "interval_accounts_update_positions_calls": accounts_update_positions_calls_delta,
+            "interval_account_state_generate_ms": account_state_generate_ns_delta / 1_000_000.0,
+            "interval_account_state_generate_calls": account_state_generate_calls_delta,
+            "interval_update_account_ms": update_account_ns_delta / 1_000_000.0,
+            "interval_update_account_calls": update_account_calls_delta,
+            "interval_snapshot_ensure_ms": snapshot_ensure_ns_delta / 1_000_000.0,
+            "interval_snapshot_ensure_calls": snapshot_ensure_calls_delta,
+            "interval_snapshot_ids_ms": snapshot_ids_ns_delta / 1_000_000.0,
+            "interval_snapshot_ids_calls": snapshot_ids_calls_delta,
+            "interval_snapshot_ids_avg": snapshot_ids_avg,
+            "snapshot_ids_max": self._profile_snapshot_ids_max,
+            "interval_snapshot_bytes_ms": snapshot_bytes_ns_delta / 1_000_000.0,
+            "interval_snapshot_bytes_calls": snapshot_bytes_calls_delta,
+            "interval_snapshot_bytes_avg": snapshot_bytes_avg,
+            "snapshot_bytes_max": self._profile_snapshot_bytes_max,
+            "interval_snapshot_membership_ms": snapshot_membership_ns_delta / 1_000_000.0,
+            "interval_snapshot_membership_calls": snapshot_membership_calls_delta,
+            "interval_snapshot_membership_ids_avg": snapshot_membership_ids_avg,
+            "snapshot_membership_ids_max": self._profile_snapshot_membership_ids_max,
+        })
+
+        self._profile_last_sample_closed_realized = self._profile_closed_realized_position_count
+        self._profile_last_sample_update_position_ns = self._profile_update_position_ns
+        self._profile_last_sample_positions_open_ns = self._profile_positions_open_ns
+        self._profile_last_sample_positions_open_calls = self._profile_positions_open_calls
+        self._profile_last_sample_account_positions_open_ns = self._profile_account_positions_open_ns
+        self._profile_last_sample_account_positions_open_calls = self._profile_account_positions_open_calls
+        self._profile_last_sample_update_net_position_ns = self._profile_update_net_position_ns
+        self._profile_last_sample_update_net_position_calls = self._profile_update_net_position_calls
+        self._profile_last_sample_cache_position_ns = self._profile_cache_position_ns
+        self._profile_last_sample_cache_position_calls = self._profile_cache_position_calls
+        self._profile_last_sample_validate_event_ns = self._profile_validate_event_ns
+        self._profile_last_sample_validate_event_calls = self._profile_validate_event_calls
+        self._profile_last_sample_accounts_update_positions_ns = self._profile_accounts_update_positions_ns
+        self._profile_last_sample_accounts_update_positions_calls = self._profile_accounts_update_positions_calls
+        self._profile_last_sample_account_state_generate_ns = self._profile_account_state_generate_ns
+        self._profile_last_sample_account_state_generate_calls = self._profile_account_state_generate_calls
+        self._profile_last_sample_update_account_ns = self._profile_update_account_ns
+        self._profile_last_sample_update_account_calls = self._profile_update_account_calls
+        self._profile_last_sample_snapshot_ensure_ns = self._profile_snapshot_ensure_ns
+        self._profile_last_sample_snapshot_ensure_calls = self._profile_snapshot_ensure_calls
+        self._profile_last_sample_snapshot_ids_ns = self._profile_snapshot_ids_ns
+        self._profile_last_sample_snapshot_ids_calls = self._profile_snapshot_ids_calls
+        self._profile_last_sample_snapshot_ids_total = self._profile_snapshot_ids_total
+        self._profile_last_sample_snapshot_bytes_ns = self._profile_snapshot_bytes_ns
+        self._profile_last_sample_snapshot_bytes_calls = self._profile_snapshot_bytes_calls
+        self._profile_last_sample_snapshot_bytes_total = self._profile_snapshot_bytes_total
+        self._profile_last_sample_snapshot_membership_ns = self._profile_snapshot_membership_ns
+        self._profile_last_sample_snapshot_membership_calls = self._profile_snapshot_membership_calls
+        self._profile_last_sample_snapshot_membership_ids_total = self._profile_snapshot_membership_ids_total
+
+        while self._profile_next_sample_closed_realized <= self._profile_closed_realized_position_count:
+            self._profile_next_sample_closed_realized += 2000
+
+    cpdef dict stratneo_profile_snapshot(self):
+        return {
+            "component": "portfolio",
+            "enabled": bool(self._stratneo_profile_enabled),
+            "summary": {
+                "update_position_calls": self._profile_update_position_calls,
+                "update_position_total_ms": self._profile_update_position_ns / 1_000_000.0,
+                "positions_open_calls": self._profile_positions_open_calls,
+                "positions_open_total_ms": self._profile_positions_open_ns / 1_000_000.0,
+                "account_positions_open_calls": self._profile_account_positions_open_calls,
+                "account_positions_open_total_ms": self._profile_account_positions_open_ns / 1_000_000.0,
+                "update_net_position_calls": self._profile_update_net_position_calls,
+                "update_net_position_total_ms": self._profile_update_net_position_ns / 1_000_000.0,
+                "closed_realized_positions": self._profile_closed_realized_position_count,
+                "cache_position_calls": self._profile_cache_position_calls,
+                "cache_position_total_ms": self._profile_cache_position_ns / 1_000_000.0,
+                "validate_event_calls": self._profile_validate_event_calls,
+                "validate_event_total_ms": self._profile_validate_event_ns / 1_000_000.0,
+                "accounts_update_positions_calls": self._profile_accounts_update_positions_calls,
+                "accounts_update_positions_total_ms": self._profile_accounts_update_positions_ns / 1_000_000.0,
+                "account_state_generate_calls": self._profile_account_state_generate_calls,
+                "account_state_generate_total_ms": self._profile_account_state_generate_ns / 1_000_000.0,
+                "update_account_calls": self._profile_update_account_calls,
+                "update_account_total_ms": self._profile_update_account_ns / 1_000_000.0,
+                "snapshot_ensure_calls": self._profile_snapshot_ensure_calls,
+                "snapshot_ensure_total_ms": self._profile_snapshot_ensure_ns / 1_000_000.0,
+                "snapshot_ids_calls": self._profile_snapshot_ids_calls,
+                "snapshot_ids_total_ms": self._profile_snapshot_ids_ns / 1_000_000.0,
+                "snapshot_ids_total": self._profile_snapshot_ids_total,
+                "snapshot_ids_max": self._profile_snapshot_ids_max,
+                "snapshot_bytes_calls": self._profile_snapshot_bytes_calls,
+                "snapshot_bytes_total_ms": self._profile_snapshot_bytes_ns / 1_000_000.0,
+                "snapshot_bytes_total": self._profile_snapshot_bytes_total,
+                "snapshot_bytes_max": self._profile_snapshot_bytes_max,
+                "snapshot_unpickle_count": self._profile_snapshot_unpickle_count,
+                "snapshot_unpickle_total_ms": self._profile_snapshot_unpickle_ns / 1_000_000.0,
+                "snapshot_rebuilds": self._profile_snapshot_rebuilds,
+                "snapshot_incremental_passes": self._profile_snapshot_incremental_passes,
+                "snapshot_membership_calls": self._profile_snapshot_membership_calls,
+                "snapshot_membership_total_ms": self._profile_snapshot_membership_ns / 1_000_000.0,
+                "snapshot_membership_ids_total": self._profile_snapshot_membership_ids_total,
+                "snapshot_membership_ids_max": self._profile_snapshot_membership_ids_max,
+            },
+            "samples": list(self._profile_samples),
+        }
+
     def _reset(self) -> None:
         self._net_positions.clear()
         self._bet_positions.clear()
@@ -749,10 +1159,11 @@ cdef class Portfolio(PortfolioFacade):
         self._realized_pnls.clear()
         self._unrealized_pnls.clear()
         self._pending_calcs.clear()
-        self._snapshot_sum_per_position.clear()
-        self._snapshot_last_per_position.clear()
-        self._snapshot_processed_counts.clear()
-        self._snapshot_account_ids.clear()
+        self._snapshot_sum_per_position_by_instrument.clear()
+        self._snapshot_last_per_position_by_instrument.clear()
+        self._snapshot_processed_counts_by_instrument.clear()
+        self._snapshot_account_ids_by_instrument.clear()
+        self._reset_stratneo_portfolio_profile()
         self.analyzer.reset()
 
         self.initialized = False
@@ -1947,6 +2358,7 @@ cdef class Portfolio(PortfolioFacade):
             Instrument inst
             set[PositionId] snapshot_ids
             PositionId position_id
+            dict snapshot_account_ids
 
         if is_realized:
             # For realized PnL, check all positions (open and closed) and snapshots
@@ -1964,9 +2376,10 @@ cdef class Portfolio(PortfolioFacade):
                 account_ids.add(position.account_id)
 
             # Also check snapshots for account_ids
+            snapshot_account_ids = self._snapshot_account_ids_by_instrument.get(instrument_id, {})
             snapshot_ids = self._cache.position_snapshot_ids(instrument_id)
             for position_id in snapshot_ids:
-                snapshot_account_id = self._snapshot_account_ids.get(position_id)
+                snapshot_account_id = snapshot_account_ids.get(position_id)
                 if snapshot_account_id is not None:
                     account_ids.add(snapshot_account_id)
         else:
@@ -2138,11 +2551,45 @@ cdef class Portfolio(PortfolioFacade):
     cdef void _ensure_snapshot_pnls_cached_for(self, InstrumentId instrument_id):  # noqa: C901
         # Performance: This method maintains an incremental cache of snapshot PnLs
         # It only unpickles new snapshots that haven't been processed yet
-        # Tracks sum and last PnL per position for efficient NETTING OMS support
+        # Tracks sum and last PnL per instrument/position for efficient NETTING OMS support.
+        # The per-instrument boundary is required because the cache's snapshot id query is
+        # instrument-scoped; pruning a global state map with one instrument's ids replays
+        # other instruments from zero on the next ensure.
+
+        cdef uint64_t profile_start_ns = 0
+        cdef uint64_t profile_step_start_ns = 0
+        cdef uint64_t profile_elapsed_ns = 0
+        cdef uint64_t profile_count = 0
+        if self._stratneo_profile_enabled:
+            self._profile_snapshot_ensure_calls += 1
+            profile_start_ns = time.perf_counter_ns()
 
         # Get all position IDs that have snapshots for this instrument
+        if self._stratneo_profile_enabled:
+            profile_step_start_ns = time.perf_counter_ns()
         cdef set[PositionId] snapshot_position_ids = self._cache.position_snapshot_ids(instrument_id)
+        if self._stratneo_profile_enabled:
+            profile_elapsed_ns = time.perf_counter_ns() - profile_step_start_ns
+            profile_count = len(snapshot_position_ids)
+            self._profile_snapshot_ids_calls += 1
+            self._profile_snapshot_ids_ns += profile_elapsed_ns
+            self._profile_snapshot_ids_total += profile_count
+            if profile_count > self._profile_snapshot_ids_max:
+                self._profile_snapshot_ids_max = profile_count
         if not snapshot_position_ids:
+            if (
+                instrument_id in self._snapshot_processed_counts_by_instrument
+                or instrument_id in self._snapshot_sum_per_position_by_instrument
+                or instrument_id in self._snapshot_last_per_position_by_instrument
+                or instrument_id in self._snapshot_account_ids_by_instrument
+            ):
+                self._snapshot_processed_counts_by_instrument.pop(instrument_id, None)
+                self._snapshot_sum_per_position_by_instrument.pop(instrument_id, None)
+                self._snapshot_last_per_position_by_instrument.pop(instrument_id, None)
+                self._snapshot_account_ids_by_instrument.pop(instrument_id, None)
+                self._realized_pnls.pop(instrument_id, None)
+            if self._stratneo_profile_enabled:
+                self._profile_snapshot_ensure_ns += time.perf_counter_ns() - profile_start_ns
             return  # Nothing to process
 
         cdef bint rebuild = False
@@ -2155,14 +2602,28 @@ cdef class Portfolio(PortfolioFacade):
             int prev_count
             int curr_count
             dict[PositionId, list] snapshot_data = {}
+            dict processed_counts = self._snapshot_processed_counts_by_instrument.setdefault(instrument_id, {})
+            dict sum_per_position = self._snapshot_sum_per_position_by_instrument.setdefault(instrument_id, {})
+            dict last_per_position = self._snapshot_last_per_position_by_instrument.setdefault(instrument_id, {})
+            dict account_ids = self._snapshot_account_ids_by_instrument.setdefault(instrument_id, {})
 
         # Pre-fetch and detect changes
         for position_id in snapshot_position_ids:
+            if self._stratneo_profile_enabled:
+                profile_step_start_ns = time.perf_counter_ns()
             position_id_snapshots = self._cache.position_snapshot_bytes(position_id)
+            if self._stratneo_profile_enabled:
+                profile_elapsed_ns = time.perf_counter_ns() - profile_step_start_ns
+                self._profile_snapshot_bytes_calls += 1
+                self._profile_snapshot_bytes_ns += profile_elapsed_ns
             curr_count = len(position_id_snapshots)
+            if self._stratneo_profile_enabled:
+                self._profile_snapshot_bytes_total += curr_count
+                if curr_count > self._profile_snapshot_bytes_max:
+                    self._profile_snapshot_bytes_max = curr_count
             snapshot_data[position_id] = position_id_snapshots
 
-            prev_count = self._snapshot_processed_counts.get(position_id, 0)
+            prev_count = processed_counts.get(position_id, 0)
             if prev_count > curr_count:
                 rebuild = True
                 has_purge = True
@@ -2175,20 +2636,29 @@ cdef class Portfolio(PortfolioFacade):
             Money last_pnl
 
         if rebuild:
+            if self._stratneo_profile_enabled:
+                self._profile_snapshot_rebuilds += 1
+
             # Full rebuild: process all snapshots from scratch
             for position_id in snapshot_position_ids:
                 sum_pnl = None
                 last_pnl = None
+                account_ids.pop(position_id, None)
                 position_id_snapshots = snapshot_data[position_id]
                 curr_count = len(position_id_snapshots)
 
                 if curr_count:
                     for s in position_id_snapshots:
+                        if self._stratneo_profile_enabled:
+                            profile_step_start_ns = time.perf_counter_ns()
                         snapshot = pickle.loads(s)
+                        if self._stratneo_profile_enabled:
+                            self._profile_snapshot_unpickle_count += 1
+                            self._profile_snapshot_unpickle_ns += time.perf_counter_ns() - profile_step_start_ns
 
                         # Track account_id for this position snapshot
                         if snapshot.account_id is not None:
-                            self._snapshot_account_ids[position_id] = snapshot.account_id
+                            account_ids[position_id] = snapshot.account_id
 
                         if snapshot.realized_pnl is not None:
                             if sum_pnl is None:
@@ -2205,14 +2675,17 @@ cdef class Portfolio(PortfolioFacade):
 
                 # Update tracking structures
                 if sum_pnl is not None:
-                    self._snapshot_sum_per_position[position_id] = sum_pnl
-                    self._snapshot_last_per_position[position_id] = last_pnl
+                    sum_per_position[position_id] = sum_pnl
+                    last_per_position[position_id] = last_pnl
                 else:
-                    self._snapshot_sum_per_position.pop(position_id, None)
-                    self._snapshot_last_per_position.pop(position_id, None)
+                    sum_per_position.pop(position_id, None)
+                    last_per_position.pop(position_id, None)
 
-                self._snapshot_processed_counts[position_id] = curr_count
+                processed_counts[position_id] = curr_count
         else:
+            if self._stratneo_profile_enabled:
+                self._profile_snapshot_incremental_passes += 1
+
             # Incremental path: only process new snapshots
             for position_id in snapshot_position_ids:
                 position_id_snapshots = snapshot_data[position_id]
@@ -2220,20 +2693,25 @@ cdef class Portfolio(PortfolioFacade):
                 if curr_count == 0:
                     continue
 
-                prev_count = self._snapshot_processed_counts.get(position_id, 0)
+                prev_count = processed_counts.get(position_id, 0)
                 if prev_count >= curr_count:
                     continue
 
-                sum_pnl = self._snapshot_sum_per_position.get(position_id)
-                last_pnl = self._snapshot_last_per_position.get(position_id)
+                sum_pnl = sum_per_position.get(position_id)
+                last_pnl = last_per_position.get(position_id)
 
                 # Process only new snapshots
                 for idx in range(prev_count, curr_count):
+                    if self._stratneo_profile_enabled:
+                        profile_step_start_ns = time.perf_counter_ns()
                     snapshot = pickle.loads(position_id_snapshots[idx])
+                    if self._stratneo_profile_enabled:
+                        self._profile_snapshot_unpickle_count += 1
+                        self._profile_snapshot_unpickle_ns += time.perf_counter_ns() - profile_step_start_ns
 
                     # Track account_id for this position snapshot
                     if snapshot.account_id is not None:
-                        self._snapshot_account_ids[position_id] = snapshot.account_id
+                        account_ids[position_id] = snapshot.account_id
 
                     if snapshot.realized_pnl is not None:
                         if sum_pnl is None:
@@ -2250,18 +2728,18 @@ cdef class Portfolio(PortfolioFacade):
 
                 # Update tracking structures
                 if sum_pnl is not None:
-                    self._snapshot_sum_per_position[position_id] = sum_pnl
-                    self._snapshot_last_per_position[position_id] = last_pnl
+                    sum_per_position[position_id] = sum_pnl
+                    last_per_position[position_id] = last_pnl
                 else:
-                    self._snapshot_sum_per_position.pop(position_id, None)
-                    self._snapshot_last_per_position.pop(position_id, None)
+                    sum_per_position.pop(position_id, None)
+                    last_per_position.pop(position_id, None)
 
-                self._snapshot_processed_counts[position_id] = curr_count
+                processed_counts[position_id] = curr_count
 
-        # Prune stale entries (positions that no longer have snapshots)
+        # Prune stale entries only for this instrument.
         cdef list[PositionId] stale_ids = []
         cdef PositionId stale_position_id
-        for stale_position_id in self._snapshot_processed_counts:
+        for stale_position_id in processed_counts:
             if stale_position_id not in snapshot_position_ids:
                 stale_ids.append(stale_position_id)
 
@@ -2270,14 +2748,17 @@ cdef class Portfolio(PortfolioFacade):
             has_purge = True
 
         for stale_position_id in stale_ids:
-            self._snapshot_processed_counts.pop(stale_position_id, None)
-            self._snapshot_sum_per_position.pop(stale_position_id, None)
-            self._snapshot_last_per_position.pop(stale_position_id, None)
-            self._snapshot_account_ids.pop(stale_position_id, None)
+            processed_counts.pop(stale_position_id, None)
+            sum_per_position.pop(stale_position_id, None)
+            last_per_position.pop(stale_position_id, None)
+            account_ids.pop(stale_position_id, None)
 
         # Invalidate PnL cache when snapshots change (new snapshots or purges)
         if has_new_snapshots or has_purge:
             self._realized_pnls.pop(instrument_id, None)
+
+        if self._stratneo_profile_enabled:
+            self._profile_snapshot_ensure_ns += time.perf_counter_ns() - profile_start_ns
 
     cdef tuple _process_snapshot_pnl_contributions(
         self,
@@ -2295,7 +2776,6 @@ cdef class Portfolio(PortfolioFacade):
             double total_pnl = 0.0
             PositionId position_id
             Money sum_pnl
-            Money last_pnl
             object contribution_result
             double contribution
             AccountId snapshot_account_id
@@ -2303,14 +2783,17 @@ cdef class Portfolio(PortfolioFacade):
             double xrate
             PriceType conv_price_type
             Instrument instrument
+            dict snapshot_account_ids = self._snapshot_account_ids_by_instrument.get(instrument_id, {})
+            dict snapshot_sum_per_position = self._snapshot_sum_per_position_by_instrument.get(instrument_id, {})
+            dict snapshot_last_per_position = self._snapshot_last_per_position_by_instrument.get(instrument_id, {})
 
         for position_id in snapshot_ids:
             # Only process snapshots for the requested account
-            snapshot_account_id = self._snapshot_account_ids.get(position_id)
+            snapshot_account_id = snapshot_account_ids.get(position_id)
             if snapshot_account_id != account_id:
                 continue  # Skip snapshots from other accounts
 
-            sum_pnl = self._snapshot_sum_per_position.get(position_id)
+            sum_pnl = snapshot_sum_per_position.get(position_id)
             if sum_pnl is None:
                 continue  # No PnL for this position
 
@@ -2319,6 +2802,7 @@ cdef class Portfolio(PortfolioFacade):
                 active_position_ids=active_position_ids,
                 positions=positions,
                 sum_pnl=sum_pnl,
+                snapshot_last_per_position=snapshot_last_per_position,
                 processed_ids=processed_ids,
             )
             if contribution_result is None:
@@ -2362,6 +2846,7 @@ cdef class Portfolio(PortfolioFacade):
         set active_position_ids,
         list positions,
         Money sum_pnl,
+        dict snapshot_last_per_position,
         set processed_ids,
     ):
         # Calculate the contribution from a snapshot using the 3-case combination rule
@@ -2398,7 +2883,7 @@ cdef class Portfolio(PortfolioFacade):
                 # when we add the position realized below, net effect is `sum`.
                 # If not equal (new closed cycle not snapshotted), include full `sum` here
                 # and add the position realized below (net `sum + realized`).
-                last_pnl = self._snapshot_last_per_position.get(position_id)
+                last_pnl = snapshot_last_per_position.get(position_id)
                 if (
                     last_pnl is not None
                     and position.realized_pnl is not None

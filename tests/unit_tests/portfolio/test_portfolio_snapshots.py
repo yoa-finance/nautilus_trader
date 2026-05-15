@@ -846,6 +846,17 @@ def test_multiple_instruments_cached_independently(
     assert gbp_pnl_before.as_decimal() > 0  # Should have positive PnL
     assert aud_pnl_before != gbp_pnl_before  # Should be different for different instruments
 
+    unpickle_after_initial = portfolio.stratneo_profile_snapshot()["summary"]["snapshot_unpickle_count"]
+    assert unpickle_after_initial == 5  # 2 AUD snapshots + 3 GBP snapshots
+
+    # Re-checking another instrument must not prune this instrument's snapshot state.
+    assert portfolio.realized_pnl(AUDUSD_SIM.id) == aud_pnl_before
+    assert portfolio.realized_pnl(GBPUSD_SIM.id) == gbp_pnl_before
+    assert (
+        portfolio.stratneo_profile_snapshot()["summary"]["snapshot_unpickle_count"]
+        == unpickle_after_initial
+    )
+
     # Add one more AUD snapshot
     position_id_new = PositionId("AUD-NEW")
     order_new = TestExecStubs.market_order(
@@ -882,11 +893,13 @@ def test_multiple_instruments_cached_independently(
     # Calculate PnLs again after adding AUD snapshot
     aud_pnl_after = portfolio.realized_pnl(AUDUSD_SIM.id)
     gbp_pnl_after = portfolio.realized_pnl(GBPUSD_SIM.id)
+    unpickle_after_new_snapshot = portfolio.stratneo_profile_snapshot()["summary"]["snapshot_unpickle_count"]
 
     # Assert PnLs are cached independently
     # AUD should include the new snapshot, so it should be different from before
     assert aud_pnl_after.as_decimal() > aud_pnl_before.as_decimal()  # AUD includes new snapshot
     assert gbp_pnl_after == gbp_pnl_before  # GBP should remain unchanged
+    assert unpickle_after_new_snapshot == unpickle_after_initial + 1
 
     # Verify they maintain different values demonstrating independence
     assert aud_pnl_after != gbp_pnl_after

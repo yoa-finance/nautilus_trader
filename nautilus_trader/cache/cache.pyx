@@ -13,6 +13,7 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
+import os
 import pickle
 import time
 import uuid
@@ -178,6 +179,12 @@ cdef class Cache(CacheFacade):
         self._index_actors: set[ComponentId] = set()
         self._index_strategies: set[StrategyId] = set()
         self._index_exec_algorithms: set[ExecAlgorithmId] = set()
+
+        self._stratneo_profile_enabled = os.environ.get(
+            "NAUTILUS_STRATNEO_PORTFOLIO_PROFILE",
+            "1",
+        ).lower() not in {"0", "false", "no", "off"}
+        self._reset_stratneo_profile()
 
         self._log.info("READY")
 
@@ -1227,6 +1234,7 @@ cdef class Cache(CacheFacade):
         if self._drop_instruments_on_reset:
             self._instruments.clear()
 
+        self._reset_stratneo_profile()
         self._log.info(f"Reset")
 
     cpdef void dispose(self):
@@ -1254,6 +1262,59 @@ cdef class Cache(CacheFacade):
             self._database.flush()
 
         self._log.info("Cache database flushed")
+
+    cdef void _reset_stratneo_profile(self):
+        self._profile_orders_open_calls = 0
+        self._profile_orders_open_ns = 0
+        self._profile_orders_open_total = 0
+        self._profile_orders_open_max = 0
+        self._profile_positions_open_calls = 0
+        self._profile_positions_open_ns = 0
+        self._profile_positions_open_total = 0
+        self._profile_positions_open_max = 0
+        self._profile_position_calls = 0
+        self._profile_position_ns = 0
+        self._profile_position_hits = 0
+        self._profile_position_snapshot_ids_calls = 0
+        self._profile_position_snapshot_ids_ns = 0
+        self._profile_position_snapshot_ids_total = 0
+        self._profile_position_snapshot_ids_max = 0
+        self._profile_position_snapshot_bytes_calls = 0
+        self._profile_position_snapshot_bytes_ns = 0
+        self._profile_position_snapshot_bytes_total = 0
+        self._profile_position_snapshot_bytes_max = 0
+        self._profile_snapshot_position_calls = 0
+        self._profile_snapshot_position_ns = 0
+
+    cpdef dict stratneo_profile_snapshot(self):
+        return {
+            "component": "cache",
+            "enabled": bool(self._stratneo_profile_enabled),
+            "summary": {
+                "orders_open_calls": self._profile_orders_open_calls,
+                "orders_open_total_ms": self._profile_orders_open_ns / 1_000_000.0,
+                "orders_open_total": self._profile_orders_open_total,
+                "orders_open_max": self._profile_orders_open_max,
+                "positions_open_calls": self._profile_positions_open_calls,
+                "positions_open_total_ms": self._profile_positions_open_ns / 1_000_000.0,
+                "positions_open_total": self._profile_positions_open_total,
+                "positions_open_max": self._profile_positions_open_max,
+                "position_calls": self._profile_position_calls,
+                "position_total_ms": self._profile_position_ns / 1_000_000.0,
+                "position_hits": self._profile_position_hits,
+                "position_snapshot_ids_calls": self._profile_position_snapshot_ids_calls,
+                "position_snapshot_ids_total_ms": self._profile_position_snapshot_ids_ns / 1_000_000.0,
+                "position_snapshot_ids_total": self._profile_position_snapshot_ids_total,
+                "position_snapshot_ids_max": self._profile_position_snapshot_ids_max,
+                "position_snapshot_bytes_calls": self._profile_position_snapshot_bytes_calls,
+                "position_snapshot_bytes_total_ms": self._profile_position_snapshot_bytes_ns / 1_000_000.0,
+                "position_snapshot_bytes_total": self._profile_position_snapshot_bytes_total,
+                "position_snapshot_bytes_max": self._profile_position_snapshot_bytes_max,
+                "snapshot_position_calls": self._profile_snapshot_position_calls,
+                "snapshot_position_total_ms": self._profile_snapshot_position_ns / 1_000_000.0,
+            },
+            "samples": [],
+        }
 
     cdef void _build_index_venue_account(self):
         cdef AccountId account_id
@@ -2446,6 +2507,11 @@ cdef class Cache(CacheFacade):
             The position to snapshot.
 
         """
+        cdef uint64_t profile_start_ns = 0
+        if self._stratneo_profile_enabled:
+            self._profile_snapshot_position_calls += 1
+            profile_start_ns = time.perf_counter_ns()
+
         cdef PositionId position_id = position.id
         cdef list[bytes] snapshots = self._position_snapshots.get(position_id)
 
@@ -2468,6 +2534,8 @@ cdef class Cache(CacheFacade):
             self._index_instrument_position_snapshots[instrument_id] = {position_id}
 
         self._log.debug(f"Snapshot {repr(copied_position)}")
+        if self._stratneo_profile_enabled:
+            self._profile_snapshot_position_ns += time.perf_counter_ns() - profile_start_ns
 
     cpdef void snapshot_position_state(
         self,
@@ -4680,9 +4748,22 @@ cdef class Cache(CacheFacade):
         list[Order]
 
         """
+        cdef uint64_t profile_start_ns = 0
+        cdef uint64_t profile_len = 0
+        if self._stratneo_profile_enabled:
+            profile_start_ns = time.perf_counter_ns()
         cdef set client_order_ids = self.client_order_ids_open(venue, instrument_id, strategy_id, account_id)
 
-        return self._get_orders_for_ids(client_order_ids, side)
+        cdef list result = self._get_orders_for_ids(client_order_ids, side)
+        if self._stratneo_profile_enabled:
+            profile_len = len(result)
+            self._profile_orders_open_calls += 1
+            self._profile_orders_open_ns += time.perf_counter_ns() - profile_start_ns
+            self._profile_orders_open_total += profile_len
+            if profile_len > self._profile_orders_open_max:
+                self._profile_orders_open_max = profile_len
+
+        return result
 
     cpdef list orders_closed(
         self,
@@ -5361,9 +5442,19 @@ cdef class Cache(CacheFacade):
         Position or ``None``
 
         """
+        cdef uint64_t profile_start_ns = 0
+        if self._stratneo_profile_enabled:
+            profile_start_ns = time.perf_counter_ns()
         Condition.not_none(position_id, "position_id")
 
-        return self._positions.get(position_id)
+        cdef Position result = self._positions.get(position_id)
+        if self._stratneo_profile_enabled:
+            self._profile_position_calls += 1
+            self._profile_position_ns += time.perf_counter_ns() - profile_start_ns
+            if result is not None:
+                self._profile_position_hits += 1
+
+        return result
 
     cpdef Position position_for_order(self, ClientOrderId client_order_id):
         """
@@ -5453,6 +5544,10 @@ cdef class Cache(CacheFacade):
         set[PositionId]
 
         """
+        cdef uint64_t profile_start_ns = 0
+        cdef uint64_t profile_len = 0
+        if self._stratneo_profile_enabled:
+            profile_start_ns = time.perf_counter_ns()
         cdef set position_ids
         if instrument_id is not None:
             position_ids = self._index_instrument_position_snapshots.get(instrument_id, set())
@@ -5464,6 +5559,14 @@ cdef class Cache(CacheFacade):
             position_ids = {pid for pid in position_ids
                             if ((pid in self._positions and self._positions[pid].account_id == account_id) or
                                 account_id in {pickle.loads(s).account_id for s in self._position_snapshots.get(pid, [])})}
+
+        if self._stratneo_profile_enabled:
+            profile_len = len(position_ids)
+            self._profile_position_snapshot_ids_calls += 1
+            self._profile_position_snapshot_ids_ns += time.perf_counter_ns() - profile_start_ns
+            self._profile_position_snapshot_ids_total += profile_len
+            if profile_len > self._profile_position_snapshot_ids_max:
+                self._profile_position_snapshot_ids_max = profile_len
 
         return position_ids
 
@@ -5482,8 +5585,21 @@ cdef class Cache(CacheFacade):
             The list of pickled snapshot bytes, or empty list if no snapshots exist.
 
         """
+        cdef uint64_t profile_start_ns = 0
+        cdef uint64_t profile_len = 0
+        if self._stratneo_profile_enabled:
+            profile_start_ns = time.perf_counter_ns()
         Condition.not_none(position_id, "position_id")
-        return self._position_snapshots.get(position_id, [])
+        cdef list result = self._position_snapshots.get(position_id, [])
+        if self._stratneo_profile_enabled:
+            profile_len = len(result)
+            self._profile_position_snapshot_bytes_calls += 1
+            self._profile_position_snapshot_bytes_ns += time.perf_counter_ns() - profile_start_ns
+            self._profile_position_snapshot_bytes_total += profile_len
+            if profile_len > self._profile_position_snapshot_bytes_max:
+                self._profile_position_snapshot_bytes_max = profile_len
+
+        return result
 
     cpdef list positions(
         self,
@@ -5551,9 +5667,22 @@ cdef class Cache(CacheFacade):
         list[Position]
 
         """
+        cdef uint64_t profile_start_ns = 0
+        cdef uint64_t profile_len = 0
+        if self._stratneo_profile_enabled:
+            profile_start_ns = time.perf_counter_ns()
         cdef set position_ids = self.position_open_ids(venue, instrument_id, strategy_id, account_id)
 
-        return self._get_positions_for_ids(position_ids, side)
+        cdef list result = self._get_positions_for_ids(position_ids, side)
+        if self._stratneo_profile_enabled:
+            profile_len = len(result)
+            self._profile_positions_open_calls += 1
+            self._profile_positions_open_ns += time.perf_counter_ns() - profile_start_ns
+            self._profile_positions_open_total += profile_len
+            if profile_len > self._profile_positions_open_max:
+                self._profile_positions_open_max = profile_len
+
+        return result
 
     cpdef list positions_closed(
         self,
