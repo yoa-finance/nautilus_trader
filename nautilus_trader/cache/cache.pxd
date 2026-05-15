@@ -120,28 +120,6 @@ cdef class Cache(CacheFacade):
     cdef set _index_exec_algorithms
     cdef bint _drop_instruments_on_reset
     cdef Venue _specific_venue
-    cdef bint _stratneo_profile_enabled
-    cdef uint64_t _profile_orders_open_calls
-    cdef uint64_t _profile_orders_open_ns
-    cdef uint64_t _profile_orders_open_total
-    cdef uint64_t _profile_orders_open_max
-    cdef uint64_t _profile_positions_open_calls
-    cdef uint64_t _profile_positions_open_ns
-    cdef uint64_t _profile_positions_open_total
-    cdef uint64_t _profile_positions_open_max
-    cdef uint64_t _profile_position_calls
-    cdef uint64_t _profile_position_ns
-    cdef uint64_t _profile_position_hits
-    cdef uint64_t _profile_position_snapshot_ids_calls
-    cdef uint64_t _profile_position_snapshot_ids_ns
-    cdef uint64_t _profile_position_snapshot_ids_total
-    cdef uint64_t _profile_position_snapshot_ids_max
-    cdef uint64_t _profile_position_snapshot_bytes_calls
-    cdef uint64_t _profile_position_snapshot_bytes_ns
-    cdef uint64_t _profile_position_snapshot_bytes_total
-    cdef uint64_t _profile_position_snapshot_bytes_max
-    cdef uint64_t _profile_snapshot_position_calls
-    cdef uint64_t _profile_snapshot_position_ns
 
     cdef readonly bint has_backing
     """If the cache has a database backing.\n\n:returns: `bool`"""
@@ -174,10 +152,8 @@ cdef class Cache(CacheFacade):
     cpdef void reset(self)
     cpdef void dispose(self)
     cpdef void flush_db(self)
-    cpdef dict stratneo_profile_snapshot(self)
 
     cdef tuple _build_quote_table(self, Venue venue)
-    cdef void _reset_stratneo_profile(self)
     cdef void _build_index_venue_account(self)
     cdef void _cache_venue_account_id(self, AccountId account_id)
     cdef void _build_indexes_from_orders(self)

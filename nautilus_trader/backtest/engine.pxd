@@ -127,8 +127,6 @@ cdef class BacktestEngine:
     cdef dict[str, uint64_t] _last_subscription_ts
     cdef list[Data] _response_data
 
-    cpdef dict stratneo_profile_snapshot(self)
-
     cdef CVec _advance_time(self, uint64_t ts_now)
     cdef bint _process_next_timer(self)
     cdef void _process_and_settle_venues(self, uint64_t ts_now)
@@ -285,11 +283,6 @@ cdef class SimulatedExchange:
     cdef object _message_queue
     cdef list[tuple[tuple[uint64_t, uint64_t], TradingCommand]] _inflight_queue
     cdef dict[uint64_t, uint64_t] _inflight_counter
-    cdef bint _stratneo_profile_enabled
-    cdef uint64_t _profile_trading_command_calls
-    cdef uint64_t _profile_trading_command_ns
-    cdef uint64_t _profile_matching_process_order_calls
-    cdef uint64_t _profile_matching_process_order_ns
 
 # -- REGISTRATION ---------------------------------------------------------------------------------
 
@@ -330,7 +323,6 @@ cdef class SimulatedExchange:
     cpdef void process_instrument_status(self, InstrumentStatus data)
     cpdef void process(self, uint64_t ts_now)
     cpdef void reset(self)
-    cpdef dict stratneo_profile_snapshot(self)
 
     cdef void _process_instrument_expirations(self, uint64_t ts_now)
     cdef void _update_next_instrument_expiration(self, OrderMatchingEngine matching_engine)
@@ -438,14 +430,8 @@ cdef class OrderMatchingEngine:
     cdef int _position_count
     cdef int _order_count
     cdef int _execution_count
-    cdef bint _stratneo_profile_enabled
-    cdef uint64_t _profile_fill_market_order_calls
-    cdef uint64_t _profile_fill_market_order_ns
-    cdef uint64_t _profile_fill_order_calls
-    cdef uint64_t _profile_fill_order_ns
 
     cpdef void reset(self)
-    cpdef dict stratneo_profile_snapshot(self)
     cpdef void set_fill_model(self, FillModel fill_model)
     cpdef void update_instrument(self, Instrument instrument)
 

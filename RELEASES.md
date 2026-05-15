@@ -1,3 +1,13 @@
+# StratNeo 1.225.0+stratneo.5
+
+Released on 15th May 2026 (UTC).
+
+### Fixes
+- Fixed Portfolio realized PnL snapshot cache state to be scoped by instrument, preventing multi-instrument NETTING backtests from replaying another instrument's closed-position snapshots and progressively slowing down during execution.
+
+### Removed
+- Removed temporary StratNeo backtest profile counters and diagnostic snapshot APIs from the production wheel.
+
 # NautilusTrader 1.225.0 Beta
 
 Released on 6th April 2026 (UTC).

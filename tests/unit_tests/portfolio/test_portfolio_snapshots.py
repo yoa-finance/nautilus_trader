@@ -17,7 +17,9 @@ Tests for Portfolio functionality with position snapshots and PnL calculations.
 """
 
 from decimal import Decimal
+from unittest.mock import patch
 
+import nautilus_trader.portfolio.portfolio as portfolio_module
 from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.model.currencies import USD
 from nautilus_trader.model.data import QuoteTick
@@ -837,25 +839,22 @@ def test_multiple_instruments_cached_independently(
         position.apply(fill2)
         cache.snapshot_position(position)
 
+    original_pickle_loads = portfolio_module.pickle.loads
+
     # Act - Calculate initial PnLs for each instrument
-    aud_pnl_before = portfolio.realized_pnl(AUDUSD_SIM.id)
-    gbp_pnl_before = portfolio.realized_pnl(GBPUSD_SIM.id)
+    with patch.object(portfolio_module.pickle, "loads", wraps=original_pickle_loads) as loads_mock:
+        aud_pnl_before = portfolio.realized_pnl(AUDUSD_SIM.id)
+        gbp_pnl_before = portfolio.realized_pnl(GBPUSD_SIM.id)
+        assert loads_mock.call_count == 5
+
+        assert portfolio.realized_pnl(AUDUSD_SIM.id) == aud_pnl_before
+        assert portfolio.realized_pnl(GBPUSD_SIM.id) == gbp_pnl_before
+        assert loads_mock.call_count == 5
 
     # Verify initial PnLs are calculated correctly
     assert aud_pnl_before.as_decimal() > 0  # Should have positive PnL
     assert gbp_pnl_before.as_decimal() > 0  # Should have positive PnL
     assert aud_pnl_before != gbp_pnl_before  # Should be different for different instruments
-
-    unpickle_after_initial = portfolio.stratneo_profile_snapshot()["summary"]["snapshot_unpickle_count"]
-    assert unpickle_after_initial == 5  # 2 AUD snapshots + 3 GBP snapshots
-
-    # Re-checking another instrument must not prune this instrument's snapshot state.
-    assert portfolio.realized_pnl(AUDUSD_SIM.id) == aud_pnl_before
-    assert portfolio.realized_pnl(GBPUSD_SIM.id) == gbp_pnl_before
-    assert (
-        portfolio.stratneo_profile_snapshot()["summary"]["snapshot_unpickle_count"]
-        == unpickle_after_initial
-    )
 
     # Add one more AUD snapshot
     position_id_new = PositionId("AUD-NEW")
@@ -891,15 +890,15 @@ def test_multiple_instruments_cached_independently(
     cache.snapshot_position(position_new)
 
     # Calculate PnLs again after adding AUD snapshot
-    aud_pnl_after = portfolio.realized_pnl(AUDUSD_SIM.id)
-    gbp_pnl_after = portfolio.realized_pnl(GBPUSD_SIM.id)
-    unpickle_after_new_snapshot = portfolio.stratneo_profile_snapshot()["summary"]["snapshot_unpickle_count"]
+    with patch.object(portfolio_module.pickle, "loads", wraps=original_pickle_loads) as loads_mock:
+        aud_pnl_after = portfolio.realized_pnl(AUDUSD_SIM.id)
+        gbp_pnl_after = portfolio.realized_pnl(GBPUSD_SIM.id)
+        assert loads_mock.call_count == 1
 
     # Assert PnLs are cached independently
     # AUD should include the new snapshot, so it should be different from before
     assert aud_pnl_after.as_decimal() > aud_pnl_before.as_decimal()  # AUD includes new snapshot
     assert gbp_pnl_after == gbp_pnl_before  # GBP should remain unchanged
-    assert unpickle_after_new_snapshot == unpickle_after_initial + 1
 
     # Verify they maintain different values demonstrating independence
     assert aud_pnl_after != gbp_pnl_after
