@@ -66,7 +66,7 @@ homepage = "https://nautilustrader.io"
 
 [workspace.dependencies]
 nautilus-analysis = { package = "stratneo-nautilus-analysis", path = "crates/analysis", version = "0.57.0" }
-nautilus-backtest = { package = "stratneo-nautilus-backtest", path = "crates/backtest", version = "0.57.0" }
+nautilus-backtest = { package = "stratneo-nautilus-backtest", path = "crates/backtest", version = "0.57.1" }
 nautilus-cli = { path = "crates/cli", version = "0.57.0" }
 nautilus-common = { package = "stratneo-nautilus-common", path = "crates/common", version = "0.57.0" }
 nautilus-core = { package = "stratneo-nautilus-core", path = "crates/core", version = "0.57.0" }

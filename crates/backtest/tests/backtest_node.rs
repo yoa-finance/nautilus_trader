@@ -19,12 +19,12 @@ use std::fmt::Debug;
 
 use nautilus_backtest::{
     config::{BacktestDataConfig, BacktestRunConfig, BacktestVenueConfig, NautilusDataType},
-    node::BacktestNode,
+    node::{BacktestDataObserver, BacktestNode},
 };
 use nautilus_common::actor::DataActor;
 use nautilus_core::UnixNanos;
 use nautilus_model::{
-    data::{BarSpecification, QuoteTick, TradeTick},
+    data::{BarSpecification, Data, HasTsInit, QuoteTick, TradeTick},
     enums::{AccountType, AggressorSide, BarAggregation, BookType, OmsType, OrderSide, PriceType},
     identifiers::{InstrumentId, StrategyId, TradeId},
     instruments::{CryptoPerpetual, Instrument, InstrumentAny, stubs::crypto_perpetual_ethusdt},
@@ -146,6 +146,34 @@ fn run_config(
         .data(vec![data_config(catalog_path, instrument_id)])
         .maybe_chunk_size(chunk_size)
         .build()
+}
+
+#[derive(Default)]
+struct RecordingDataObserver {
+    chunk_lengths: Vec<usize>,
+    first_timestamps: Vec<UnixNanos>,
+    last_timestamps: Vec<UnixNanos>,
+}
+
+impl BacktestDataObserver for RecordingDataObserver {
+    fn on_data_chunk(&mut self, data: &[Data]) -> anyhow::Result<()> {
+        self.chunk_lengths.push(data.len());
+        if let Some(first) = data.first() {
+            self.first_timestamps.push(first.ts_init());
+        }
+        if let Some(last) = data.last() {
+            self.last_timestamps.push(last.ts_init());
+        }
+        Ok(())
+    }
+}
+
+struct FailingDataObserver;
+
+impl BacktestDataObserver for FailingDataObserver {
+    fn on_data_chunk(&mut self, _data: &[Data]) -> anyhow::Result<()> {
+        anyhow::bail!("observer failure")
+    }
 }
 
 struct CountingStrategy {
@@ -1062,4 +1090,87 @@ fn test_streaming_same_timestamp_events(crypto_perpetual_ethusdt: CryptoPerpetua
 
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].iterations, 12);
+}
+
+#[rstest]
+fn test_run_with_data_observer_oneshot_receives_loaded_data(
+    crypto_perpetual_ethusdt: CryptoPerpetual,
+) {
+    let instrument = InstrumentAny::CryptoPerpetual(crypto_perpetual_ethusdt);
+    let (_temp_dir, catalog_path) = create_catalog_with_quotes(&instrument, 7, 1_000_000_000);
+    let config = run_config(&catalog_path, instrument.id(), None);
+    let mut node = BacktestNode::new(vec![config]).unwrap();
+    let mut observer = RecordingDataObserver::default();
+
+    let results = node.run_with_data_observer(&mut observer).unwrap();
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].iterations, 7);
+    assert_eq!(observer.chunk_lengths, vec![7]);
+}
+
+#[rstest]
+fn test_run_with_data_observer_streaming_preserves_timestamp_boundary(
+    crypto_perpetual_ethusdt: CryptoPerpetual,
+) {
+    let instrument = InstrumentAny::CryptoPerpetual(crypto_perpetual_ethusdt);
+    let temp_dir = TempDir::new().unwrap();
+    let catalog_path = temp_dir.path().to_str().unwrap().to_string();
+    let catalog = ParquetDataCatalog::new(temp_dir.path(), None, None, None, None);
+
+    catalog.write_instruments(vec![instrument.clone()]).unwrap();
+
+    let instrument_id = instrument.id();
+    let base_ts = 1_000_000_000u64;
+    let quotes: Vec<QuoteTick> = (0..12)
+        .map(|i| {
+            let ts = base_ts + (i / 3) as u64 * 1_000_000_000;
+            let mid = 1000.0 + (i as f64 * 0.5);
+            QuoteTick::new(
+                instrument_id,
+                Price::from(format!("{:.2}", mid - 0.05).as_str()),
+                Price::from(format!("{:.2}", mid + 0.05).as_str()),
+                Quantity::from("1.000"),
+                Quantity::from("1.000"),
+                UnixNanos::from(ts),
+                UnixNanos::from(ts),
+            )
+        })
+        .collect();
+    catalog.write_to_parquet(quotes, None, None, None).unwrap();
+
+    let data = data_config(&catalog_path, instrument_id);
+    let config = BacktestRunConfig::builder()
+        .venues(vec![binance_venue_config()])
+        .data(vec![data])
+        .chunk_size(5)
+        .build();
+    let mut node = BacktestNode::new(vec![config]).unwrap();
+    let mut observer = RecordingDataObserver::default();
+
+    let results = node.run_with_data_observer(&mut observer).unwrap();
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].iterations, 12);
+    assert_eq!(observer.chunk_lengths, vec![6, 6]);
+    assert_eq!(
+        observer.last_timestamps,
+        vec![
+            UnixNanos::from(base_ts + 1_000_000_000),
+            UnixNanos::from(base_ts + 3_000_000_000)
+        ]
+    );
+}
+
+#[rstest]
+fn test_run_with_data_observer_error_aborts_backtest(crypto_perpetual_ethusdt: CryptoPerpetual) {
+    let instrument = InstrumentAny::CryptoPerpetual(crypto_perpetual_ethusdt);
+    let (_temp_dir, catalog_path) = create_catalog_with_quotes(&instrument, 3, 1_000_000_000);
+    let config = run_config(&catalog_path, instrument.id(), Some(2));
+    let mut node = BacktestNode::new(vec![config]).unwrap();
+    let mut observer = FailingDataObserver;
+
+    let err = node.run_with_data_observer(&mut observer).unwrap_err();
+
+    assert!(err.to_string().contains("observer failure"));
 }
