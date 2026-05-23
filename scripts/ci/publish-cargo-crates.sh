@@ -2,10 +2,15 @@
 # Publish workspace crates to crates.io one at a time in dependency order.
 #
 # Usage:
-#   publish-cargo-crates.sh [--check]
+#   publish-cargo-crates.sh [--check] [--package CRATE_NAME] [--version CRATE_VERSION]
+#
+# Examples:
+#   publish-cargo-crates.sh --check --package stratneo-nautilus-backtest --version 0.57.1
+#   publish-cargo-crates.sh --package stratneo-nautilus-backtest --version 0.57.1
 #
 # Required env for publishing:
-#   CARGO_REGISTRY_TOKEN - crates.io token, preferably from trusted publishing
+#   CARGO_REGISTRY_TOKEN - crates.io token
+#   CRATES_IO_TOKEN      - fallback token name used by StratNeo Infisical workflows
 #
 # Optional env:
 #   CARGO_PUBLISH_ATTEMPTS             - cargo publish attempts per crate (default: 3)
@@ -14,21 +19,45 @@
 #   CARGO_PUBLISH_RETRY_DELAY_SECONDS  - retry delay floor after cargo publish failures
 #   CARGO_PUBLISH_SUCCESS_DELAY_SECONDS - delay after a successful publish
 #   CARGO_PUBLISH_WAIT_TIMEOUT_SECONDS - visibility wait per crate (default: 300)
+#   CARGO_PUBLISH_PACKAGE              - only publish this package name
+#   CARGO_PUBLISH_VERSION              - only publish this package version
 #   CARGO_REGISTRY_API_URL             - crates.io API base URL (default: https://crates.io/api/v1)
 #   CARGO_SPARSE_INDEX_URL             - crates.io sparse index URL (default: https://index.crates.io)
 #   CARGO_PUBLISH_USER_AGENT           - crates.io API User-Agent header
 set -euo pipefail
 
 check_only=false
-if [[ "${1:-}" == "--check" ]]; then
-  check_only=true
-  shift
-fi
+publish_package="${CARGO_PUBLISH_PACKAGE:-}"
+publish_version="${CARGO_PUBLISH_VERSION:-}"
 
-if [[ "$#" -ne 0 ]]; then
-  echo "Usage: $0 [--check]" >&2
-  exit 1
-fi
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    --check)
+      check_only=true
+      shift
+      ;;
+    --package)
+      if [[ -z "${2:-}" ]]; then
+        echo "::error::--package requires a crate name."
+        exit 1
+      fi
+      publish_package="$2"
+      shift 2
+      ;;
+    --version)
+      if [[ -z "${2:-}" ]]; then
+        echo "::error::--version requires a crate version."
+        exit 1
+      fi
+      publish_version="$2"
+      shift 2
+      ;;
+    *)
+      echo "Usage: $0 [--check] [--package CRATE_NAME] [--version CRATE_VERSION]" >&2
+      exit 1
+      ;;
+  esac
+done
 
 cargo_publish_attempts="${CARGO_PUBLISH_ATTEMPTS:-3}"
 cargo_publish_delay_seconds="${CARGO_PUBLISH_DELAY_SECONDS:-30}"
@@ -43,13 +72,17 @@ curl_connect_timeout="${CURL_CONNECT_TIMEOUT:-20}"
 curl_max_time="${CURL_MAX_TIME:-300}"
 
 github_url="${GITHUB_SERVER_URL:-https://github.com}"
-github_repository="${GITHUB_REPOSITORY:-nautechsystems/nautilus_trader}"
+github_repository="${GITHUB_REPOSITORY:-StratNeo/nautilus_trader}"
 github_run_id="${GITHUB_RUN_ID:-local}"
-default_user_agent="nautilus-trader-ci (${github_url}/${github_repository}/actions/runs/${github_run_id})"
+default_user_agent="stratneo-nautilus-ci (${github_url}/${github_repository}/actions/runs/${github_run_id})"
 cargo_publish_user_agent="${CARGO_PUBLISH_USER_AGENT:-$default_user_agent}"
 
+if [[ -z "${CARGO_REGISTRY_TOKEN:-}" && -n "${CRATES_IO_TOKEN:-}" ]]; then
+  export CARGO_REGISTRY_TOKEN="$CRATES_IO_TOKEN"
+fi
+
 if [[ "$check_only" == false && -z "${CARGO_REGISTRY_TOKEN:-}" ]]; then
-  echo "::error::CARGO_REGISTRY_TOKEN not set."
+  echo "::error::CARGO_REGISTRY_TOKEN or CRATES_IO_TOKEN not set."
   exit 1
 fi
 
@@ -179,6 +212,38 @@ jq -r '
   | @tsv
 ' "$metadata_file" > "$blocked_dependencies_file"
 
+filter_publish_plan() {
+  local filtered_publish_plan_file="${work_dir}/publish-plan-filtered.tsv"
+
+  if [[ -n "$publish_package" ]]; then
+    awk -F '\t' -v package="$publish_package" '$1 == package { print }' \
+      "$publish_plan_file" > "$filtered_publish_plan_file"
+
+    if [[ ! -s "$filtered_publish_plan_file" ]]; then
+      echo "::error::Package ${publish_package} was not found in the publish plan."
+      exit 1
+    fi
+
+    mv "$filtered_publish_plan_file" "$publish_plan_file"
+  fi
+
+  if [[ -n "$publish_version" ]]; then
+    awk -F '\t' -v version="$publish_version" '$2 == version { print }' \
+      "$publish_plan_file" > "$filtered_publish_plan_file"
+
+    if [[ ! -s "$filtered_publish_plan_file" ]]; then
+      if [[ -n "$publish_package" ]]; then
+        echo "::error::Package ${publish_package} does not have version ${publish_version} in the publish plan."
+      else
+        echo "::error::No publishable workspace crates have version ${publish_version}."
+      fi
+      exit 1
+    fi
+
+    mv "$filtered_publish_plan_file" "$publish_plan_file"
+  fi
+}
+
 curl_crate_version() {
   local crate_name=$1
   local crate_version=$2
@@ -278,6 +343,13 @@ index_version_exists() {
   esac
 }
 
+publish_plan_contains() {
+  local package_name=$1
+
+  awk -F '\t' -v package="$package_name" '$1 == package { found = 1 } END { exit found ? 0 : 1 }' \
+    "$publish_plan_file"
+}
+
 check_blocked_dependencies() {
   local failed=false
   local exists_status=0
@@ -289,6 +361,10 @@ check_blocked_dependencies() {
 
   while IFS=$'\t' read -r package_name package_version dependency_name dependency_version optional; do
     if [[ -z "$package_name" ]]; then
+      continue
+    fi
+
+    if ! publish_plan_contains "$package_name"; then
       continue
     fi
 
@@ -452,6 +528,7 @@ if [[ ! -s "$publish_plan_file" ]]; then
   exit 1
 fi
 
+filter_publish_plan
 check_blocked_dependencies
 
 echo "Publishing crates in dependency order:"
