@@ -15,23 +15,26 @@
 
 //! Example demonstrating live execution testing with the Binance Spot adapter.
 //!
-//! Run with: `cargo run --example binance-spot-exec-tester --package nautilus-binance`
+//! Run with: `cargo run --example binance-spot-exec-tester --package nautilus-binance --features examples`
 //!
 //! Requires environment variables based on the configured environment
 //! (Ed25519 keys are auto-detected):
-//! - Mainnet: `BINANCE_API_KEY` / `BINANCE_API_SECRET`
+//! - Live: `BINANCE_API_KEY` / `BINANCE_API_SECRET`
 //! - Testnet: `BINANCE_TESTNET_API_KEY` / `BINANCE_TESTNET_API_SECRET`
 //! - Demo: `BINANCE_DEMO_API_KEY` / `BINANCE_DEMO_API_SECRET`
 
 use nautilus_binance::{
-    common::enums::{BinanceEnvironment, BinanceProductType},
+    common::{
+        consts::BINANCE_CLIENT_ID,
+        enums::{BinanceEnvironment, BinanceProductType},
+    },
     config::{BinanceDataClientConfig, BinanceExecClientConfig},
     factories::{BinanceDataClientFactory, BinanceExecutionClientFactory},
 };
 use nautilus_common::enums::Environment;
 use nautilus_live::node::LiveNode;
 use nautilus_model::{
-    identifiers::{AccountId, ClientId, InstrumentId, StrategyId, TraderId},
+    identifiers::{AccountId, InstrumentId, StrategyId, TraderId},
     types::Quantity,
 };
 use nautilus_testkit::testers::{ExecTester, ExecTesterConfig};
@@ -45,12 +48,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let trader_id = TraderId::from("TESTER-001");
     let account_id = AccountId::from("BINANCE-001");
     let node_name = "BINANCE-EXEC-TESTER-001".to_string();
-    let client_id = ClientId::new("BINANCE");
+    let client_id = *BINANCE_CLIENT_ID;
     let instrument_id = InstrumentId::from("BTCUSDT.BINANCE");
 
     let data_config = BinanceDataClientConfig {
         product_types: vec![BinanceProductType::Spot],
-        environment: BinanceEnvironment::Mainnet,
+        environment: BinanceEnvironment::Live,
         api_key: None,
         api_secret: None,
         ..Default::default()
@@ -60,7 +63,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         trader_id,
         account_id,
         product_types: vec![BinanceProductType::Spot],
-        environment: BinanceEnvironment::Mainnet,
+        environment: BinanceEnvironment::Live,
         ..Default::default()
     };
 

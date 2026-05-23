@@ -28,8 +28,10 @@ from nautilus_trader.common.component import MessageBus
 from nautilus_trader.common.enums import LogColor
 from nautilus_trader.common.secure import mask_api_key
 from nautilus_trader.core import nautilus_pyo3
+from nautilus_trader.core.data import Data
 from nautilus_trader.core.datetime import ensure_pydatetime_utc
 from nautilus_trader.core.nautilus_pyo3 import DeribitCurrency
+from nautilus_trader.core.nautilus_pyo3 import DeribitEnvironment
 from nautilus_trader.core.nautilus_pyo3 import DeribitUpdateInterval
 from nautilus_trader.data.messages import RequestBars
 from nautilus_trader.data.messages import RequestForwardPrices
@@ -38,6 +40,7 @@ from nautilus_trader.data.messages import RequestInstruments
 from nautilus_trader.data.messages import RequestOrderBookSnapshot
 from nautilus_trader.data.messages import RequestTradeTicks
 from nautilus_trader.data.messages import SubscribeBars
+from nautilus_trader.data.messages import SubscribeData
 from nautilus_trader.data.messages import SubscribeFundingRates
 from nautilus_trader.data.messages import SubscribeIndexPrices
 from nautilus_trader.data.messages import SubscribeInstrument
@@ -49,6 +52,7 @@ from nautilus_trader.data.messages import SubscribeOrderBook
 from nautilus_trader.data.messages import SubscribeQuoteTicks
 from nautilus_trader.data.messages import SubscribeTradeTicks
 from nautilus_trader.data.messages import UnsubscribeBars
+from nautilus_trader.data.messages import UnsubscribeData
 from nautilus_trader.data.messages import UnsubscribeFundingRates
 from nautilus_trader.data.messages import UnsubscribeIndexPrices
 from nautilus_trader.data.messages import UnsubscribeInstrument
@@ -64,6 +68,7 @@ from nautilus_trader.live.cancellation import cancel_tasks_with_timeout
 from nautilus_trader.live.data_client import LiveMarketDataClient
 from nautilus_trader.model.data import Bar
 from nautilus_trader.model.data import BookOrder
+from nautilus_trader.model.data import CustomData
 from nautilus_trader.model.data import DataType
 from nautilus_trader.model.data import FundingRateUpdate
 from nautilus_trader.model.data import InstrumentStatus
@@ -80,6 +85,38 @@ from nautilus_trader.model.enums import book_type_to_str
 from nautilus_trader.model.identifiers import ClientId
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.instruments import Instrument
+
+
+_PYO3DeribitVolatilityIndex: Any = getattr(nautilus_pyo3, "DeribitVolatilityIndex", None)
+
+
+class DeribitVolatilityIndex(Data):
+    """
+    Python data object for Deribit DVOL updates.
+    """
+
+    def __init__(self, index_name: str, volatility: float, ts_event: int, ts_init: int) -> None:
+        self.index_name = index_name
+        self.volatility = volatility
+        self._ts_event = ts_event
+        self._ts_init = ts_init
+
+    @property
+    def ts_event(self) -> int:
+        return self._ts_event
+
+    @property
+    def ts_init(self) -> int:
+        return self._ts_init
+
+    @staticmethod
+    def from_pyo3(pyo3_dvol: Any) -> "DeribitVolatilityIndex":
+        return DeribitVolatilityIndex(
+            index_name=pyo3_dvol.index_name,
+            volatility=pyo3_dvol.volatility,
+            ts_event=pyo3_dvol.ts_event,
+            ts_init=pyo3_dvol.ts_init,
+        )
 
 
 class DeribitDataClient(LiveMarketDataClient):
@@ -131,11 +168,12 @@ class DeribitDataClient(LiveMarketDataClient):
         self._instrument_provider: DeribitInstrumentProvider = instrument_provider
 
         product_types = [k.name for k in config.product_types] if config.product_types else None
+        environment = config.environment or DeribitEnvironment.MAINNET
 
         # Configuration
         self._config = config
         self._log.info(f"config.product_types={product_types}", LogColor.BLUE)
-        self._log.info(f"{config.is_testnet=}", LogColor.BLUE)
+        self._log.info(f"config.environment={environment}", LogColor.BLUE)
         self._log.info(f"{config.http_timeout_secs=}", LogColor.BLUE)
         self._log.info(f"{config.max_retries=}", LogColor.BLUE)
         self._log.info(f"{config.retry_delay_initial_ms=}", LogColor.BLUE)
@@ -150,13 +188,14 @@ class DeribitDataClient(LiveMarketDataClient):
             self._log.info(f"REST API key {masked_key}", LogColor.BLUE)
 
         # WebSocket API
-        ws_url = config.base_url_ws or nautilus_pyo3.get_deribit_ws_url(config.is_testnet)
+        ws_url = config.base_url_ws or nautilus_pyo3.get_deribit_ws_url(environment)
         self._ws_client = nautilus_pyo3.DeribitWebSocketClient(
             url=ws_url,
             api_key=config.api_key,
             api_secret=config.api_secret,
             heartbeat_interval=DERIBIT_WS_HEARTBEAT_SECS,
-            is_testnet=config.is_testnet,
+            environment=environment,
+            proxy_url=config.proxy_url,
         )
         self._ws_client_futures: set[asyncio.Future] = set()
 
@@ -243,6 +282,27 @@ class DeribitDataClient(LiveMarketDataClient):
 
         return None
 
+    async def _subscribe(self, command: SubscribeData) -> None:
+        data_type = command.data_type
+        data_type_name = data_type.type.__name__
+
+        if data_type_name == "DeribitVolatilityIndex":
+            metadata = data_type.metadata or {}
+            index_name_raw = metadata.get("index_name")
+            index_name = str(index_name_raw).strip() if index_name_raw is not None else ""
+
+            if not index_name:
+                self._log.warning(
+                    "Rejected Deribit volatility index subscription: "
+                    "missing required metadata `index_name`",
+                )
+                return
+
+            await self._ws_client.subscribe_volatility_index(index_name)
+            return
+
+        self._log.warning(f"Unsupported custom data subscription: {data_type_name}")
+
     async def _subscribe_instruments(self, command: SubscribeInstruments) -> None:
         kind = "any"
         currency = "any"
@@ -310,12 +370,12 @@ class DeribitDataClient(LiveMarketDataClient):
     async def _subscribe_mark_prices(self, command: SubscribeMarkPrices) -> None:
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
         interval = self._get_interval(command.params)
-        await self._ws_client.subscribe_ticker(pyo3_instrument_id, interval)
+        await self._ws_client.subscribe_mark_prices(pyo3_instrument_id, interval)
 
     async def _subscribe_index_prices(self, command: SubscribeIndexPrices) -> None:
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
         interval = self._get_interval(command.params)
-        await self._ws_client.subscribe_ticker(pyo3_instrument_id, interval)
+        await self._ws_client.subscribe_index_prices(pyo3_instrument_id, interval)
 
     async def _subscribe_bars(self, command: SubscribeBars) -> None:
         pyo3_bar_type = nautilus_pyo3.BarType.from_str(str(command.bar_type))
@@ -342,12 +402,33 @@ class DeribitDataClient(LiveMarketDataClient):
     async def _subscribe_option_greeks(self, command: SubscribeOptionGreeks) -> None:
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
         interval = self._get_interval(command.params)
-        await self._ws_client.subscribe_option_greeks(pyo3_instrument_id, interval)  # type: ignore[attr-defined]
+        await self._ws_client.subscribe_option_greeks(pyo3_instrument_id, interval)
 
     async def _unsubscribe_option_greeks(self, command: UnsubscribeOptionGreeks) -> None:
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
         interval = self._get_interval(command.params)
-        await self._ws_client.unsubscribe_option_greeks(pyo3_instrument_id, interval)  # type: ignore[attr-defined]
+        await self._ws_client.unsubscribe_option_greeks(pyo3_instrument_id, interval)
+
+    async def _unsubscribe(self, command: UnsubscribeData) -> None:
+        data_type = command.data_type
+        data_type_name = data_type.type.__name__
+
+        if data_type_name == "DeribitVolatilityIndex":
+            metadata = data_type.metadata or {}
+            index_name_raw = metadata.get("index_name")
+            index_name = str(index_name_raw).strip() if index_name_raw is not None else ""
+
+            if not index_name:
+                self._log.warning(
+                    "Rejected Deribit volatility index unsubscription: "
+                    "missing required metadata `index_name`",
+                )
+                return
+
+            await self._ws_client.unsubscribe_volatility_index(index_name)
+            return
+
+        self._log.warning(f"Unsupported custom data unsubscription: {data_type_name}")
 
     async def _unsubscribe_instruments(self, command: UnsubscribeInstruments) -> None:
         kind = "any"
@@ -402,7 +483,7 @@ class DeribitDataClient(LiveMarketDataClient):
             f"Unsubscribing from mark prices for {command.instrument_id} "
             f"(via ticker channel, interval: {interval_display})",
         )
-        await self._ws_client.unsubscribe_ticker(pyo3_instrument_id, interval)
+        await self._ws_client.unsubscribe_mark_prices(pyo3_instrument_id, interval)
 
     async def _unsubscribe_index_prices(self, command: UnsubscribeIndexPrices) -> None:
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
@@ -412,7 +493,7 @@ class DeribitDataClient(LiveMarketDataClient):
             f"Unsubscribing from index prices for {command.instrument_id} "
             f"(via ticker channel, interval: {interval_display})",
         )
-        await self._ws_client.unsubscribe_ticker(pyo3_instrument_id, interval)
+        await self._ws_client.unsubscribe_index_prices(pyo3_instrument_id, interval)
 
     async def _unsubscribe_bars(self, command: UnsubscribeBars) -> None:
         pyo3_bar_type = nautilus_pyo3.BarType.from_str(str(command.bar_type))
@@ -477,6 +558,7 @@ class DeribitDataClient(LiveMarketDataClient):
         try:
             pyo3_instruments = await self._http_client.request_instruments(currency, product_type)
             instruments = []
+
             for pyo3_instrument in pyo3_instruments:
                 self._cache_instrument(pyo3_instrument)
                 instrument = transform_instrument_from_pyo3(pyo3_instrument)
@@ -688,7 +770,6 @@ class DeribitDataClient(LiveMarketDataClient):
             )
         except Exception as e:
             self._log.error(f"Failed to request forward prices for {request.underlying}: {e}")
-            # Send empty response so engine can fall back
             self._handle_forward_prices([], request.id, request.params or {})
             return
 
@@ -705,6 +786,22 @@ class DeribitDataClient(LiveMarketDataClient):
                 # to `Data` is still owned and managed by Rust.
                 data = capsule_to_data(msg)
                 self._handle_data(data)
+            elif isinstance(msg, nautilus_pyo3.CustomData):
+                if _PYO3DeribitVolatilityIndex is None:
+                    self._log.warning(
+                        "DeribitVolatilityIndex type is not available in nautilus_pyo3",
+                    )
+                    return
+
+                if not isinstance(msg.data, _PYO3DeribitVolatilityIndex):
+                    self._log.warning(
+                        f"Unsupported Deribit custom payload type: {type(msg.data).__name__}",
+                    )
+                    return
+
+                inner = DeribitVolatilityIndex.from_pyo3(msg.data)
+                data_type = DataType(DeribitVolatilityIndex, metadata=msg.data_type.metadata)
+                self._handle_data(CustomData(data_type=data_type, data=inner))
             elif isinstance(msg, nautilus_pyo3.InstrumentStatus):
                 self._handle_data(InstrumentStatus.from_pyo3(msg))
             elif hasattr(msg, "__class__") and "Instrument" in msg.__class__.__name__:

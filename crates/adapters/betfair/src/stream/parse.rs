@@ -187,39 +187,65 @@ pub fn make_trade_tick(
     )
 }
 
-/// Converts a Betfair [`MarketStatus`] and `in_play` flag into a Nautilus [`InstrumentStatus`].
+/// Produces per-runner [`InstrumentStatus`] events from a market definition.
 ///
-/// The `in_play` flag distinguishes pre-open (Open + not in play) from active
-/// trading (Open + in play), matching Betfair's market lifecycle.
+/// Iterates `def.runners` and maps each runner's lifecycle to a Nautilus status.
+/// Scratched runners (`Removed`, `RemovedVacant`) close immediately regardless
+/// of market-level state. The `in_play` flag distinguishes pre-open (Open + not
+/// in play) from active trading (Open + in play).
+///
+/// Returns an empty vector when `def.status` or `def.runners` is missing.
 #[must_use]
-pub fn parse_instrument_status(
-    instrument_id: InstrumentId,
-    status: MarketStatus,
-    in_play: bool,
+pub fn parse_instrument_statuses(
+    market_id: &str,
+    def: &MarketDefinition,
     ts_event: UnixNanos,
     ts_init: UnixNanos,
-) -> InstrumentStatus {
-    let action = match (status, in_play) {
-        (MarketStatus::Inactive, _) => MarketStatusAction::Close,
-        (MarketStatus::Open, false) => MarketStatusAction::PreOpen,
-        (MarketStatus::Open, true) => MarketStatusAction::Trading,
-        (MarketStatus::Suspended, _) => MarketStatusAction::Pause,
-        (MarketStatus::Closed, _) => MarketStatusAction::Close,
+) -> Vec<InstrumentStatus> {
+    let Some(status) = def.status else {
+        return Vec::new();
     };
+    let Some(runners) = &def.runners else {
+        return Vec::new();
+    };
+    let in_play = def.in_play.unwrap_or(false);
 
-    let is_trading = matches!(status, MarketStatus::Open) && in_play;
-
-    InstrumentStatus::new(
-        instrument_id,
-        action,
-        ts_event,
-        ts_init,
-        None,
-        None,
-        Some(is_trading),
-        None,
-        None,
-    )
+    runners
+        .iter()
+        .map(|rd| {
+            let handicap = rd.hc.unwrap_or(Decimal::ZERO);
+            let instrument_id = make_instrument_id(market_id, rd.id, handicap);
+            let action = match rd.status {
+                Some(RunnerStatus::Removed | RunnerStatus::RemovedVacant) => {
+                    MarketStatusAction::Close
+                }
+                _ => match (status, in_play) {
+                    (MarketStatus::Inactive, _) => MarketStatusAction::Close,
+                    (MarketStatus::Open, false) => MarketStatusAction::PreOpen,
+                    (MarketStatus::Open, true) => MarketStatusAction::Trading,
+                    (MarketStatus::Suspended, _) => MarketStatusAction::Pause,
+                    (MarketStatus::Closed, _) => MarketStatusAction::Close,
+                },
+            };
+            let is_trading = matches!(status, MarketStatus::Open)
+                && in_play
+                && !matches!(
+                    rd.status,
+                    Some(RunnerStatus::Removed | RunnerStatus::RemovedVacant)
+                );
+            InstrumentStatus::new(
+                instrument_id,
+                action,
+                ts_event,
+                ts_init,
+                None,
+                None,
+                Some(is_trading),
+                None,
+                None,
+            )
+        })
+        .collect()
 }
 
 /// Generates a deterministic [`TradeId`] for a Betfair fill.
@@ -255,7 +281,7 @@ impl FillTracker {
     ///
     /// Returns `None` if no new fill occurred (size matched unchanged,
     /// duplicate trade ID, or overfill detected).
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn maybe_fill_report(
         &mut self,
         uo: &UnmatchedOrder,
@@ -316,7 +342,11 @@ impl FillTracker {
 
         let venue_order_id = VenueOrderId::from(uo.id.as_str());
         let order_side = OrderSide::from(uo.side);
-        let client_order_id = uo.rfo.as_deref().map(ClientOrderId::from);
+        let client_order_id = uo
+            .rfo
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .map(ClientOrderId::from);
         let ts_fill = uo.md.map_or(ts_event, parse_millis_timestamp);
 
         Some(make_fill_report(
@@ -379,14 +409,33 @@ impl FillTracker {
 
     /// Pre-populates state for a bet from existing order data.
     ///
-    /// Called during reconnect sync so that the first stream update
-    /// computes a correct incremental fill instead of treating the
-    /// cumulative matched size as a new fill.
+    /// Monotonic in `filled_qty`: keeps the larger of the cached and
+    /// in-memory values so a cache that lags the tracker (engine has
+    /// not yet processed an emitted fill) cannot regress it.
     pub fn sync_order(&mut self, bet_id: &str, filled_qty: Decimal, avg_px: Decimal) {
-        self.filled_qty.insert(bet_id.to_string(), filled_qty);
+        let current = self
+            .filled_qty
+            .get(bet_id)
+            .copied()
+            .unwrap_or(Decimal::ZERO);
 
-        if avg_px > Decimal::ZERO {
-            self.avg_px.insert(bet_id.to_string(), avg_px);
+        if filled_qty > current {
+            self.filled_qty.insert(bet_id.to_string(), filled_qty);
+            if avg_px > Decimal::ZERO {
+                self.avg_px.insert(bet_id.to_string(), avg_px);
+            }
+        }
+    }
+
+    /// Seeds the trade-id dedup set so fills already published via another
+    /// channel are not re-emitted when the post-reconnect image arrives.
+    pub fn seed_published_trade_ids<I, S>(&mut self, trade_ids: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        for id in trade_ids {
+            self.published_trade_ids.insert(id.into());
         }
     }
 
@@ -474,7 +523,11 @@ pub fn parse_order_status_report(
         .map_or(ts_event, parse_millis_timestamp);
 
     let venue_order_id = VenueOrderId::from(uo.id.as_str());
-    let client_order_id = uo.rfo.as_deref().map(ClientOrderId::from);
+    let client_order_id = uo
+        .rfo
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .map(ClientOrderId::from);
 
     let price = Price::from_decimal_dp(uo.p, BETFAIR_PRICE_PRECISION)?;
 
@@ -562,7 +615,7 @@ fn uses_liability_based_stream_quantity(uo: &UnmatchedOrder) -> bool {
 /// Betfair charges commission on net winnings, not per-fill, so commission
 /// is set to zero. The `liquidity_side` is unknown from the stream.
 #[must_use]
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub fn make_fill_report(
     account_id: AccountId,
     instrument_id: InstrumentId,
@@ -835,7 +888,7 @@ mod tests {
             enums::{StreamingOrderType, StreamingPersistenceType, StreamingSide},
             testing::load_test_json,
         },
-        stream::messages::{PV, StreamMessage, stream_decode},
+        stream::messages::{PV, RunnerDefinition, StreamMessage, stream_decode},
     };
 
     #[rstest]
@@ -1017,6 +1070,64 @@ mod tests {
         assert_eq!(tick.aggressor_side, AggressorSide::NoAggressor);
     }
 
+    fn make_status_def(
+        status: MarketStatus,
+        in_play: bool,
+        runner_status: RunnerStatus,
+    ) -> MarketDefinition {
+        MarketDefinition {
+            runners: Some(vec![RunnerDefinition {
+                id: 456,
+                hc: None,
+                sort_priority: None,
+                name: None,
+                status: Some(runner_status),
+                adjustment_factor: None,
+                bsp: None,
+                removal_date: None,
+            }]),
+            bet_delay: None,
+            betting_type: None,
+            bsp_market: None,
+            bsp_reconciled: None,
+            competition_id: None,
+            competition_name: None,
+            complete: None,
+            country_code: None,
+            cross_matching: None,
+            discount_allowed: None,
+            each_way_divisor: None,
+            event_id: None,
+            event_name: None,
+            event_type_id: None,
+            event_type_name: None,
+            in_play: Some(in_play),
+            line_interval: None,
+            line_max_unit: None,
+            line_min_unit: None,
+            market_base_rate: None,
+            market_id: None,
+            market_name: None,
+            market_time: None,
+            market_type: None,
+            number_of_active_runners: None,
+            number_of_winners: None,
+            open_date: None,
+            persistence_enabled: None,
+            price_ladder_definition: None,
+            race_type: None,
+            regulators: None,
+            runners_voidable: None,
+            settled_time: None,
+            status: Some(status),
+            suspend_time: None,
+            timezone: None,
+            turn_in_play_enabled: None,
+            venue: None,
+            version: None,
+        }
+    }
+
     #[rstest]
     #[case(MarketStatus::Open, false, MarketStatusAction::PreOpen, false)]
     #[case(MarketStatus::Open, true, MarketStatusAction::Trading, true)]
@@ -1025,23 +1136,109 @@ mod tests {
     #[case(MarketStatus::Suspended, false, MarketStatusAction::Pause, false)]
     #[case(MarketStatus::Suspended, true, MarketStatusAction::Pause, false)]
     #[case(MarketStatus::Inactive, false, MarketStatusAction::Close, false)]
-    fn test_parse_instrument_status(
+    fn test_parse_instrument_statuses_market_state(
         #[case] status: MarketStatus,
         #[case] in_play: bool,
         #[case] expected_action: MarketStatusAction,
         #[case] expected_is_trading: bool,
     ) {
-        let instrument_id = make_instrument_id("1.123", 456, Decimal::ZERO);
-        let result = parse_instrument_status(
-            instrument_id,
-            status,
-            in_play,
-            UnixNanos::default(),
-            UnixNanos::default(),
-        );
+        let def = make_status_def(status, in_play, RunnerStatus::Active);
+        let results =
+            parse_instrument_statuses("1.123", &def, UnixNanos::default(), UnixNanos::default());
 
-        assert_eq!(result.action, expected_action);
-        assert_eq!(result.is_trading, Some(expected_is_trading));
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].action, expected_action);
+        assert_eq!(results[0].is_trading, Some(expected_is_trading));
+    }
+
+    #[rstest]
+    #[case(RunnerStatus::Removed)]
+    #[case(RunnerStatus::RemovedVacant)]
+    fn test_parse_instrument_statuses_scratched_runner_closes(#[case] runner_status: RunnerStatus) {
+        // Even with Open + in_play the runner must close when scratched
+        let def = make_status_def(MarketStatus::Open, true, runner_status);
+        let results =
+            parse_instrument_statuses("1.123", &def, UnixNanos::default(), UnixNanos::default());
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].action, MarketStatusAction::Close);
+        assert_eq!(results[0].is_trading, Some(false));
+    }
+
+    #[rstest]
+    #[case::missing_runners("runners")]
+    #[case::missing_status("status")]
+    fn test_parse_instrument_statuses_returns_empty(#[case] drop_field: &str) {
+        let mut def = make_status_def(MarketStatus::Open, true, RunnerStatus::Active);
+        match drop_field {
+            "runners" => def.runners = None,
+            "status" => def.status = None,
+            _ => unreachable!(),
+        }
+
+        let results =
+            parse_instrument_statuses("1.123", &def, UnixNanos::default(), UnixNanos::default());
+
+        assert!(results.is_empty());
+    }
+
+    #[rstest]
+    fn test_parse_instrument_statuses_mixed_runners() {
+        // Three runners in one market definition: an Active runner should follow the
+        // market-level mapping while Removed/RemovedVacant override to Close. Verify
+        // that selection id and handicap propagate into the emitted instrument id.
+        let mut def = make_status_def(MarketStatus::Open, true, RunnerStatus::Active);
+        def.runners = Some(vec![
+            RunnerDefinition {
+                id: 101,
+                hc: None,
+                sort_priority: Some(1),
+                name: None,
+                status: Some(RunnerStatus::Active),
+                adjustment_factor: None,
+                bsp: None,
+                removal_date: None,
+            },
+            RunnerDefinition {
+                id: 202,
+                hc: Some(Decimal::new(25, 1)), // 2.5 handicap
+                sort_priority: Some(2),
+                name: None,
+                status: Some(RunnerStatus::Removed),
+                adjustment_factor: None,
+                bsp: None,
+                removal_date: None,
+            },
+            RunnerDefinition {
+                id: 303,
+                hc: None,
+                sort_priority: Some(3),
+                name: None,
+                status: Some(RunnerStatus::RemovedVacant),
+                adjustment_factor: None,
+                bsp: None,
+                removal_date: None,
+            },
+        ]);
+
+        let results =
+            parse_instrument_statuses("1.999", &def, UnixNanos::default(), UnixNanos::default());
+
+        assert_eq!(results.len(), 3);
+
+        assert_eq!(results[0].action, MarketStatusAction::Trading);
+        assert_eq!(results[0].is_trading, Some(true));
+
+        assert_eq!(results[1].action, MarketStatusAction::Close);
+        assert_eq!(results[1].is_trading, Some(false));
+
+        assert_eq!(results[2].action, MarketStatusAction::Close);
+        assert_eq!(results[2].is_trading, Some(false));
+
+        // Each runner produces a distinct instrument id (selection id + handicap)
+        assert_ne!(results[0].instrument_id, results[1].instrument_id);
+        assert_ne!(results[1].instrument_id, results[2].instrument_id);
+        assert_ne!(results[0].instrument_id, results[2].instrument_id);
     }
 
     #[rstest]
@@ -2135,6 +2332,36 @@ mod tests {
     }
 
     #[rstest]
+    fn test_fill_tracker_sync_order_is_monotonic() {
+        let mut tracker = FillTracker::new();
+
+        // Tracker already has 10 from prior stream activity
+        tracker.sync_order("123456", Decimal::new(10, 0), Decimal::new(25, 1));
+
+        // Cache lags (engine hasn't processed the last fill yet) and reports 5
+        tracker.sync_order("123456", Decimal::new(5, 0), Decimal::new(20, 1));
+
+        // Next OCM with sm=15 must emit incremental fill of 5, not 10
+        let uo = make_test_uo(
+            "123456",
+            Decimal::new(20, 0),
+            Some(Decimal::new(15, 0)),
+            Some(Decimal::new(25, 1)),
+        );
+        let result = tracker.maybe_fill_report(
+            &uo,
+            uo.s,
+            InstrumentId::from("1.234567-123456-0.0.BETFAIR"),
+            AccountId::from("BETFAIR-001"),
+            Currency::from("GBP"),
+            UnixNanos::default(),
+            UnixNanos::default(),
+        );
+        let fill = result.expect("should emit incremental fill");
+        assert_eq!(fill.last_qty, Quantity::from("5.00"));
+    }
+
+    #[rstest]
     fn test_fill_tracker_sync_order_allows_incremental_fill() {
         let mut tracker = FillTracker::new();
 
@@ -2159,6 +2386,38 @@ mod tests {
         assert!(result.is_some(), "should emit fill for new matched qty");
         let fill = result.unwrap();
         assert_eq!(fill.last_qty, Quantity::from("5.00"));
+    }
+
+    #[rstest]
+    fn test_fill_tracker_seed_published_trade_ids_blocks_replay() {
+        let mut tracker = FillTracker::new();
+
+        let uo_for_id = make_test_uo(
+            "123456",
+            Decimal::new(20, 0),
+            Some(Decimal::new(10, 0)),
+            Some(Decimal::new(25, 1)),
+        );
+        let trade_id = make_trade_id(&uo_for_id);
+
+        // Seeded trade-id must block even with an empty FillTracker
+        // (cumulative-size gate would otherwise let this fill through)
+        tracker.seed_published_trade_ids([trade_id.to_string()]);
+
+        let result = tracker.maybe_fill_report(
+            &uo_for_id,
+            uo_for_id.s,
+            InstrumentId::from("1.234567-123456-0.0.BETFAIR"),
+            AccountId::from("BETFAIR-001"),
+            Currency::from("GBP"),
+            UnixNanos::default(),
+            UnixNanos::default(),
+        );
+
+        assert!(
+            result.is_none(),
+            "seeded trade-id should suppress duplicate fill",
+        );
     }
 
     #[rstest]
@@ -2481,6 +2740,52 @@ mod tests {
 
         assert_eq!(report.order_status, OrderStatus::Canceled);
         assert_eq!(report.cancel_reason.as_deref(), Some("SP_IN_PLAY"));
+    }
+
+    #[rstest]
+    fn test_parse_order_status_report_blank_rfo_normalizes_to_none() {
+        // Some venues send rfo:"" instead of omitting it. ClientOrderId rejects
+        // empty strings, so the parser must treat blank refs as missing.
+        let uo = UnmatchedOrder {
+            rfo: Some(String::new()),
+            ..make_test_uo("999013", Decimal::new(10, 0), Some(Decimal::ZERO), None)
+        };
+
+        let report = parse_order_status_report(
+            &uo,
+            InstrumentId::from("1.234567-123456-0.0.BETFAIR"),
+            AccountId::from("BETFAIR-001"),
+            UnixNanos::default(),
+            UnixNanos::default(),
+        )
+        .unwrap();
+
+        assert!(report.client_order_id.is_none());
+    }
+
+    #[rstest]
+    fn test_fill_tracker_blank_rfo_normalizes_to_none() {
+        let mut tracker = FillTracker::new();
+        let uo = UnmatchedOrder {
+            rfo: Some(String::new()),
+            sm: Some(Decimal::new(5, 0)),
+            avp: Some(Decimal::new(25, 1)),
+            ..make_test_uo("999015", Decimal::new(10, 0), Some(Decimal::ZERO), None)
+        };
+
+        let fill = tracker
+            .maybe_fill_report(
+                &uo,
+                uo.s,
+                InstrumentId::from("1.234567-123456-0.0.BETFAIR"),
+                AccountId::from("BETFAIR-001"),
+                Currency::from("GBP"),
+                UnixNanos::default(),
+                UnixNanos::default(),
+            )
+            .expect("blank rfo should still produce a fill");
+
+        assert!(fill.client_order_id.is_none());
     }
 
     #[rstest]

@@ -13,47 +13,141 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
+use anyhow::Context;
 use nautilus_core::{UnixNanos, datetime::NANOSECONDS_IN_MICROSECOND};
 use nautilus_model::{
     data::BarSpecification,
     enums::{AggressorSide, BarAggregation, BookAction, OptionKind, OrderSide, PriceType},
-    identifiers::{InstrumentId, Symbol},
+    identifiers::{InstrumentId, Symbol, TradeId},
     types::{PRICE_MAX, PRICE_MIN, Price},
 };
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, de};
 use ustr::Ustr;
-use uuid::Uuid;
 
 use super::enums::{TardisExchange, TardisInstrumentType, TardisOptionType};
+
+// FNV-1a 64-bit constants (see http://www.isthe.com/chongo/tech/comp/fnv/).
+const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0100_0000_01b3;
 
 /// Deserialize a string and convert to uppercase `Ustr`.
 ///
 /// # Errors
 ///
 /// Returns a deserialization error if the input is not a valid string.
-pub fn deserialize_uppercase<'de, D>(deserializer: D) -> Result<Ustr, D::Error>
+pub(crate) fn deserialize_uppercase<'de, D>(deserializer: D) -> Result<Ustr, D::Error>
 where
     D: Deserializer<'de>,
 {
     String::deserialize(deserializer).map(|s| Ustr::from(&s.to_uppercase()))
 }
 
-/// Deserialize a trade ID or generate a new UUID if empty.
+/// Deserializes an `f64` from a JSON number or numeric string.
 ///
 /// # Errors
 ///
-/// Returns a deserialization error if the input cannot be deserialized as a string.
-pub fn deserialize_trade_id<'de, D>(deserializer: D) -> Result<String, D::Error>
+/// Returns a deserialization error if the input is not numeric or if the string cannot be parsed
+/// as `f64`.
+pub(crate) fn deserialize_f64_or_string<'de, D>(deserializer: D) -> Result<f64, D::Error>
 where
-    D: serde::Deserializer<'de>,
+    D: Deserializer<'de>,
 {
-    let s = String::deserialize(deserializer)?;
-
-    if s.is_empty() {
-        return Ok(Uuid::new_v4().to_string());
+    struct F64OrString;
+    impl<'de> de::Visitor<'de> for F64OrString {
+        type Value = f64;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("f64 or string-encoded f64")
+        }
+        fn visit_f64<E: de::Error>(self, v: f64) -> Result<f64, E> {
+            Ok(v)
+        }
+        fn visit_i64<E: de::Error>(self, v: i64) -> Result<f64, E> {
+            Ok(v as f64)
+        }
+        fn visit_u64<E: de::Error>(self, v: u64) -> Result<f64, E> {
+            Ok(v as f64)
+        }
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<f64, E> {
+            v.parse().map_err(de::Error::custom)
+        }
     }
+    deserializer.deserialize_any(F64OrString)
+}
 
-    Ok(s)
+/// Deserializes an optional `f64` from null, a JSON number, or a numeric string.
+///
+/// # Errors
+///
+/// Returns a deserialization error if a non-null input is not numeric or if the string cannot be
+/// parsed as `f64`.
+pub(crate) fn deserialize_opt_f64_or_string<'de, D>(
+    deserializer: D,
+) -> Result<Option<f64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct OptF64OrString;
+    impl<'de> de::Visitor<'de> for OptF64OrString {
+        type Value = Option<f64>;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("null, f64, or string-encoded f64")
+        }
+        fn visit_none<E: de::Error>(self) -> Result<Option<f64>, E> {
+            Ok(None)
+        }
+        fn visit_unit<E: de::Error>(self) -> Result<Option<f64>, E> {
+            Ok(None)
+        }
+        fn visit_f64<E: de::Error>(self, v: f64) -> Result<Option<f64>, E> {
+            Ok(Some(v))
+        }
+        fn visit_i64<E: de::Error>(self, v: i64) -> Result<Option<f64>, E> {
+            Ok(Some(v as f64))
+        }
+        fn visit_u64<E: de::Error>(self, v: u64) -> Result<Option<f64>, E> {
+            Ok(Some(v as f64))
+        }
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Option<f64>, E> {
+            v.parse().map(Some).map_err(de::Error::custom)
+        }
+    }
+    deserializer.deserialize_any(OptF64OrString)
+}
+
+/// Derives a deterministic [`TradeId`] from trade fields.
+///
+/// Tardis records do not always carry a venue-provided trade ID (some venues
+/// publish empty strings or omit the field entirely). This hash combines the
+/// symbol, timestamp, price, amount and side so replayed data yields the same
+/// identifier across runs. FNV-1a is stable across architectures and crate
+/// versions; the 0x1f delimiter keeps variable-length fields from colliding.
+#[must_use]
+pub fn derive_trade_id(
+    symbol: Ustr,
+    ts_event_ns: u64,
+    price: f64,
+    amount: f64,
+    side: &str,
+) -> TradeId {
+    let mut hash: u64 = FNV_OFFSET_BASIS;
+
+    for bytes in [
+        symbol.as_str().as_bytes(),
+        b"\x1f",
+        &ts_event_ns.to_le_bytes(),
+        b"\x1f",
+        &price.to_bits().to_le_bytes(),
+        b"\x1f",
+        &amount.to_bits().to_le_bytes(),
+        b"\x1f",
+        side.as_bytes(),
+    ] {
+        for &byte in bytes {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(FNV_PRIME);
+        }
+    }
+    TradeId::new(format!("{hash:016x}"))
 }
 
 #[must_use]
@@ -247,7 +341,29 @@ pub fn parse_bar_spec(value: &str) -> anyhow::Result<BarSpecification> {
         _ => anyhow::bail!("Unsupported bar aggregation type: '{suffix}'"),
     };
 
-    Ok(BarSpecification::new(step, aggregation, PriceType::Last))
+    parse_canonical_bar_spec(step, aggregation)
+        .with_context(|| format!("Invalid bar spec '{value}'"))
+}
+
+fn parse_canonical_bar_spec(
+    step: usize,
+    aggregation: BarAggregation,
+) -> anyhow::Result<BarSpecification> {
+    match aggregation {
+        BarAggregation::Millisecond if step.is_multiple_of(1000) => {
+            parse_canonical_bar_spec(step / 1000, BarAggregation::Second)
+        }
+        BarAggregation::Second if step.is_multiple_of(60) => {
+            parse_canonical_bar_spec(step / 60, BarAggregation::Minute)
+        }
+        BarAggregation::Minute if step.is_multiple_of(60) => {
+            parse_canonical_bar_spec(step / 60, BarAggregation::Hour)
+        }
+        BarAggregation::Hour if step.is_multiple_of(24) => {
+            parse_canonical_bar_spec(step / 24, BarAggregation::Day)
+        }
+        _ => BarSpecification::new_checked(step, aggregation, PriceType::Last),
+    }
 }
 
 /// Converts a Nautilus `BarSpecification` to the Tardis trade bar string convention.
@@ -256,6 +372,26 @@ pub fn parse_bar_spec(value: &str) -> anyhow::Result<BarSpecification> {
 ///
 /// Returns an error if the bar aggregation kind is unsupported.
 pub fn bar_spec_to_tardis_trade_bar_string(bar_spec: &BarSpecification) -> anyhow::Result<String> {
+    match bar_spec.aggregation {
+        BarAggregation::Hour => {
+            let minutes = bar_spec
+                .step
+                .get()
+                .checked_mul(60)
+                .context("bar specification step overflow")?;
+            return Ok(format!("trade_bar_{minutes}m"));
+        }
+        BarAggregation::Day => {
+            let minutes = bar_spec
+                .step
+                .get()
+                .checked_mul(1440)
+                .context("bar specification step overflow")?;
+            return Ok(format!("trade_bar_{minutes}m"));
+        }
+        _ => {}
+    }
+
     let suffix = match bar_spec.aggregation {
         BarAggregation::Millisecond => "ms",
         BarAggregation::Second => "s",
@@ -425,7 +561,9 @@ mod tests {
 
     #[rstest]
     #[case("trade_bar_10ms", 10, BarAggregation::Millisecond)]
+    #[case("trade_bar_10000ms", 10, BarAggregation::Second)]
     #[case("trade_bar_5m", 5, BarAggregation::Minute)]
+    #[case("trade_bar_60m", 1, BarAggregation::Hour)]
     #[case("trade_bar_100ticks", 100, BarAggregation::Tick)]
     #[case("trade_bar_100000vol", 100000, BarAggregation::Volume)]
     fn test_parse_bar_spec(
@@ -462,6 +600,14 @@ mod tests {
         "trade_bar_5m"
     )]
     #[case(
+        BarSpecification::new(1, BarAggregation::Hour, PriceType::Last),
+        "trade_bar_60m"
+    )]
+    #[case(
+        BarSpecification::new(2, BarAggregation::Day, PriceType::Last),
+        "trade_bar_2880m"
+    )]
+    #[case(
         BarSpecification::new(100, BarAggregation::Tick, PriceType::Last),
         "trade_bar_100ticks"
     )]
@@ -474,5 +620,33 @@ mod tests {
             bar_spec_to_tardis_trade_bar_string(&bar_spec).unwrap(),
             expected
         );
+    }
+
+    #[rstest]
+    fn test_derive_trade_id_is_deterministic_and_16_hex_chars() {
+        let first = derive_trade_id(Ustr::from("XBTUSD"), 1_700_000_000, 7996.0, 50.0, "sell");
+        let second = derive_trade_id(Ustr::from("XBTUSD"), 1_700_000_000, 7996.0, 50.0, "sell");
+        assert_eq!(first, second);
+        assert_eq!(first.as_str().len(), 16);
+    }
+
+    #[rstest]
+    #[case::symbol_changed(derive_trade_id(Ustr::from("ETHUSD"), 1, 1.0, 1.0, "buy"))]
+    #[case::ts_changed(derive_trade_id(Ustr::from("XBTUSD"), 2, 1.0, 1.0, "buy"))]
+    #[case::price_changed(derive_trade_id(Ustr::from("XBTUSD"), 1, 2.0, 1.0, "buy"))]
+    #[case::amount_changed(derive_trade_id(Ustr::from("XBTUSD"), 1, 1.0, 2.0, "buy"))]
+    #[case::side_changed(derive_trade_id(Ustr::from("XBTUSD"), 1, 1.0, 1.0, "sell"))]
+    fn test_derive_trade_id_each_field_affects_output(#[case] altered: TradeId) {
+        let baseline = derive_trade_id(Ustr::from("XBTUSD"), 1, 1.0, 1.0, "buy");
+        assert_ne!(baseline, altered);
+    }
+
+    #[rstest]
+    fn test_derive_trade_id_field_delimiter_prevents_collision() {
+        // Without the 0x1f delimiter, concatenated bytes for these two inputs
+        // would collapse into the same stream.
+        let a = derive_trade_id(Ustr::from("A"), 1, 0.0, 0.0, "buy");
+        let b = derive_trade_id(Ustr::from("A\x00"), 256, 0.0, 0.0, "buy");
+        assert_ne!(a, b);
     }
 }

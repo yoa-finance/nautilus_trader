@@ -14,6 +14,16 @@
 // -------------------------------------------------------------------------------------------------
 
 //! Identifiers for the trading domain model.
+//!
+//! # Design notes
+//!
+//! - `TradeId` remains a fixed-size `StackStr` with a 36-character limit.
+//! - High-cardinality external IDs must not use `Ustr`, because interning
+//!   unique values grows process memory without bound.
+//! - Some identifiers still use fixed-size `repr(C)` storage because the
+//!   current Cython/C ABI shares raw layout by value.
+//! - A deeper storage redesign is deferred to V2, when the ABI can move to
+//!   conversion-based bindings instead of layout sharing.
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -42,10 +52,21 @@ pub mod stubs;
 
 // Re-exports
 pub use crate::identifiers::{
-    account_id::AccountId, actor_id::ActorId, client_id::ClientId, client_order_id::ClientOrderId,
-    component_id::ComponentId, exec_algorithm_id::ExecAlgorithmId, instrument_id::InstrumentId,
-    option_series_id::OptionSeriesId, order_list_id::OrderListId, position_id::PositionId,
-    strategy_id::StrategyId, symbol::Symbol, trade_id::TradeId, trader_id::TraderId, venue::Venue,
+    account_id::AccountId,
+    actor_id::ActorId,
+    client_id::ClientId,
+    client_order_id::ClientOrderId,
+    component_id::ComponentId,
+    exec_algorithm_id::ExecAlgorithmId,
+    instrument_id::InstrumentId,
+    option_series_id::OptionSeriesId,
+    order_list_id::OrderListId,
+    position_id::PositionId,
+    strategy_id::{StrategyId, normalize_order_id_tag},
+    symbol::Symbol,
+    trade_id::TradeId,
+    trader_id::TraderId,
+    venue::Venue,
     venue_order_id::VenueOrderId,
 };
 

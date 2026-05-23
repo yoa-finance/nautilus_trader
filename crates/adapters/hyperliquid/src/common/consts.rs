@@ -15,12 +15,24 @@
 
 use std::{sync::LazyLock, time::Duration};
 
-use nautilus_model::{enums::OrderType, identifiers::Venue};
+use nautilus_model::{
+    enums::OrderType,
+    identifiers::{ClientId, Venue},
+};
 use ustr::Ustr;
 
+use super::enums::HyperliquidEnvironment;
+
+/// Venue identifier string.
 pub const HYPERLIQUID: &str = "HYPERLIQUID";
+
+/// Static venue instance.
 pub static HYPERLIQUID_VENUE: LazyLock<Venue> =
     LazyLock::new(|| Venue::new(Ustr::from(HYPERLIQUID)));
+
+/// Static client ID instance.
+pub static HYPERLIQUID_CLIENT_ID: LazyLock<ClientId> =
+    LazyLock::new(|| ClientId::new(Ustr::from(HYPERLIQUID)));
 
 pub const HYPERLIQUID_WS_URL: &str = "wss://api.hyperliquid.xyz/ws";
 pub const HYPERLIQUID_INFO_URL: &str = "https://api.hyperliquid.xyz/info";
@@ -75,30 +87,27 @@ pub const HYPERLIQUID_CONDITIONAL_ORDER_TYPES: &[OrderType] = &[
     OrderType::LimitIfTouched,
 ];
 
-/// Gets WebSocket URL for the specified network.
-pub fn ws_url(is_testnet: bool) -> &'static str {
-    if is_testnet {
-        HYPERLIQUID_TESTNET_WS_URL
-    } else {
-        HYPERLIQUID_WS_URL
+/// Gets WebSocket URL for the specified environment.
+pub fn ws_url(environment: HyperliquidEnvironment) -> &'static str {
+    match environment {
+        HyperliquidEnvironment::Testnet => HYPERLIQUID_TESTNET_WS_URL,
+        HyperliquidEnvironment::Mainnet => HYPERLIQUID_WS_URL,
     }
 }
 
-/// Gets info API URL for the specified network.
-pub fn info_url(is_testnet: bool) -> &'static str {
-    if is_testnet {
-        HYPERLIQUID_TESTNET_INFO_URL
-    } else {
-        HYPERLIQUID_INFO_URL
+/// Gets info API URL for the specified environment.
+pub fn info_url(environment: HyperliquidEnvironment) -> &'static str {
+    match environment {
+        HyperliquidEnvironment::Testnet => HYPERLIQUID_TESTNET_INFO_URL,
+        HyperliquidEnvironment::Mainnet => HYPERLIQUID_INFO_URL,
     }
 }
 
-/// Gets exchange API URL for the specified network.
-pub fn exchange_url(is_testnet: bool) -> &'static str {
-    if is_testnet {
-        HYPERLIQUID_TESTNET_EXCHANGE_URL
-    } else {
-        HYPERLIQUID_EXCHANGE_URL
+/// Gets exchange API URL for the specified environment.
+pub fn exchange_url(environment: HyperliquidEnvironment) -> &'static str {
+    match environment {
+        HyperliquidEnvironment::Testnet => HYPERLIQUID_TESTNET_EXCHANGE_URL,
+        HyperliquidEnvironment::Mainnet => HYPERLIQUID_EXCHANGE_URL,
     }
 }
 
@@ -120,20 +129,35 @@ mod tests {
 
     #[rstest]
     fn test_ws_url() {
-        assert_eq!(ws_url(false), HYPERLIQUID_WS_URL);
-        assert_eq!(ws_url(true), HYPERLIQUID_TESTNET_WS_URL);
+        assert_eq!(ws_url(HyperliquidEnvironment::Mainnet), HYPERLIQUID_WS_URL);
+        assert_eq!(
+            ws_url(HyperliquidEnvironment::Testnet),
+            HYPERLIQUID_TESTNET_WS_URL
+        );
     }
 
     #[rstest]
     fn test_info_url() {
-        assert_eq!(info_url(false), HYPERLIQUID_INFO_URL);
-        assert_eq!(info_url(true), HYPERLIQUID_TESTNET_INFO_URL);
+        assert_eq!(
+            info_url(HyperliquidEnvironment::Mainnet),
+            HYPERLIQUID_INFO_URL
+        );
+        assert_eq!(
+            info_url(HyperliquidEnvironment::Testnet),
+            HYPERLIQUID_TESTNET_INFO_URL
+        );
     }
 
     #[rstest]
     fn test_exchange_url() {
-        assert_eq!(exchange_url(false), HYPERLIQUID_EXCHANGE_URL);
-        assert_eq!(exchange_url(true), HYPERLIQUID_TESTNET_EXCHANGE_URL);
+        assert_eq!(
+            exchange_url(HyperliquidEnvironment::Mainnet),
+            HYPERLIQUID_EXCHANGE_URL
+        );
+        assert_eq!(
+            exchange_url(HyperliquidEnvironment::Testnet),
+            HYPERLIQUID_TESTNET_EXCHANGE_URL
+        );
     }
 
     #[rstest]

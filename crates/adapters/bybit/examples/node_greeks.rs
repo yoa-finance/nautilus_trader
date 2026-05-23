@@ -22,12 +22,16 @@
 //! 4. Subscribes to OptionGreeks for each one
 //! 5. Logs received greeks in the `on_option_greeks` handler
 //!
-//! Run with: `cargo run --example bybit-greeks-tester --package nautilus-bybit`
+//! Run with: `cargo run --example bybit-greeks-tester --package nautilus-bybit --features examples`
 
 use std::fmt::Debug;
 
 use nautilus_bybit::{
-    common::enums::BybitProductType, config::BybitDataClientConfig,
+    common::{
+        consts::{BYBIT_CLIENT_ID, BYBIT_VENUE},
+        enums::BybitProductType,
+    },
+    config::BybitDataClientConfig,
     factories::BybitDataClientFactory,
 };
 use nautilus_common::{
@@ -40,7 +44,7 @@ use nautilus_live::node::LiveNode;
 use nautilus_model::{
     data::option_chain::OptionGreeks,
     enums::OptionKind,
-    identifiers::{ClientId, InstrumentId, TraderId, Venue},
+    identifiers::{ClientId, InstrumentId, TraderId},
     instruments::Instrument,
     stubs::TestDefault,
 };
@@ -74,7 +78,7 @@ impl GreeksTester {
 
 impl DataActor for GreeksTester {
     fn on_start(&mut self) -> anyhow::Result<()> {
-        let venue = Venue::new("BYBIT");
+        let venue = *BYBIT_VENUE;
         let underlying_filter = Ustr::from("BTC");
 
         // Collect option instrument data from cache (owned copies to release borrow)
@@ -189,7 +193,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let environment = Environment::Live;
     let trader_id = TraderId::test_default();
-    let client_id = ClientId::new("BYBIT");
+    let client_id = *BYBIT_CLIENT_ID;
 
     let bybit_config = BybitDataClientConfig {
         api_key: None,    // Will use 'BYBIT_API_KEY' env var

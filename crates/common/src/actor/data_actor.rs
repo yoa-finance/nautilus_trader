@@ -42,9 +42,10 @@ use nautilus_model::{
     enums::BookType,
     events::order::{any::OrderEventAny, canceled::OrderCanceled, filled::OrderFilled},
     identifiers::{ActorId, ClientId, ComponentId, InstrumentId, OptionSeriesId, TraderId, Venue},
-    instruments::InstrumentAny,
+    instruments::{InstrumentAny, SyntheticInstrument},
     orderbook::OrderBook,
 };
+use serde::{Deserialize, Serialize};
 use ustr::Ustr;
 
 #[cfg(feature = "indicators")]
@@ -79,19 +80,19 @@ use crate::{
             UnsubscribeFundingRates, UnsubscribeIndexPrices, UnsubscribeInstrument,
             UnsubscribeInstrumentClose, UnsubscribeInstrumentStatus, UnsubscribeInstruments,
             UnsubscribeMarkPrices, UnsubscribeOptionChain, UnsubscribeOptionGreeks,
-            UnsubscribeQuotes, UnsubscribeTrades,
+            UnsubscribeQuotes, UnsubscribeTrades, is_parent_subscription,
         },
         system::ShutdownSystem,
     },
     msgbus::{
         self, MStr, Pattern, ShareableMessageHandler, Topic, TypedHandler, get_message_bus,
         switchboard::{
-            MessagingSwitchboard, get_bars_topic, get_book_deltas_topic, get_book_snapshots_topic,
-            get_custom_topic, get_funding_rate_topic, get_index_price_topic,
-            get_instrument_close_topic, get_instrument_status_topic, get_instrument_topic,
-            get_instruments_pattern, get_mark_price_topic, get_option_chain_topic,
-            get_option_greeks_topic, get_order_cancels_topic, get_order_fills_topic,
-            get_quotes_topic, get_trades_topic,
+            MessagingSwitchboard, get_bars_topic, get_book_deltas_pattern, get_book_deltas_topic,
+            get_book_snapshots_topic, get_custom_topic, get_funding_rate_topic,
+            get_index_price_topic, get_instrument_close_topic, get_instrument_status_topic,
+            get_instrument_topic, get_instruments_pattern, get_mark_price_topic,
+            get_option_chain_topic, get_option_greeks_topic, get_order_cancels_topic,
+            get_order_fills_topic, get_quotes_topic, get_signal_pattern, get_trades_topic,
         },
     },
     signal::Signal,
@@ -99,7 +100,8 @@ use crate::{
 };
 
 /// Common configuration for [`DataActor`] based components.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
 #[cfg_attr(
     feature = "python",
     pyo3::pyclass(
@@ -132,7 +134,8 @@ impl Default for DataActorConfig {
 }
 
 /// Configuration for creating actors from importable paths.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 #[cfg_attr(
     feature = "python",
     pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.common", from_py_object)
@@ -964,7 +967,8 @@ pub trait DataActor:
 
     /// Handles an instruments response.
     fn handle_instruments_response(&mut self, resp: &InstrumentsResponse) {
-        log_received(&resp);
+        log_received_bulk("InstrumentsResponse", &resp.correlation_id, resp.data.len());
+        log::trace!("{RECV} {resp:?}");
 
         for inst in &resp.data {
             if let Err(e) = self.on_instrument(inst) {
@@ -984,7 +988,8 @@ pub trait DataActor:
 
     /// Handles a quotes response.
     fn handle_quotes_response(&mut self, resp: &QuotesResponse) {
-        log_received(&resp);
+        log_received_bulk("QuotesResponse", &resp.correlation_id, resp.data.len());
+        log::trace!("{RECV} {resp:?}");
 
         if let Err(e) = self.on_historical_quotes(&resp.data) {
             log_error(&e);
@@ -993,7 +998,8 @@ pub trait DataActor:
 
     /// Handles a trades response.
     fn handle_trades_response(&mut self, resp: &TradesResponse) {
-        log_received(&resp);
+        log_received_bulk("TradesResponse", &resp.correlation_id, resp.data.len());
+        log::trace!("{RECV} {resp:?}");
 
         if let Err(e) = self.on_historical_trades(&resp.data) {
             log_error(&e);
@@ -1002,7 +1008,12 @@ pub trait DataActor:
 
     /// Handles a funding rates response.
     fn handle_funding_rates_response(&mut self, resp: &FundingRatesResponse) {
-        log_received(&resp);
+        log_received_bulk(
+            "FundingRatesResponse",
+            &resp.correlation_id,
+            resp.data.len(),
+        );
+        log::trace!("{RECV} {resp:?}");
 
         if let Err(e) = self.on_historical_funding_rates(&resp.data) {
             log_error(&e);
@@ -1011,7 +1022,8 @@ pub trait DataActor:
 
     /// Handles a bars response.
     fn handle_bars_response(&mut self, resp: &BarsResponse) {
-        log_received(&resp);
+        log_received_bulk("BarsResponse", &resp.correlation_id, resp.data.len());
+        log::trace!("{RECV} {resp:?}");
 
         if let Err(e) = self.on_historical_bars(&resp.data) {
             log_error(&e);
@@ -1033,6 +1045,40 @@ pub trait DataActor:
         });
 
         DataActorCore::subscribe_data(self, handler, data_type, client_id, params);
+    }
+
+    /// Subscribe to [`Signal`] data by `name`.
+    ///
+    /// An empty `name` subscribes to every signal.
+    ///
+    /// # Parameters
+    ///
+    /// - `name`: signal name to subscribe to.
+    /// - `priority`: optional dispatch priority. Pass `None` for default
+    ///   ordering (by pattern then handler ID). Pass `Some(p)` when actors
+    ///   sharing a signal need deterministic ordering: higher-priority
+    ///   handlers receive the message before lower-priority handlers.
+    ///
+    /// Re-subscribing does not update an existing priority; call
+    /// [`unsubscribe_signal`](Self::unsubscribe_signal) first.
+    fn subscribe_signal(&mut self, name: &str, priority: Option<u32>)
+    where
+        Self: 'static + Debug + Sized,
+    {
+        let actor_id = self.actor_id().inner();
+        // Signals are published as `CustomData` wrapping a `Signal`; downcast
+        // the inner value so subscribers receive the typed `Signal` in `on_signal`.
+        let handler = ShareableMessageHandler::from_typed(move |data: &CustomData| {
+            if let Some(signal) = data.data.as_any().downcast_ref::<Signal>() {
+                if let Some(mut actor) = try_get_actor_unchecked::<Self>(&actor_id) {
+                    actor.handle_signal(signal);
+                } else {
+                    log::error!("Actor {actor_id} not found for signal handling");
+                }
+            }
+        });
+
+        DataActorCore::subscribe_signal(self, handler, name, priority);
     }
 
     /// Subscribe to streaming [`QuoteTick`] data for the `instrument_id`.
@@ -1070,7 +1116,7 @@ pub trait DataActor:
         let actor_id = self.actor_id().inner();
         let pattern = get_instruments_pattern(venue);
 
-        let handler = ShareableMessageHandler::from_typed(move |instrument: &InstrumentAny| {
+        let handler = TypedHandler::from(move |instrument: &InstrumentAny| {
             if let Some(mut actor) = try_get_actor_unchecked::<Self>(&actor_id) {
                 actor.handle_instrument(instrument);
             } else {
@@ -1093,7 +1139,7 @@ pub trait DataActor:
         let actor_id = self.actor_id().inner();
         let topic = get_instrument_topic(instrument_id);
 
-        let handler = ShareableMessageHandler::from_typed(move |instrument: &InstrumentAny| {
+        let handler = TypedHandler::from(move |instrument: &InstrumentAny| {
             if let Some(mut actor) = try_get_actor_unchecked::<Self>(&actor_id) {
                 actor.handle_instrument(instrument);
             } else {
@@ -1117,7 +1163,12 @@ pub trait DataActor:
         Self: 'static + Debug + Sized,
     {
         let actor_id = self.actor_id().inner();
-        let topic = get_book_deltas_topic(instrument_id);
+        let is_parent = is_parent_subscription(params.as_ref());
+        let pattern = if is_parent {
+            get_book_deltas_pattern(instrument_id)
+        } else {
+            get_book_deltas_topic(instrument_id).into()
+        };
 
         let handler = TypedHandler::from(move |deltas: &OrderBookDeltas| {
             get_actor_unchecked::<Self>(&actor_id).handle_book_deltas(deltas);
@@ -1125,7 +1176,7 @@ pub trait DataActor:
 
         DataActorCore::subscribe_book_deltas(
             self,
-            topic,
+            pattern,
             handler,
             instrument_id,
             book_type,
@@ -1376,6 +1427,7 @@ pub trait DataActor:
         strike_range: StrikeRange,
         snapshot_interval_ms: Option<u64>,
         client_id: Option<ClientId>,
+        params: Option<Params>,
     ) where
         Self: 'static + Debug + Sized,
     {
@@ -1398,6 +1450,7 @@ pub trait DataActor:
             strike_range,
             snapshot_interval_ms,
             client_id,
+            params,
         );
     }
 
@@ -1586,6 +1639,14 @@ pub trait DataActor:
         Self: 'static + Debug + Sized,
     {
         DataActorCore::unsubscribe_data(self, data_type, client_id, params);
+    }
+
+    /// Unsubscribe from [`Signal`] data by `name`.
+    fn unsubscribe_signal(&mut self, name: &str)
+    where
+        Self: 'static + Debug + Sized,
+    {
+        DataActorCore::unsubscribe_signal(self, name);
     }
 
     /// Unsubscribe from streaming [`InstrumentAny`] data for the `venue`.
@@ -2195,8 +2256,9 @@ pub struct DataActorCore {
     cache: Option<Rc<RefCell<Cache>>>,     // Wired up on registration
     state: ComponentState,
     topic_handlers: AHashMap<MStr<Pattern>, ShareableMessageHandler>,
-    deltas_handlers: AHashMap<MStr<Topic>, TypedHandler<OrderBookDeltas>>,
-    depth10_handlers: AHashMap<MStr<Topic>, TypedHandler<OrderBookDepth10>>,
+    instrument_handlers: AHashMap<MStr<Pattern>, TypedHandler<InstrumentAny>>,
+    deltas_handlers: AHashMap<MStr<Pattern>, TypedHandler<OrderBookDeltas>>,
+    depth10_handlers: AHashMap<MStr<Pattern>, TypedHandler<OrderBookDepth10>>,
     book_handlers: AHashMap<MStr<Topic>, TypedHandler<OrderBook>>,
     quote_handlers: AHashMap<MStr<Topic>, TypedHandler<QuoteTick>>,
     trade_handlers: AHashMap<MStr<Topic>, TypedHandler<TradeTick>>,
@@ -2364,71 +2426,71 @@ impl DataActorCore {
 
     pub(crate) fn add_deltas_subscription(
         &mut self,
-        topic: MStr<Topic>,
+        pattern: MStr<Pattern>,
         handler: TypedHandler<OrderBookDeltas>,
     ) {
-        if self.deltas_handlers.contains_key(&topic) {
+        if self.deltas_handlers.contains_key(&pattern) {
             log::warn!(
-                "Actor {} attempted duplicate deltas subscription to '{topic}'",
+                "Actor {} attempted duplicate deltas subscription to '{pattern}'",
                 self.actor_id
             );
             return;
         }
-        self.deltas_handlers.insert(topic, handler.clone());
-        msgbus::subscribe_book_deltas(topic.into(), handler, None);
+        self.deltas_handlers.insert(pattern, handler.clone());
+        msgbus::subscribe_book_deltas(pattern, handler, None);
     }
 
     #[allow(dead_code)]
-    pub(crate) fn remove_deltas_subscription(&mut self, topic: MStr<Topic>) {
-        if let Some(handler) = self.deltas_handlers.remove(&topic) {
-            msgbus::unsubscribe_book_deltas(topic.into(), &handler);
+    pub(crate) fn remove_deltas_subscription(&mut self, pattern: MStr<Pattern>) {
+        if let Some(handler) = self.deltas_handlers.remove(&pattern) {
+            msgbus::unsubscribe_book_deltas(pattern, &handler);
         }
     }
 
     #[allow(dead_code)]
     pub(crate) fn add_depth10_subscription(
         &mut self,
-        topic: MStr<Topic>,
+        pattern: MStr<Pattern>,
         handler: TypedHandler<OrderBookDepth10>,
     ) {
-        if self.depth10_handlers.contains_key(&topic) {
+        if self.depth10_handlers.contains_key(&pattern) {
             log::warn!(
-                "Actor {} attempted duplicate depth10 subscription to '{topic}'",
+                "Actor {} attempted duplicate depth10 subscription to '{pattern}'",
                 self.actor_id
             );
             return;
         }
-        self.depth10_handlers.insert(topic, handler.clone());
-        msgbus::subscribe_book_depth10(topic.into(), handler, None);
+        self.depth10_handlers.insert(pattern, handler.clone());
+        msgbus::subscribe_book_depth10(pattern, handler, None);
     }
 
     #[allow(dead_code)]
-    pub(crate) fn remove_depth10_subscription(&mut self, topic: MStr<Topic>) {
-        if let Some(handler) = self.depth10_handlers.remove(&topic) {
-            msgbus::unsubscribe_book_depth10(topic.into(), &handler);
+    pub(crate) fn remove_depth10_subscription(&mut self, pattern: MStr<Pattern>) {
+        if let Some(handler) = self.depth10_handlers.remove(&pattern) {
+            msgbus::unsubscribe_book_depth10(pattern, &handler);
         }
     }
 
     pub(crate) fn add_instrument_subscription(
         &mut self,
         pattern: MStr<Pattern>,
-        handler: ShareableMessageHandler,
+        handler: TypedHandler<InstrumentAny>,
     ) {
-        if self.topic_handlers.contains_key(&pattern) {
+        if self.instrument_handlers.contains_key(&pattern) {
             log::warn!(
                 "Actor {} attempted duplicate instrument subscription to '{pattern}'",
                 self.actor_id
             );
             return;
         }
-        self.topic_handlers.insert(pattern, handler.clone());
-        msgbus::subscribe_any(pattern, handler, None);
+        self.instrument_handlers.insert(pattern, handler.clone());
+        msgbus::subscribe_instruments(pattern, handler, None);
     }
 
     #[allow(dead_code)]
     pub(crate) fn remove_instrument_subscription(&mut self, pattern: MStr<Pattern>) {
-        if let Some(handler) = self.topic_handlers.remove(&pattern) {
-            msgbus::unsubscribe_any(pattern, &handler);
+        if let Some(handler) = self.instrument_handlers.remove(&pattern) {
+            msgbus::unsubscribe_instruments(pattern, &handler);
         }
     }
 
@@ -2758,6 +2820,7 @@ impl DataActorCore {
             cache: None,     // None until registered
             state: ComponentState::default(),
             topic_handlers: AHashMap::new(),
+            instrument_handlers: AHashMap::new(),
             deltas_handlers: AHashMap::new(),
             depth10_handlers: AHashMap::new(),
             book_handlers: AHashMap::new(),
@@ -2886,8 +2949,6 @@ impl DataActorCore {
             .clone()
     }
 
-    // -- REGISTRATION ----------------------------------------------------------------------------
-
     /// Register the data actor with a trader.
     ///
     /// # Errors
@@ -2999,11 +3060,94 @@ impl DataActorCore {
             self.timestamp_ns(),
         );
 
-        let endpoint = "command.system.shutdown".into();
-        msgbus::send_any(endpoint, command.as_any());
+        let topic = MessagingSwitchboard::shutdown_system_topic();
+        msgbus::publish_any(topic, command.as_any());
     }
 
-    // -- SUBSCRIPTIONS ---------------------------------------------------------------------------
+    /// Publishes `data` on the message bus under the topic derived from `data_type`.
+    ///
+    /// `data_type` is kept as an explicit parameter (rather than deriving it from
+    /// `data.data_type`) to mirror the v1 Python `publish_data(data_type, data)` API and
+    /// to allow callers to override the routing topic from the payload's intrinsic type.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the actor is not registered with a trader.
+    pub fn publish_data(&self, data_type: &DataType, data: &CustomData) {
+        self.check_registered();
+
+        let topic = get_custom_topic(data_type);
+        msgbus::publish_any(topic, data);
+    }
+
+    /// Publishes a [`Signal`] constructed from `name` and `value`, wrapped in [`CustomData`]
+    /// so it is consumed by signal subscribers and by any `CustomData`-aware pipeline
+    /// (for example the feather persistence writer).
+    ///
+    /// The topic mirrors the v1 Python scheme `data.Signal<TitleName>` so subscribers
+    /// using either a specific name or the global wildcard are both notified.
+    /// If `ts_event` is zero then the current clock timestamp is used.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the actor is not registered with a trader.
+    pub fn publish_signal(&self, name: &str, value: String, ts_event: UnixNanos) {
+        self.check_registered();
+
+        let now = self.timestamp_ns();
+        let ts_event = if ts_event.as_u64() == 0 {
+            now
+        } else {
+            ts_event
+        };
+        let signal = Signal::new(Ustr::from(name), value, ts_event, now);
+
+        let data_type = DataType::new(
+            &format!(
+                "Signal{}",
+                nautilus_core::string::conversions::title_case(name)
+            ),
+            None,
+            None,
+        );
+        let data = CustomData::new(Arc::new(signal), data_type);
+        let topic = get_custom_topic(&data.data_type);
+        msgbus::publish_any(topic, &data);
+    }
+
+    /// Adds the `synthetic` instrument to the cache.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a synthetic with the same ID already exists, or if the
+    /// backing cache fails to persist it. Panics if the actor is not registered
+    /// with a trader. // panics-doc-ok
+    pub fn add_synthetic(&self, synthetic: SyntheticInstrument) -> anyhow::Result<()> {
+        self.check_registered();
+
+        let cache = self.cache_rc();
+        if cache.borrow().synthetic(&synthetic.id).is_some() {
+            anyhow::bail!("`synthetic` {} already exists", synthetic.id);
+        }
+        cache.borrow_mut().add_synthetic(synthetic)
+    }
+
+    /// Updates the `synthetic` instrument in the cache, replacing the existing entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no synthetic with the same ID already exists, or if the
+    /// backing cache fails to persist the replacement. Panics if the actor is not
+    /// registered with a trader. // panics-doc-ok
+    pub fn update_synthetic(&self, synthetic: SyntheticInstrument) -> anyhow::Result<()> {
+        self.check_registered();
+
+        let cache = self.cache_rc();
+        if cache.borrow().synthetic(&synthetic.id).is_none() {
+            anyhow::bail!("`synthetic` {} does not exist", synthetic.id);
+        }
+        cache.borrow_mut().add_synthetic(synthetic)
+    }
 
     /// Helper method for registering data subscriptions from the trait.
     ///
@@ -3047,6 +3191,33 @@ impl DataActorCore {
         self.send_data_cmd(DataCommand::Subscribe(command));
     }
 
+    /// Helper method for registering signal subscriptions from the trait.
+    ///
+    /// An empty `name` subscribes to every signal via the `data.Signal*` wildcard pattern.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the actor is not registered with a trader.
+    pub fn subscribe_signal(
+        &mut self,
+        handler: ShareableMessageHandler,
+        name: &str,
+        priority: Option<u32>,
+    ) {
+        self.check_registered();
+
+        let pattern = get_signal_pattern(name);
+        if self.topic_handlers.contains_key(&pattern) {
+            log::warn!(
+                "Actor {} attempted duplicate signal subscription to '{pattern}'",
+                self.actor_id,
+            );
+            return;
+        }
+        self.topic_handlers.insert(pattern, handler.clone());
+        msgbus::subscribe_any(pattern, handler, priority);
+    }
+
     /// Helper method for registering quotes subscriptions from the trait.
     pub fn subscribe_quotes(
         &mut self,
@@ -3077,7 +3248,7 @@ impl DataActorCore {
     pub fn subscribe_instruments(
         &mut self,
         pattern: MStr<Pattern>,
-        handler: ShareableMessageHandler,
+        handler: TypedHandler<InstrumentAny>,
         venue: Venue,
         client_id: Option<ClientId>,
         params: Option<Params>,
@@ -3102,7 +3273,7 @@ impl DataActorCore {
     pub fn subscribe_instrument(
         &mut self,
         topic: MStr<Topic>,
-        handler: ShareableMessageHandler,
+        handler: TypedHandler<InstrumentAny>,
         instrument_id: InstrumentId,
         client_id: Option<ClientId>,
         params: Option<Params>,
@@ -3125,10 +3296,10 @@ impl DataActorCore {
     }
 
     /// Helper method for registering book deltas subscriptions from the trait.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn subscribe_book_deltas(
         &mut self,
-        topic: MStr<Topic>,
+        pattern: MStr<Pattern>,
         handler: TypedHandler<OrderBookDeltas>,
         instrument_id: InstrumentId,
         book_type: BookType,
@@ -3139,7 +3310,7 @@ impl DataActorCore {
     ) {
         self.check_registered();
 
-        self.add_deltas_subscription(topic, handler);
+        self.add_deltas_subscription(pattern, handler);
 
         let command = SubscribeCommand::BookDeltas(SubscribeBookDeltas {
             instrument_id,
@@ -3158,7 +3329,7 @@ impl DataActorCore {
     }
 
     /// Helper method for registering book snapshots subscriptions from the trait.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn subscribe_book_at_interval(
         &mut self,
         topic: MStr<Topic>,
@@ -3408,6 +3579,7 @@ impl DataActorCore {
         strike_range: StrikeRange,
         snapshot_interval_ms: Option<u64>,
         client_id: Option<ClientId>,
+        params: Option<Params>,
     ) {
         self.check_registered();
 
@@ -3421,6 +3593,7 @@ impl DataActorCore {
             self.timestamp_ns(),
             client_id,
             Some(series_id.venue),
+            params,
         ));
 
         self.send_data_cmd(DataCommand::Subscribe(command));
@@ -3473,6 +3646,25 @@ impl DataActorCore {
         });
 
         self.send_data_cmd(DataCommand::Unsubscribe(command));
+    }
+
+    /// Helper method for unsubscribing from signals.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the actor is not registered with a trader.
+    pub fn unsubscribe_signal(&mut self, name: &str) {
+        self.check_registered();
+
+        let pattern = get_signal_pattern(name);
+        if let Some(handler) = self.topic_handlers.remove(&pattern) {
+            msgbus::unsubscribe_any(pattern, &handler);
+        } else {
+            log::warn!(
+                "Actor {} attempted to unsubscribe from signal pattern '{pattern}' when not subscribed",
+                self.actor_id,
+            );
+        }
     }
 
     /// Helper method for unsubscribing from instruments.
@@ -3533,8 +3725,12 @@ impl DataActorCore {
     ) {
         self.check_registered();
 
-        let topic = get_book_deltas_topic(instrument_id);
-        self.remove_deltas_subscription(topic);
+        let pattern = if is_parent_subscription(params.as_ref()) {
+            get_book_deltas_pattern(instrument_id)
+        } else {
+            get_book_deltas_topic(instrument_id).into()
+        };
+        self.remove_deltas_subscription(pattern);
 
         let command = UnsubscribeCommand::BookDeltas(UnsubscribeBookDeltas {
             instrument_id,
@@ -3564,6 +3760,7 @@ impl DataActorCore {
 
         let command = UnsubscribeCommand::BookSnapshots(UnsubscribeBookSnapshots {
             instrument_id,
+            interval_ms,
             client_id,
             venue: Some(instrument_id.venue),
             command_id: UUID4::new(),
@@ -3843,7 +4040,7 @@ impl DataActorCore {
     /// # Errors
     ///
     /// Returns an error if input parameters are invalid.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn request_data(
         &self,
         data_type: DataType,
@@ -3997,7 +4194,7 @@ impl DataActorCore {
     /// # Errors
     ///
     /// Returns an error if input parameters are invalid.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn request_quotes(
         &self,
         instrument_id: InstrumentId,
@@ -4039,7 +4236,7 @@ impl DataActorCore {
     /// # Errors
     ///
     /// Returns an error if input parameters are invalid.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn request_trades(
         &self,
         instrument_id: InstrumentId,
@@ -4081,7 +4278,7 @@ impl DataActorCore {
     /// # Errors
     ///
     /// Returns an error if input parameters are invalid.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn request_funding_rates(
         &self,
         instrument_id: InstrumentId,
@@ -4123,7 +4320,7 @@ impl DataActorCore {
     /// # Errors
     ///
     /// Returns an error if input parameters are invalid.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn request_bars(
         &self,
         bar_type: BarType,
@@ -4198,9 +4395,9 @@ impl DataActorCore {
     }
 
     #[cfg(test)]
-    pub fn has_deltas_handler(&self, topic: &str) -> bool {
+    pub fn has_deltas_handler(&self, pattern: &str) -> bool {
         self.deltas_handlers
-            .contains_key(&MStr::<Topic>::from(topic))
+            .contains_key(&MStr::<Pattern>::from(pattern))
     }
 }
 
@@ -4240,4 +4437,8 @@ where
     T: Debug,
 {
     log::debug!("{RECV} {msg:?}");
+}
+
+fn log_received_bulk(kind: &str, correlation_id: &UUID4, records: usize) {
+    log::debug!("{RECV} {kind} correlation_id={correlation_id} records={records}");
 }

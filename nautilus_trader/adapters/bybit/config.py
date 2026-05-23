@@ -19,9 +19,16 @@ from nautilus_trader.config import LiveDataClientConfig
 from nautilus_trader.config import LiveExecClientConfig
 from nautilus_trader.config import PositiveFloat
 from nautilus_trader.config import PositiveInt
+from nautilus_trader.core.nautilus_pyo3 import BybitEnvironment
 from nautilus_trader.core.nautilus_pyo3 import BybitMarginMode
 from nautilus_trader.core.nautilus_pyo3 import BybitPositionMode
 from nautilus_trader.core.nautilus_pyo3 import BybitProductType
+
+
+def _resolve_environment(
+    environment: BybitEnvironment | None,
+) -> BybitEnvironment:
+    return environment or BybitEnvironment.MAINNET
 
 
 class BybitDataClientConfig(LiveDataClientConfig, frozen=True):
@@ -41,19 +48,14 @@ class BybitDataClientConfig(LiveDataClientConfig, frozen=True):
     product_types : tuple[BybitProductType, ...], optional
         The Bybit product types for the client.
         If not specified then will use all products.
+    environment : BybitEnvironment, optional
+        The Bybit environment for the client (MAINNET, DEMO, or TESTNET).
+        If ``None`` then defaults to MAINNET.
     base_url_http : str, optional
         The base URL for Bybit HTTP API.
         If ``None`` then will use the default URL based on environment.
-    http_proxy_url : str, optional
-        Optional HTTP proxy URL.
-    ws_proxy_url : str, optional
-        Optional WebSocket proxy URL.
-        Note: WebSocket proxy support is not yet implemented. This field is reserved
-        for future functionality. Use `http_proxy_url` for REST API proxy support.
-    demo : bool, default False
-        If the client is connecting to the Bybit demo API.
-    testnet : bool, default False
-        If the client is connecting to the Bybit testnet API.
+    proxy_url : str, optional
+        Optional proxy URL for HTTP and WebSocket transports.
     update_instruments_interval_mins: PositiveInt or None, default 60
         The interval (minutes) between reloading instruments from the venue.
     max_retries : PositiveInt, optional
@@ -76,11 +78,9 @@ class BybitDataClientConfig(LiveDataClientConfig, frozen=True):
     api_key: str | None = None
     api_secret: str | None = None
     product_types: tuple[BybitProductType, ...] | None = None
+    environment: BybitEnvironment | None = None
     base_url_http: str | None = None
-    http_proxy_url: str | None = None
-    ws_proxy_url: str | None = None
-    demo: bool = False
-    testnet: bool = False
+    proxy_url: str | None = None
     update_instruments_interval_mins: PositiveInt | None = 60
     max_retries: PositiveInt | None = None
     retry_delay_initial_ms: PositiveInt | None = None
@@ -109,6 +109,9 @@ class BybitExecClientConfig(LiveExecClientConfig, frozen=True):
         If None then will default to 'SPOT', you also cannot mix 'SPOT' with
         any other product type for execution, and it will use a `CASH` account
         type, vs `MARGIN` for the other derivative products.
+    environment : BybitEnvironment, optional
+        The Bybit environment for the client (MAINNET, DEMO, or TESTNET).
+        If ``None`` then defaults to MAINNET.
     base_url_http : str, optional
         The base URL for Bybit HTTP API.
         If ``None`` then will use the default URL based on environment.
@@ -116,16 +119,8 @@ class BybitExecClientConfig(LiveExecClientConfig, frozen=True):
         The base URL for the `private` WebSocket client.
     base_url_ws_trade : str, optional
         The base URL for the `trade` WebSocket client.
-    http_proxy_url : str, optional
-        Optional HTTP proxy URL.
-    ws_proxy_url : str, optional
-        Optional WebSocket proxy URL.
-        Note: WebSocket proxy support is not yet implemented. This field is reserved
-        for future functionality. Use `http_proxy_url` for REST API proxy support.
-    demo : bool, default False
-        If the client is connecting to the Bybit demo API.
-    testnet : bool, default False
-        If the client is connecting to the Bybit testnet API.
+    proxy_url : str, optional
+        Optional proxy URL for HTTP and WebSocket transports.
     use_gtd : bool, default False
         If False, then GTD time in force will be remapped to GTC
         (this is useful if managing GTD orders locally).
@@ -177,13 +172,11 @@ class BybitExecClientConfig(LiveExecClientConfig, frozen=True):
     api_key: str | None = None
     api_secret: str | None = None
     product_types: tuple[BybitProductType, ...] | None = None
+    environment: BybitEnvironment | None = None
     base_url_http: str | None = None
     base_url_ws_private: str | None = None
     base_url_ws_trade: str | None = None
-    http_proxy_url: str | None = None
-    ws_proxy_url: str | None = None
-    demo: bool = False
-    testnet: bool = False
+    proxy_url: str | None = None
     use_gtd: bool = False  # Not supported on Bybit
     use_ws_execution_fast: bool = False
     use_http_batch_api: bool = False

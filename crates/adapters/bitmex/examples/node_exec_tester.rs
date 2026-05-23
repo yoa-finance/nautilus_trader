@@ -20,16 +20,17 @@
 //! - Testnet: `BITMEX_TESTNET_API_KEY` / `BITMEX_TESTNET_API_SECRET`
 //! - Mainnet: `BITMEX_API_KEY` / `BITMEX_API_SECRET`
 //!
-//! Run with: `cargo run --example bitmex-exec-tester --package nautilus-bitmex`
+//! Run with: `cargo run --example bitmex-exec-tester --package nautilus-bitmex --features examples`
 
 use nautilus_bitmex::{
+    common::{consts::BITMEX_CLIENT_ID, enums::BitmexEnvironment},
     config::{BitmexDataClientConfig, BitmexExecClientConfig},
     factories::{BitmexDataClientFactory, BitmexExecFactoryConfig, BitmexExecutionClientFactory},
 };
 use nautilus_common::enums::Environment;
 use nautilus_live::node::LiveNode;
 use nautilus_model::{
-    identifiers::{ClientId, InstrumentId, StrategyId, TraderId},
+    identifiers::{InstrumentId, StrategyId, TraderId},
     types::Quantity,
 };
 use nautilus_testkit::testers::{ExecTester, ExecTesterConfig};
@@ -39,21 +40,19 @@ use nautilus_trading::strategy::StrategyConfig;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenvy::dotenv().ok();
 
-    let use_testnet = true;
-
     let environment = Environment::Live;
     let trader_id = TraderId::from("TESTER-001");
     let instrument_id = InstrumentId::from("XBTUSD.BITMEX");
 
     let data_config = BitmexDataClientConfig {
-        use_testnet,
+        environment: BitmexEnvironment::Testnet,
         ..Default::default()
     };
 
     let exec_config = BitmexExecFactoryConfig::new(
         trader_id,
         BitmexExecClientConfig {
-            use_testnet,
+            environment: BitmexEnvironment::Testnet,
             ..Default::default()
         },
     );
@@ -76,7 +75,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ..Default::default()
         })
         .instrument_id(instrument_id)
-        .client_id(ClientId::new("BITMEX"))
+        .client_id(*BITMEX_CLIENT_ID)
         .order_qty(Quantity::from("100"))
         .use_post_only(true)
         .log_data(false)

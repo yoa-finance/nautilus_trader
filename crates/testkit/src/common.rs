@@ -110,6 +110,34 @@ pub fn ensure_tardis_deribit_deltas_parquet() -> PathBuf {
     )
 }
 
+/// Ensures the HISTDATA EURUSD.SIM quotes Parquet file exists locally, downloading from R2
+/// if necessary.
+///
+/// # Panics
+///
+/// Panics if the download or checksum verification fails.
+#[must_use]
+pub fn ensure_histdata_eurusd_quotes_parquet() -> PathBuf {
+    ensure_test_data_exists(
+        "histdata_EURUSD.SIM_2020-01_quotes.parquet",
+        "https://test-data.nautechsystems.io/large/histdata_EURUSD.SIM_2020-01_quotes.parquet",
+    )
+}
+
+/// Ensures the HISTDATA EURUSD.SIM instrument Parquet file exists locally, downloading from R2
+/// if necessary.
+///
+/// # Panics
+///
+/// Panics if the download or checksum verification fails.
+#[must_use]
+pub fn ensure_histdata_eurusd_instrument_parquet() -> PathBuf {
+    ensure_test_data_exists(
+        "histdata_EURUSD.SIM_2020-01_instrument.parquet",
+        "https://test-data.nautechsystems.io/large/histdata_EURUSD.SIM_2020-01_instrument.parquet",
+    )
+}
+
 /// Returns the path to the Tardis Deribit incremental book L2 test data.
 #[must_use]
 pub fn get_tardis_deribit_book_l2_path() -> PathBuf {
@@ -188,6 +216,7 @@ fn load_deltas_from_parquet(filepath: &Path, limit: Option<usize>) -> Vec<OrderB
     let reader = builder.build().unwrap();
 
     let mut deltas = Vec::new();
+
     for batch_result in reader {
         let batch = batch_result.unwrap();
         let batch_deltas = OrderBookDelta::decode_batch(&metadata, batch).unwrap();

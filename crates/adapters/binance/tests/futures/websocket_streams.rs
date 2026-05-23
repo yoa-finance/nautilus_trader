@@ -38,6 +38,7 @@ use nautilus_binance::{
     futures::websocket::streams::client::BinanceFuturesWebSocketClient,
 };
 use nautilus_common::testing::wait_until_async;
+use nautilus_network::websocket::TransportBackend;
 use rstest::rstest;
 use serde_json::json;
 
@@ -149,7 +150,7 @@ async fn handle_socket(mut socket: WebSocket, state: TestServerState) {
                                     "msg": "Forced subscription failure",
                                     "id": id
                                 });
-                                let _ = socket
+                                let _result = socket
                                     .send(Message::Text(error_response.to_string().into()))
                                     .await;
                                 break;
@@ -268,13 +269,29 @@ fn create_test_client(addr: &SocketAddr) -> BinanceFuturesWebSocketClient {
     let ws_url = format!("ws://{addr}/ws");
     BinanceFuturesWebSocketClient::new(
         BinanceProductType::UsdM,
-        BinanceEnvironment::Mainnet,
+        BinanceEnvironment::Live,
         None,
         None,
         Some(ws_url),
         None,
+        TransportBackend::default(),
     )
     .unwrap()
+}
+
+#[rstest]
+fn test_client_accepts_demo_environment() {
+    let result = BinanceFuturesWebSocketClient::new(
+        BinanceProductType::UsdM,
+        BinanceEnvironment::Demo,
+        None,
+        None,
+        Some("ws://127.0.0.1:1/ws".to_string()),
+        None,
+        TransportBackend::default(),
+    );
+
+    assert!(result.is_ok());
 }
 
 #[rstest]
@@ -584,17 +601,18 @@ async fn test_unsubscribe_request_format() {
 async fn test_connection_failure_invalid_url() {
     let result = BinanceFuturesWebSocketClient::new(
         BinanceProductType::UsdM,
-        BinanceEnvironment::Mainnet,
+        BinanceEnvironment::Live,
         None,
         None,
         Some("ws://127.0.0.1:9999/invalid".to_string()),
         None,
+        TransportBackend::default(),
     );
 
     let mut client = result.unwrap();
 
     let connect_result = client.connect().await;
-    assert!(connect_result.is_err());
+    connect_result.unwrap_err();
 }
 
 #[rstest]
@@ -602,11 +620,12 @@ async fn test_connection_failure_invalid_url() {
 async fn test_default_client_creation_usdm() {
     let client = BinanceFuturesWebSocketClient::new(
         BinanceProductType::UsdM,
-        BinanceEnvironment::Mainnet,
+        BinanceEnvironment::Live,
         None,
         None,
         None,
         None,
+        TransportBackend::default(),
     )
     .unwrap();
 
@@ -620,11 +639,12 @@ async fn test_default_client_creation_usdm() {
 async fn test_default_client_creation_coinm() {
     let client = BinanceFuturesWebSocketClient::new(
         BinanceProductType::CoinM,
-        BinanceEnvironment::Mainnet,
+        BinanceEnvironment::Live,
         None,
         None,
         None,
         None,
+        TransportBackend::default(),
     )
     .unwrap();
 
@@ -638,14 +658,14 @@ async fn test_default_client_creation_coinm() {
 async fn test_invalid_product_type_rejected() {
     let result = BinanceFuturesWebSocketClient::new(
         BinanceProductType::Spot,
-        BinanceEnvironment::Mainnet,
+        BinanceEnvironment::Live,
         None,
         None,
         None,
         None,
+        TransportBackend::default(),
     );
 
-    assert!(result.is_err());
     let err_msg = result.unwrap_err().to_string();
     assert!(err_msg.contains("UsdM or CoinM"));
 }
@@ -669,7 +689,7 @@ async fn test_pool_creates_second_connection_on_overflow() {
     let streams: Vec<String> = (0..201).map(|i| format!("stream{i}@aggTrade")).collect();
 
     let result = client.subscribe(streams).await;
-    assert!(result.is_ok());
+    result.unwrap();
 
     wait_until_async(
         || async { *state.connection_count.lock().await >= 2 },
@@ -886,7 +906,7 @@ async fn test_reconnection_after_server_drop() {
 
     // Drop the connection after the next subscribe
     state.drop_next_connection.store(true, Ordering::Relaxed);
-    let _ = client.subscribe(vec!["ethusdt@aggTrade".to_string()]).await;
+    let _result = client.subscribe(vec!["ethusdt@aggTrade".to_string()]).await;
 
     // Client should reconnect (total connections increases)
     wait_until_async(
@@ -946,7 +966,7 @@ async fn test_is_active_false_during_reconnection() {
 
     // Trigger disconnect after next subscription
     state.drop_next_connection.store(true, Ordering::Relaxed);
-    let _ = client.subscribe(vec!["ethusdt@aggTrade".to_string()]).await;
+    let _result = client.subscribe(vec!["ethusdt@aggTrade".to_string()]).await;
 
     // Client should become inactive during reconnection
     wait_until_async(|| async { !client.is_active() }, Duration::from_secs(5)).await;
@@ -974,7 +994,7 @@ async fn test_rapid_consecutive_reconnections() {
     // Trigger 3 rapid reconnection cycles
     for i in 0..3 {
         state.drop_next_connection.store(true, Ordering::Relaxed);
-        let _ = client.subscribe(vec![format!("stream{i}@aggTrade")]).await;
+        let _result = client.subscribe(vec![format!("stream{i}@aggTrade")]).await;
 
         let expected = initial_total + i + 1;
         wait_until_async(

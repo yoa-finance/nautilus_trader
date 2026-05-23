@@ -27,6 +27,7 @@ use serde::{Deserialize, Serialize};
 
 /// Configuration for `SandboxExecutionClient` instances.
 #[derive(Debug, Clone, Serialize, Deserialize, bon::Builder)]
+#[serde(default, deny_unknown_fields)]
 #[cfg_attr(
     feature = "python",
     pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.sandbox", from_py_object)
@@ -86,7 +87,8 @@ pub struct SandboxExecutionClientConfig {
     /// If venue position IDs will be generated on order fills.
     #[builder(default = true)]
     pub use_position_ids: bool,
-    /// If all venue generated identifiers will be random UUID4's.
+    /// If venue order IDs and position IDs will be random UUID4's.
+    /// Trade IDs are always deterministic and not affected by this flag.
     #[builder(default)]
     pub use_random_ids: bool,
     /// If the `reduce_only` execution instruction on orders will be honored.
@@ -98,26 +100,45 @@ impl SandboxExecutionClientConfig {
     /// Creates an [`OrderMatchingEngineConfig`] from this sandbox config.
     #[must_use]
     pub fn to_matching_engine_config(&self) -> OrderMatchingEngineConfig {
-        OrderMatchingEngineConfig::new(
-            self.bar_execution,
-            false, // bar_adaptive_high_low_ordering
-            self.trade_execution,
-            false, // liquidity_consumption
-            self.reject_stop_orders,
-            self.support_gtd_orders,
-            self.support_contingent_orders,
-            self.use_position_ids,
-            self.use_random_ids,
-            self.use_reduce_only,
-            false, // use_market_order_acks
-            false, // queue_position
-            false, // oto_full_trigger
-        )
+        OrderMatchingEngineConfig::builder()
+            .bar_execution(self.bar_execution)
+            .trade_execution(self.trade_execution)
+            .reject_stop_orders(self.reject_stop_orders)
+            .support_gtd_orders(self.support_gtd_orders)
+            .support_contingent_orders(self.support_contingent_orders)
+            .use_position_ids(self.use_position_ids)
+            .use_random_ids(self.use_random_ids)
+            .use_reduce_only(self.use_reduce_only)
+            .build()
     }
 }
 
 impl Default for SandboxExecutionClientConfig {
     fn default() -> Self {
         Self::builder().build()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rstest::rstest;
+
+    use super::*;
+
+    #[rstest]
+    fn test_exec_config_toml_empty_uses_defaults() {
+        let config: SandboxExecutionClientConfig = toml::from_str("").unwrap();
+        let expected = SandboxExecutionClientConfig::default();
+
+        assert_eq!(config.trader_id, expected.trader_id);
+        assert_eq!(config.account_id, expected.account_id);
+        assert_eq!(config.venue, expected.venue);
+        assert_eq!(config.oms_type, expected.oms_type);
+        assert_eq!(config.account_type, expected.account_type);
+        assert_eq!(config.default_leverage, expected.default_leverage);
+        assert_eq!(config.book_type, expected.book_type);
+        assert_eq!(config.bar_execution, expected.bar_execution);
+        assert_eq!(config.trade_execution, expected.trade_execution);
+        assert_eq!(config.use_position_ids, expected.use_position_ids);
     }
 }

@@ -18,19 +18,19 @@
 use std::{any::Any, cell::RefCell, rc::Rc};
 
 use nautilus_common::{
-    cache::Cache,
+    cache::CacheView,
     clients::{DataClient, ExecutionClient},
     clock::Clock,
+    factories::{ClientConfig, DataClientFactory, ExecutionClientFactory},
 };
 use nautilus_live::ExecutionClientCore;
 use nautilus_model::{
     enums::{AccountType, OmsType},
     identifiers::{AccountId, ClientId, TraderId},
 };
-use nautilus_system::factories::{ClientConfig, DataClientFactory, ExecutionClientFactory};
 
 use crate::{
-    common::consts::HYPERLIQUID_VENUE,
+    common::consts::{HYPERLIQUID, HYPERLIQUID_VENUE},
     config::{HyperliquidDataClientConfig, HyperliquidExecClientConfig},
     data::HyperliquidDataClient,
     execution::HyperliquidExecutionClient,
@@ -82,7 +82,7 @@ impl DataClientFactory for HyperliquidDataClientFactory {
         &self,
         name: &str,
         config: &dyn ClientConfig,
-        _cache: Rc<RefCell<Cache>>,
+        _cache: CacheView,
         _clock: Rc<RefCell<dyn Clock>>,
     ) -> anyhow::Result<Box<dyn DataClient>> {
         let hyperliquid_config = config
@@ -101,7 +101,7 @@ impl DataClientFactory for HyperliquidDataClientFactory {
     }
 
     fn name(&self) -> &'static str {
-        "HYPERLIQUID"
+        HYPERLIQUID
     }
 
     fn config_type(&self) -> &'static str {
@@ -174,7 +174,7 @@ impl ExecutionClientFactory for HyperliquidExecutionClientFactory {
         &self,
         name: &str,
         config: &dyn ClientConfig,
-        cache: Rc<RefCell<Cache>>,
+        cache: CacheView,
     ) -> anyhow::Result<Box<dyn ExecutionClient>> {
         let factory_config = config
             .as_any()
@@ -208,7 +208,7 @@ impl ExecutionClientFactory for HyperliquidExecutionClientFactory {
     }
 
     fn name(&self) -> &'static str {
-        "HYPERLIQUID"
+        HYPERLIQUID
     }
 
     fn config_type(&self) -> &'static str {
@@ -220,9 +220,12 @@ impl ExecutionClientFactory for HyperliquidExecutionClientFactory {
 mod tests {
     use std::{cell::RefCell, rc::Rc};
 
-    use nautilus_common::{cache::Cache, clock::TestClock};
+    use nautilus_common::{
+        cache::Cache,
+        clock::TestClock,
+        factories::{ClientConfig, DataClientFactory, ExecutionClientFactory},
+    };
     use nautilus_model::identifiers::{AccountId, TraderId};
-    use nautilus_system::factories::{ClientConfig, DataClientFactory, ExecutionClientFactory};
     use rstest::rstest;
 
     use super::*;
@@ -231,27 +234,27 @@ mod tests {
     #[rstest]
     fn test_hyperliquid_data_client_factory_creation() {
         let factory = HyperliquidDataClientFactory::new();
-        assert_eq!(factory.name(), "HYPERLIQUID");
+        assert_eq!(factory.name(), HYPERLIQUID);
         assert_eq!(factory.config_type(), "HyperliquidDataClientConfig");
     }
 
     #[rstest]
     fn test_hyperliquid_data_client_factory_default() {
         let factory = HyperliquidDataClientFactory;
-        assert_eq!(factory.name(), "HYPERLIQUID");
+        assert_eq!(factory.name(), HYPERLIQUID);
     }
 
     #[rstest]
     fn test_hyperliquid_execution_client_factory_creation() {
         let factory = HyperliquidExecutionClientFactory::new();
-        assert_eq!(factory.name(), "HYPERLIQUID");
+        assert_eq!(factory.name(), HYPERLIQUID);
         assert_eq!(factory.config_type(), "HyperliquidExecFactoryConfig");
     }
 
     #[rstest]
     fn test_hyperliquid_execution_client_factory_default() {
         let factory = HyperliquidExecutionClientFactory;
-        assert_eq!(factory.name(), "HYPERLIQUID");
+        assert_eq!(factory.name(), HYPERLIQUID);
     }
 
     #[rstest]
@@ -270,7 +273,9 @@ mod tests {
         let config = HyperliquidExecFactoryConfig {
             trader_id: TraderId::from("TRADER-001"),
             account_id: AccountId::from("HYPERLIQUID-001"),
-            config: HyperliquidExecClientConfig::new(Some("test_private_key".to_string())),
+            config: HyperliquidExecClientConfig::builder()
+                .private_key("test_private_key".to_string())
+                .build(),
         };
 
         let boxed_config: Box<dyn ClientConfig> = Box::new(config);
@@ -287,13 +292,15 @@ mod tests {
         let wrong_config = HyperliquidExecFactoryConfig {
             trader_id: TraderId::from("TRADER-001"),
             account_id: AccountId::from("HYPERLIQUID-001"),
-            config: HyperliquidExecClientConfig::new(Some("test_private_key".to_string())),
+            config: HyperliquidExecClientConfig::builder()
+                .private_key("test_private_key".to_string())
+                .build(),
         };
 
         let cache = Rc::new(RefCell::new(Cache::default()));
         let clock = Rc::new(RefCell::new(TestClock::new()));
 
-        let result = factory.create("HYPERLIQUID-TEST", &wrong_config, cache, clock);
+        let result = factory.create("HYPERLIQUID-TEST", &wrong_config, cache.into(), clock);
         assert!(result.is_err());
         assert!(
             result
@@ -311,7 +318,7 @@ mod tests {
 
         let cache = Rc::new(RefCell::new(Cache::default()));
 
-        let result = factory.create("HYPERLIQUID-TEST", &wrong_config, cache);
+        let result = factory.create("HYPERLIQUID-TEST", &wrong_config, cache.into());
         assert!(result.is_err());
         assert!(
             result

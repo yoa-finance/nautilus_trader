@@ -87,6 +87,7 @@ class BinanceExecClientConfig:
         futures_leverages: typing.Mapping[str, int] | None = None,
         futures_margin_types: typing.Mapping[str, BinanceMarginType] | None = None,
         treat_expired_as_canceled: bool = False,
+        use_trade_lite: bool = False,
     ) -> None: ...
 
 @typing.final
@@ -96,7 +97,7 @@ class BinanceExecutionClientFactory:
 
 @typing.final
 class BinanceEnvironment(enum.Enum):
-    MAINNET = ...
+    LIVE = ...
     TESTNET = ...
     DEMO = ...
 

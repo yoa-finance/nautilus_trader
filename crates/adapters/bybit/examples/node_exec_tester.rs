@@ -15,17 +15,20 @@
 
 //! Example demonstrating live execution testing with the Bybit adapter.
 //!
-//! Run with: `cargo run --example bybit-exec-tester --package nautilus-bybit`
+//! Run with: `cargo run --example bybit-exec-tester --package nautilus-bybit --features examples`
 
 use nautilus_bybit::{
-    common::enums::BybitProductType,
+    common::{
+        consts::BYBIT_CLIENT_ID,
+        enums::{BybitEnvironment, BybitProductType},
+    },
     config::{BybitDataClientConfig, BybitExecClientConfig},
     factories::{BybitDataClientFactory, BybitExecutionClientFactory},
 };
 use nautilus_common::enums::Environment;
 use nautilus_live::node::LiveNode;
 use nautilus_model::{
-    identifiers::{AccountId, ClientId, InstrumentId, StrategyId, TraderId},
+    identifiers::{AccountId, InstrumentId, StrategyId, TraderId},
     types::Quantity,
 };
 use nautilus_testkit::testers::{ExecTester, ExecTesterConfig};
@@ -35,14 +38,18 @@ use nautilus_trading::strategy::StrategyConfig;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenvy::dotenv().ok();
 
+    // Mainnet/Demo/Testnet
+    let bybit_environment = BybitEnvironment::Mainnet;
+
     let environment = Environment::Live;
     let trader_id = TraderId::from("TESTER-001");
     let account_id = AccountId::from("BYBIT-001");
     let node_name = "BYBIT-EXEC-TESTER-001".to_string();
-    let client_id = ClientId::new("BYBIT");
+    let client_id = *BYBIT_CLIENT_ID;
     let instrument_id = InstrumentId::from("ETHUSDT-LINEAR.BYBIT");
 
     let data_config = BybitDataClientConfig {
+        environment: bybit_environment,
         api_key: None,    // Will use 'BYBIT_API_KEY' env var
         api_secret: None, // Will use 'BYBIT_API_SECRET' env var
         product_types: vec![BybitProductType::Spot, BybitProductType::Linear],
@@ -50,6 +57,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let exec_config = BybitExecClientConfig {
+        environment: bybit_environment,
         api_key: None,    // Will use 'BYBIT_API_KEY' env var
         api_secret: None, // Will use 'BYBIT_API_SECRET' env var
         product_types: vec![BybitProductType::Spot, BybitProductType::Linear],

@@ -16,6 +16,7 @@
 from nautilus_trader.common.config import PositiveInt
 from nautilus_trader.config import LiveDataClientConfig
 from nautilus_trader.config import LiveExecClientConfig
+from nautilus_trader.core.nautilus_pyo3 import BitmexEnvironment
 
 
 class BitmexDataClientConfig(LiveDataClientConfig, frozen=True):
@@ -27,25 +28,22 @@ class BitmexDataClientConfig(LiveDataClientConfig, frozen=True):
     api_key : str, [default=None]
         The BitMEX API public key.
         If ``None`` then will source the `BITMEX_API_KEY` or `BITMEX_TESTNET_API_KEY`
-        environment variable (depending on the `testnet` setting).
+        environment variable based on `environment`.
     api_secret : str, [default=None]
         The BitMEX API secret key.
         If ``None`` then will source the `BITMEX_API_SECRET` or `BITMEX_TESTNET_API_SECRET`
-        environment variable (depending on the `testnet` setting).
+        environment variable based on `environment`.
+    environment : BitmexEnvironment, optional
+        The BitMEX environment for the client (MAINNET or TESTNET).
+        If ``None`` then defaults to MAINNET.
     base_url_http : str, optional
         The base url to BitMEX's HTTP API.
         If ``None`` then will use the default production URL.
     base_url_ws : str, optional
         The base url to BitMEX's WebSocket API.
         If ``None`` then will use the default production URL.
-    http_proxy_url : str, optional
-        Optional HTTP proxy URL.
-    ws_proxy_url : str, optional
-        Optional WebSocket proxy URL.
-        Note: WebSocket proxy support is not yet implemented. This field is reserved
-        for future functionality. Use `http_proxy_url` for REST API proxy support.
-    testnet : bool, default False
-        If the client is connecting to the BitMEX testnet.
+    proxy_url : str, optional
+        Optional proxy URL for HTTP and WebSocket transports.
     http_timeout_secs : PositiveInt, default 60
         The timeout for HTTP requests in seconds.
     max_retries : PositiveInt, default 3
@@ -72,11 +70,10 @@ class BitmexDataClientConfig(LiveDataClientConfig, frozen=True):
 
     api_key: str | None = None
     api_secret: str | None = None
+    environment: BitmexEnvironment | None = None
     base_url_http: str | None = None
     base_url_ws: str | None = None
-    http_proxy_url: str | None = None
-    ws_proxy_url: str | None = None
-    testnet: bool = False
+    proxy_url: str | None = None
     http_timeout_secs: PositiveInt | None = 60
     max_retries: PositiveInt | None = 3
     retry_delay_initial_ms: PositiveInt | None = 1_000
@@ -96,25 +93,22 @@ class BitmexExecClientConfig(LiveExecClientConfig, frozen=True):
     api_key : str, [default=None]
         The BitMEX API public key.
         If ``None`` then will source the `BITMEX_API_KEY` or `BITMEX_TESTNET_API_KEY`
-        environment variable (depending on the `testnet` setting).
+        environment variable based on `environment`.
     api_secret : str, [default=None]
         The BitMEX API secret key.
         If ``None`` then will source the `BITMEX_API_SECRET` or `BITMEX_TESTNET_API_SECRET`
-        environment variable (depending on the `testnet` setting).
+        environment variable based on `environment`.
+    environment : BitmexEnvironment, optional
+        The BitMEX environment for the client (MAINNET or TESTNET).
+        If ``None`` then defaults to MAINNET.
     base_url_http : str, optional
         The base url to BitMEX's HTTP API.
         If ``None`` then will use the default production URL.
     base_url_ws : str, optional
         The base url to BitMEX's WebSocket API.
         If ``None`` then will use the default production URL.
-    http_proxy_url : str, optional
-        Optional HTTP proxy URL.
-    ws_proxy_url : str, optional
-        Optional WebSocket proxy URL.
-        Note: WebSocket proxy support is not yet implemented. This field is reserved
-        for future functionality. Use `http_proxy_url` for REST API proxy support.
-    testnet : bool, default False
-        If the client is connecting to the BitMEX testnet.
+    proxy_url : str, optional
+        Optional proxy URL for HTTP and WebSocket transports.
     http_timeout_secs : PositiveInt, default 60
         The timeout for HTTP requests in seconds.
     max_retries : PositiveInt, default 3
@@ -161,11 +155,10 @@ class BitmexExecClientConfig(LiveExecClientConfig, frozen=True):
 
     api_key: str | None = None
     api_secret: str | None = None
+    environment: BitmexEnvironment | None = None
     base_url_http: str | None = None
     base_url_ws: str | None = None
-    http_proxy_url: str | None = None
-    ws_proxy_url: str | None = None
-    testnet: bool = False
+    proxy_url: str | None = None
     http_timeout_secs: PositiveInt | None = 60
     max_retries: PositiveInt | None = 3
     retry_delay_initial_ms: PositiveInt | None = 1_000

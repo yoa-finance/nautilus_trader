@@ -21,11 +21,12 @@ use nautilus_model::{
     data::{BarType, DataType},
     identifiers::{ClientId, InstrumentId, Venue},
 };
+use serde::{Deserialize, Serialize};
 use ustr::Ustr;
 
 use super::check_client_id_or_venue;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RequestCustomData {
     pub client_id: ClientId,
     pub data_type: DataType,
@@ -39,7 +40,7 @@ pub struct RequestCustomData {
 
 impl RequestCustomData {
     /// Creates a new [`RequestCustomData`] instance.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn new(
         client_id: ClientId,
         data_type: DataType,
@@ -63,7 +64,7 @@ impl RequestCustomData {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RequestInstrument {
     pub instrument_id: InstrumentId,
     pub start: Option<DateTime<Utc>>,
@@ -76,7 +77,6 @@ pub struct RequestInstrument {
 
 impl RequestInstrument {
     /// Creates a new [`RequestInstrument`] instance.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         instrument_id: InstrumentId,
         start: Option<DateTime<Utc>>,
@@ -98,7 +98,7 @@ impl RequestInstrument {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RequestInstruments {
     pub start: Option<DateTime<Utc>>,
     pub end: Option<DateTime<Utc>>,
@@ -111,7 +111,6 @@ pub struct RequestInstruments {
 
 impl RequestInstruments {
     /// Creates a new [`RequestInstruments`] instance.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         start: Option<DateTime<Utc>>,
         end: Option<DateTime<Utc>>,
@@ -134,7 +133,7 @@ impl RequestInstruments {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RequestBookSnapshot {
     pub instrument_id: InstrumentId,
     pub depth: Option<NonZeroUsize>,
@@ -146,7 +145,6 @@ pub struct RequestBookSnapshot {
 
 impl RequestBookSnapshot {
     /// Creates a new [`RequestBookSnapshot`] instance.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         instrument_id: InstrumentId,
         depth: Option<NonZeroUsize>,
@@ -166,7 +164,7 @@ impl RequestBookSnapshot {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RequestQuotes {
     pub instrument_id: InstrumentId,
     pub start: Option<DateTime<Utc>>,
@@ -180,7 +178,7 @@ pub struct RequestQuotes {
 
 impl RequestQuotes {
     /// Creates a new [`RequestQuotes`] instance.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn new(
         instrument_id: InstrumentId,
         start: Option<DateTime<Utc>>,
@@ -204,7 +202,7 @@ impl RequestQuotes {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RequestTrades {
     pub instrument_id: InstrumentId,
     pub start: Option<DateTime<Utc>>,
@@ -218,7 +216,7 @@ pub struct RequestTrades {
 
 impl RequestTrades {
     /// Creates a new [`RequestTrades`] instance.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn new(
         instrument_id: InstrumentId,
         start: Option<DateTime<Utc>>,
@@ -242,7 +240,7 @@ impl RequestTrades {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RequestFundingRates {
     pub instrument_id: InstrumentId,
     pub start: Option<DateTime<Utc>>,
@@ -256,7 +254,7 @@ pub struct RequestFundingRates {
 
 impl RequestFundingRates {
     /// Creates a new [`RequestFundingRates`] instance.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn new(
         instrument_id: InstrumentId,
         start: Option<DateTime<Utc>>,
@@ -280,7 +278,7 @@ impl RequestFundingRates {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RequestForwardPrices {
     pub venue: Venue,
     pub underlying: Ustr,
@@ -293,7 +291,6 @@ pub struct RequestForwardPrices {
 
 impl RequestForwardPrices {
     /// Creates a new [`RequestForwardPrices`] instance.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         venue: Venue,
         underlying: Ustr,
@@ -315,7 +312,7 @@ impl RequestForwardPrices {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RequestBookDepth {
     pub instrument_id: InstrumentId,
     pub start: Option<DateTime<Utc>>,
@@ -330,7 +327,7 @@ pub struct RequestBookDepth {
 
 impl RequestBookDepth {
     /// Creates a new [`RequestBookDepth`] instance.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn new(
         instrument_id: InstrumentId,
         start: Option<DateTime<Utc>>,
@@ -356,7 +353,7 @@ impl RequestBookDepth {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RequestBars {
     pub bar_type: BarType,
     pub start: Option<DateTime<Utc>>,
@@ -370,7 +367,7 @@ pub struct RequestBars {
 
 impl RequestBars {
     /// Creates a new [`RequestBars`] instance.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn new(
         bar_type: BarType,
         start: Option<DateTime<Utc>>,

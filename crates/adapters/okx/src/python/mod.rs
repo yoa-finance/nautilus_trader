@@ -15,7 +15,7 @@
 
 //! Python bindings from `pyo3`.
 
-#![allow(
+#![expect(
     clippy::missing_errors_doc,
     reason = "errors documented on underlying Rust methods"
 )]
@@ -30,15 +30,13 @@ pub mod websocket;
 
 use std::str::FromStr;
 
+use nautilus_common::factories::{ClientConfig, DataClientFactory, ExecutionClientFactory};
 use nautilus_core::python::{to_pyruntime_err, to_pyvalue_err};
-use nautilus_system::{
-    factories::{ClientConfig, DataClientFactory, ExecutionClientFactory},
-    get_global_pyo3_registry,
-};
+use nautilus_system::get_global_pyo3_registry;
 use pyo3::{prelude::*, types::PyDict};
 
 use crate::{
-    common::enums::OKXTriggerType,
+    common::{consts::OKX, enums::OKXTriggerType},
     config::{OKXDataClientConfig, OKXExecClientConfig},
     factories::{OKXDataClientFactory, OKXExecutionClientFactory},
 };
@@ -58,14 +56,14 @@ pub(super) fn extract_optional_trigger_type(
 ) -> PyResult<Option<OKXTriggerType>> {
     extract_optional_string(dict, key)?
         .map(|value| {
-            OKXTriggerType::from_str(&value).map_err(|_| {
-                to_pyvalue_err(format!("Invalid OKX trigger type {value:?} for {key}"))
+            OKXTriggerType::from_str(&value).map_err(|e| {
+                to_pyvalue_err(format!("Invalid OKX trigger type {value:?} for {key}: {e}"))
             })
         })
         .transpose()
 }
 
-#[allow(clippy::needless_pass_by_value)]
+#[expect(clippy::needless_pass_by_value)]
 fn extract_okx_data_factory(
     py: Python<'_>,
     factory: Py<PyAny>,
@@ -78,7 +76,7 @@ fn extract_okx_data_factory(
     }
 }
 
-#[allow(clippy::needless_pass_by_value)]
+#[expect(clippy::needless_pass_by_value)]
 fn extract_okx_exec_factory(
     py: Python<'_>,
     factory: Py<PyAny>,
@@ -91,7 +89,7 @@ fn extract_okx_exec_factory(
     }
 }
 
-#[allow(clippy::needless_pass_by_value)]
+#[expect(clippy::needless_pass_by_value)]
 fn extract_okx_data_config(py: Python<'_>, config: Py<PyAny>) -> PyResult<Box<dyn ClientConfig>> {
     match config.extract::<OKXDataClientConfig>(py) {
         Ok(c) => Ok(Box::new(c)),
@@ -101,7 +99,7 @@ fn extract_okx_data_config(py: Python<'_>, config: Py<PyAny>) -> PyResult<Box<dy
     }
 }
 
-#[allow(clippy::needless_pass_by_value)]
+#[expect(clippy::needless_pass_by_value)]
 fn extract_okx_exec_config(py: Python<'_>, config: Py<PyAny>) -> PyResult<Box<dyn ClientConfig>> {
     match config.extract::<OKXExecClientConfig>(py) {
         Ok(c) => Ok(Box::new(c)),
@@ -124,11 +122,13 @@ pub fn okx(_: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<crate::http::models::OKXBalanceDetail>()?;
     m.add_class::<crate::common::enums::OKXInstrumentType>()?;
     m.add_class::<crate::common::enums::OKXContractType>()?;
+    m.add_class::<crate::common::enums::OKXGreeksType>()?;
     m.add_class::<crate::common::enums::OKXMarginMode>()?;
     m.add_class::<crate::common::enums::OKXTradeMode>()?;
     m.add_class::<crate::common::enums::OKXOrderStatus>()?;
     m.add_class::<crate::common::enums::OKXPositionMode>()?;
     m.add_class::<crate::common::enums::OKXVipLevel>()?;
+    m.add_class::<crate::common::enums::OKXEnvironment>()?;
     m.add_class::<crate::common::urls::OKXEndpointType>()?;
     m.add_class::<OKXDataClientConfig>()?;
     m.add_class::<OKXExecClientConfig>()?;
@@ -143,15 +143,14 @@ pub fn okx(_: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     let registry = get_global_pyo3_registry();
 
-    if let Err(e) = registry.register_factory_extractor("OKX".to_string(), extract_okx_data_factory)
-    {
+    if let Err(e) = registry.register_factory_extractor(OKX.to_string(), extract_okx_data_factory) {
         return Err(to_pyruntime_err(format!(
             "Failed to register OKX data factory extractor: {e}"
         )));
     }
 
     if let Err(e) =
-        registry.register_exec_factory_extractor("OKX".to_string(), extract_okx_exec_factory)
+        registry.register_exec_factory_extractor(OKX.to_string(), extract_okx_exec_factory)
     {
         return Err(to_pyruntime_err(format!(
             "Failed to register OKX exec factory extractor: {e}"

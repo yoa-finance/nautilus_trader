@@ -49,7 +49,7 @@ use anyhow::Context;
 use chrono::{DateTime, Utc};
 use nautilus_core::{
     AtomicMap, AtomicTime, UnixNanos, consts::NAUTILUS_USER_AGENT,
-    datetime::NANOSECONDS_IN_MILLISECOND, env::get_or_env_var, string::REDACTED,
+    datetime::NANOSECONDS_IN_MILLISECOND, env::get_or_env_var, string::secret::REDACTED,
     time::get_atomic_clock_realtime,
 };
 use nautilus_model::{
@@ -82,7 +82,8 @@ use super::{
     error::OKXHttpError,
     models::{
         OKXAccount, OKXAmendAlgoOrderRequest, OKXAmendAlgoOrderResponse, OKXAttachAlgoOrdRequest,
-        OKXCancelAlgoOrderRequest, OKXCancelAlgoOrderResponse, OKXFeeRate, OKXFundingRateHistory,
+        OKXCancelAlgoOrderRequest, OKXCancelAlgoOrderResponse, OKXEventContractEvent,
+        OKXEventContractMarket, OKXEventContractSeries, OKXFeeRate, OKXFundingRateHistory,
         OKXIndexTicker, OKXMarkPrice, OKXOptionSummary, OKXOrderAlgo, OKXOrderBookSnapshot,
         OKXOrderHistory, OKXPlaceAlgoOrderRequest, OKXPlaceAlgoOrderResponse, OKXPlaceOrderRequest,
         OKXPlaceOrderResponse, OKXPosition, OKXPositionHistory, OKXPositionTier, OKXServerTime,
@@ -90,7 +91,8 @@ use super::{
     },
     query::{
         GetAlgoOrdersParams, GetAlgoOrdersParamsBuilder, GetCandlesticksParams,
-        GetCandlesticksParamsBuilder, GetFundingRateHistoryParams, GetIndexTickerParams,
+        GetCandlesticksParamsBuilder, GetEventContractEventsParams, GetEventContractMarketsParams,
+        GetEventContractSeriesParams, GetFundingRateHistoryParams, GetIndexTickerParams,
         GetIndexTickerParamsBuilder, GetInstrumentsParams, GetInstrumentsParamsBuilder,
         GetMarkPriceParams, GetMarkPriceParamsBuilder, GetOptionSummaryParams, GetOrderBookParams,
         GetOrderHistoryParams, GetOrderHistoryParamsBuilder, GetOrderListParams,
@@ -108,9 +110,10 @@ use crate::{
         },
         credential::Credential,
         enums::{
-            OKXAlgoOrderType, OKXContractType, OKXInstrumentStatus, OKXInstrumentType,
-            OKXOrderStatus, OKXOrderType, OKXPositionMode, OKXPositionSide, OKXSide,
-            OKXTargetCurrency, OKXTradeMode, OKXTriggerType, conditional_order_to_algo_type,
+            OKXAlgoOrderType, OKXContractType, OKXEnvironment, OKXInstrumentStatus,
+            OKXInstrumentType, OKXOrderStatus, OKXOrderType, OKXPositionMode, OKXPositionSide,
+            OKXSide, OKXTargetCurrency, OKXTradeMode, OKXTriggerType,
+            conditional_order_to_algo_type,
         },
         models::OKXInstrument,
         parse::{
@@ -130,6 +133,19 @@ use crate::{
 };
 
 const OKX_SUCCESS_CODE: &str = "0";
+
+/// Ranks a spot instrument's quote currency for deterministic tie-breaking
+/// when multiple pairs share the same base. Matches OKX's dominant-quote
+/// ordering so spot-margin position reports stay on a stable instrument id
+/// across restarts.
+fn spot_quote_priority(symbol: &str) -> u8 {
+    symbol.rsplit_once('-').map_or(4, |(_, quote)| match quote {
+        "USDT" => 0,
+        "USDC" => 1,
+        "USD" => 2,
+        _ => 3,
+    })
+}
 
 fn resolve_okx_error_message(response_body: &[u8], top_level_msg: &str) -> String {
     let message = top_level_msg.trim();
@@ -168,11 +184,47 @@ fn resolve_okx_error_message(response_body: &[u8], top_level_msg: &str) -> Strin
     String::new()
 }
 
+fn deserialize_okx_response<T: DeserializeOwned>(
+    response_body: &[u8],
+) -> Result<OKXResponse<T>, serde_json::Error> {
+    let mut value: serde_json::Value = serde_json::from_slice(response_body)?;
+    normalize_okx_duplicate_aliases(&mut value);
+    serde_json::from_value(value)
+}
+
+fn normalize_okx_duplicate_aliases(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            if map.contains_key("instCategory") {
+                map.remove("category");
+            }
+
+            for value in map.values_mut() {
+                normalize_okx_duplicate_aliases(value);
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                normalize_okx_duplicate_aliases(value);
+            }
+        }
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use rstest::rstest;
+    use serde::Deserialize;
 
-    use super::resolve_okx_error_message;
+    use super::{deserialize_okx_response, resolve_okx_error_message};
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct DuplicateFieldItem {
+        #[serde(alias = "category")]
+        inst_category: String,
+    }
 
     #[rstest]
     fn test_resolve_okx_error_message_prefers_detailed_s_msg_over_generic_top_level() {
@@ -191,6 +243,25 @@ mod tests {
             resolve_okx_error_message(body, "All operations failed"),
             "Test detailed failure",
         );
+    }
+
+    #[rstest]
+    fn test_deserialize_okx_response_accepts_duplicate_nested_fields() {
+        let body = br#"{
+            "code": "0",
+            "msg": "",
+            "data": [
+                {
+                    "category": "",
+                    "instCategory": "1"
+                }
+            ]
+        }"#;
+
+        let response =
+            deserialize_okx_response::<DuplicateFieldItem>(body).expect("valid response");
+
+        assert_eq!(response.data[0].inst_category, "1");
     }
 
     #[rstest]
@@ -278,12 +349,12 @@ pub struct OKXRawHttpClient {
     credential: Option<Credential>,
     retry_manager: RetryManager<OKXHttpError>,
     cancellation_token: CancellationToken,
-    is_demo: bool,
+    environment: OKXEnvironment,
 }
 
 impl Default for OKXRawHttpClient {
     fn default() -> Self {
-        Self::new(None, 60, 3, 1000, 10_000, false, None)
+        Self::new(None, 60, 3, 1000, 10_000, OKXEnvironment::Live, None)
             .expect("Failed to create default OKXRawHttpClient")
     }
 }
@@ -385,7 +456,7 @@ impl OKXRawHttpClient {
         max_retries: u32,
         retry_delay_ms: u64,
         retry_delay_max_ms: u64,
-        is_demo: bool,
+        environment: OKXEnvironment,
         proxy_url: Option<String>,
     ) -> Result<Self, OKXHttpError> {
         let retry_config = RetryConfig {
@@ -404,7 +475,7 @@ impl OKXRawHttpClient {
         Ok(Self {
             base_url: base_url.unwrap_or(OKX_HTTP_URL.to_string()),
             client: HttpClient::new(
-                Self::default_headers(is_demo),
+                Self::default_headers(environment),
                 vec![],
                 Self::rate_limiter_quotas(),
                 Some(*OKX_REST_QUOTA),
@@ -417,7 +488,7 @@ impl OKXRawHttpClient {
             credential: None,
             retry_manager,
             cancellation_token: CancellationToken::new(),
-            is_demo,
+            environment,
         })
     }
 
@@ -427,7 +498,7 @@ impl OKXRawHttpClient {
     /// # Errors
     ///
     /// Returns an error if the retry manager cannot be created.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn with_credentials(
         api_key: String,
         api_secret: String,
@@ -437,7 +508,7 @@ impl OKXRawHttpClient {
         max_retries: u32,
         retry_delay_ms: u64,
         retry_delay_max_ms: u64,
-        is_demo: bool,
+        environment: OKXEnvironment,
         proxy_url: Option<String>,
     ) -> Result<Self, OKXHttpError> {
         let retry_config = RetryConfig {
@@ -456,7 +527,7 @@ impl OKXRawHttpClient {
         Ok(Self {
             base_url,
             client: HttpClient::new(
-                Self::default_headers(is_demo),
+                Self::default_headers(environment),
                 vec![],
                 Self::rate_limiter_quotas(),
                 Some(*OKX_REST_QUOTA),
@@ -469,16 +540,16 @@ impl OKXRawHttpClient {
             credential: Some(Credential::new(api_key, api_secret, api_passphrase)),
             retry_manager,
             cancellation_token: CancellationToken::new(),
-            is_demo,
+            environment,
         })
     }
 
     /// Builds the default headers to include with each request (e.g., `User-Agent`).
-    fn default_headers(is_demo: bool) -> HashMap<String, String> {
+    fn default_headers(environment: OKXEnvironment) -> HashMap<String, String> {
         let mut headers =
             HashMap::from([(USER_AGENT.to_string(), NAUTILUS_USER_AGENT.to_string())]);
 
-        if is_demo {
+        if environment == OKXEnvironment::Demo {
             headers.insert("x-simulated-trading".to_string(), "1".to_string());
         }
 
@@ -601,8 +672,8 @@ impl OKXRawHttpClient {
                 log::trace!("Response: {resp:?}");
 
                 if resp.status.is_success() {
-                    let okx_response: OKXResponse<T> =
-                        serde_json::from_slice(&resp.body).map_err(|e| {
+                    let okx_response: OKXResponse<T> = deserialize_okx_response(&resp.body)
+                        .map_err(|e| {
                             log::error!("Failed to deserialize OKXResponse: {e}");
                             OKXHttpError::JsonError(e.to_string())
                         })?;
@@ -626,7 +697,7 @@ impl OKXRawHttpClient {
                         );
                     }
 
-                    if let Ok(parsed_error) = serde_json::from_slice::<OKXResponse<T>>(&resp.body) {
+                    if let Ok(parsed_error) = deserialize_okx_response::<T>(&resp.body) {
                         return Err(OKXHttpError::OkxError {
                             error_code: parsed_error.code,
                             message: resolve_okx_error_message(&resp.body, &parsed_error.msg),
@@ -634,7 +705,10 @@ impl OKXRawHttpClient {
                     }
 
                     Err(OKXHttpError::UnexpectedStatus {
-                        status: StatusCode::from_u16(resp.status.as_u16()).unwrap(),
+                        // Fall back to 500 if the venue returns a non-standard
+                        // code so we never panic in the error path.
+                        status: StatusCode::from_u16(resp.status.as_u16())
+                            .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
                         body: error_body.to_string(),
                     })
                 }
@@ -740,6 +814,75 @@ impl OKXRawHttpClient {
         self.send_request(
             Method::GET,
             "/api/v5/public/instruments",
+            Some(&params),
+            None,
+            false,
+        )
+        .await
+    }
+
+    /// Requests OKX event contract series.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the HTTP request fails or the response cannot be deserialized.
+    ///
+    /// # References
+    ///
+    /// <https://www.okx.com/docs-v5/en/#public-data-rest-api-get-series>.
+    pub async fn get_event_contract_series(
+        &self,
+        params: GetEventContractSeriesParams,
+    ) -> Result<Vec<OKXEventContractSeries>, OKXHttpError> {
+        self.send_request(
+            Method::GET,
+            "/api/v5/public/event-contract/series",
+            Some(&params),
+            None,
+            false,
+        )
+        .await
+    }
+
+    /// Requests OKX event contract events for a series.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the HTTP request fails or the response cannot be deserialized.
+    ///
+    /// # References
+    ///
+    /// <https://www.okx.com/docs-v5/en/#public-data-rest-api-get-events>.
+    pub async fn get_event_contract_events(
+        &self,
+        params: GetEventContractEventsParams,
+    ) -> Result<Vec<OKXEventContractEvent>, OKXHttpError> {
+        self.send_request(
+            Method::GET,
+            "/api/v5/public/event-contract/events",
+            Some(&params),
+            None,
+            false,
+        )
+        .await
+    }
+
+    /// Requests OKX event contract markets for a series.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the HTTP request fails or the response cannot be deserialized.
+    ///
+    /// # References
+    ///
+    /// <https://www.okx.com/docs-v5/en/#public-data-rest-api-get-markets>.
+    pub async fn get_event_contract_markets(
+        &self,
+        params: GetEventContractMarketsParams,
+    ) -> Result<Vec<OKXEventContractMarket>, OKXHttpError> {
+        self.send_request(
+            Method::GET,
+            "/api/v5/public/event-contract/markets",
             Some(&params),
             None,
             false,
@@ -1218,7 +1361,7 @@ impl Clone for OKXHttpClient {
 
 impl Default for OKXHttpClient {
     fn default() -> Self {
-        Self::new(None, 60, 3, 1000, 10_000, false, None)
+        Self::new(None, 60, 3, 1000, 10_000, OKXEnvironment::Live, None)
             .expect("Failed to create default OKXHttpClient")
     }
 }
@@ -1239,7 +1382,7 @@ impl OKXHttpClient {
         max_retries: u32,
         retry_delay_ms: u64,
         retry_delay_max_ms: u64,
-        is_demo: bool,
+        environment: OKXEnvironment,
         proxy_url: Option<String>,
     ) -> anyhow::Result<Self> {
         Ok(Self {
@@ -1249,7 +1392,7 @@ impl OKXHttpClient {
                 max_retries,
                 retry_delay_ms,
                 retry_delay_max_ms,
-                is_demo,
+                environment,
                 proxy_url,
             )?),
             instruments_cache: Arc::new(AtomicMap::new()),
@@ -1270,7 +1413,18 @@ impl OKXHttpClient {
     ///
     /// Returns an error if the operation fails.
     pub fn from_env() -> anyhow::Result<Self> {
-        Self::with_credentials(None, None, None, None, 60, 3, 1000, 10_000, false, None)
+        Self::with_credentials(
+            None,
+            None,
+            None,
+            None,
+            60,
+            3,
+            1000,
+            10_000,
+            OKXEnvironment::Live,
+            None,
+        )
     }
 
     /// Creates a new [`OKXHttpClient`] configured with credentials
@@ -1279,7 +1433,7 @@ impl OKXHttpClient {
     /// # Errors
     ///
     /// Returns an error if the operation fails.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn with_credentials(
         api_key: Option<String>,
         api_secret: Option<String>,
@@ -1289,7 +1443,7 @@ impl OKXHttpClient {
         max_retries: u32,
         retry_delay_ms: u64,
         retry_delay_max_ms: u64,
-        is_demo: bool,
+        environment: OKXEnvironment,
         proxy_url: Option<String>,
     ) -> anyhow::Result<Self> {
         let api_key = get_or_env_var(api_key, "OKX_API_KEY")?;
@@ -1307,7 +1461,7 @@ impl OKXHttpClient {
                 max_retries,
                 retry_delay_ms,
                 retry_delay_max_ms,
-                is_demo,
+                environment,
                 proxy_url,
             )?),
             instruments_cache: Arc::new(AtomicMap::new()),
@@ -1356,7 +1510,7 @@ impl OKXHttpClient {
     /// Returns whether the client is configured for demo trading.
     #[must_use]
     pub fn is_demo(&self) -> bool {
-        self.inner.is_demo
+        self.inner.environment == OKXEnvironment::Demo
     }
 
     /// Requests the current server time from OKX.
@@ -1491,26 +1645,59 @@ impl OKXHttpClient {
         instrument_type: OKXInstrumentType,
         instrument_family: Option<String>,
     ) -> anyhow::Result<(Vec<InstrumentAny>, Vec<(Ustr, u64)>)> {
-        let mut params = GetInstrumentsParamsBuilder::default();
-        params.inst_type(instrument_type);
+        let resp = if instrument_type == OKXInstrumentType::Events {
+            let series_ids = if let Some(series_id) = instrument_family.clone() {
+                vec![series_id]
+            } else {
+                self.inner
+                    .get_event_contract_series(GetEventContractSeriesParams::default())
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e))?
+                    .into_iter()
+                    .map(|series| series.series_id)
+                    .collect()
+            };
 
-        if let Some(family) = instrument_family.clone() {
-            params.inst_family(family);
-        }
+            let mut event_instruments = Vec::new();
 
-        let params = params.build().map_err(|e| anyhow::anyhow!(e))?;
+            for series_id in series_ids {
+                let mut params = GetInstrumentsParamsBuilder::default();
+                params.inst_type(OKXInstrumentType::Events);
+                params.series_id(series_id);
+                let params = params.build().map_err(|e| anyhow::anyhow!(e))?;
+                let mut page = self
+                    .inner
+                    .get_instruments(params)
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                event_instruments.append(&mut page);
+            }
+            event_instruments
+        } else {
+            let mut params = GetInstrumentsParamsBuilder::default();
+            params.inst_type(instrument_type);
 
-        let resp = self
-            .inner
-            .get_instruments(params)
-            .await
-            .map_err(|e| anyhow::anyhow!(e))?;
+            if let Some(family) = instrument_family.clone() {
+                params.inst_family(family);
+            }
+
+            let params = params.build().map_err(|e| anyhow::anyhow!(e))?;
+
+            self.inner
+                .get_instruments(params)
+                .await
+                .map_err(|e| anyhow::anyhow!(e))?
+        };
 
         let fee_rate_opt = {
             let fee_params = GetTradeFeeParams {
                 inst_type: instrument_type,
                 uly: None,
-                inst_family: instrument_family,
+                inst_family: if instrument_type == OKXInstrumentType::Events {
+                    None
+                } else {
+                    instrument_family
+                },
             };
 
             match self.inner.get_trade_fee(fee_params).await {
@@ -1603,17 +1790,45 @@ impl OKXHttpClient {
         let symbol = instrument_id.symbol.as_str();
         let instrument_type = okx_instrument_type_from_symbol(symbol);
 
-        let mut params = GetInstrumentsParamsBuilder::default();
-        params.inst_type(instrument_type);
-        params.inst_id(symbol);
+        let resp = if instrument_type == OKXInstrumentType::Events {
+            let series = self
+                .inner
+                .get_event_contract_series(GetEventContractSeriesParams::default())
+                .await
+                .map_err(|e| anyhow::anyhow!(e))?;
 
-        let params = params.build().map_err(|e| anyhow::anyhow!(e))?;
+            let mut matched = Vec::new();
 
-        let resp = self
-            .inner
-            .get_instruments(params)
-            .await
-            .map_err(|e| anyhow::anyhow!(e))?;
+            for series in series {
+                let mut params = GetInstrumentsParamsBuilder::default();
+                params.inst_type(OKXInstrumentType::Events);
+                params.series_id(series.series_id);
+                params.inst_id(symbol);
+                let params = params.build().map_err(|e| anyhow::anyhow!(e))?;
+
+                let mut page = self
+                    .inner
+                    .get_instruments(params)
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                matched.append(&mut page);
+                if !matched.is_empty() {
+                    break;
+                }
+            }
+            matched
+        } else {
+            let mut params = GetInstrumentsParamsBuilder::default();
+            params.inst_type(instrument_type);
+            params.inst_id(symbol);
+
+            let params = params.build().map_err(|e| anyhow::anyhow!(e))?;
+
+            self.inner
+                .get_instruments(params)
+                .await
+                .map_err(|e| anyhow::anyhow!(e))?
+        };
 
         let raw_inst = resp
             .first()
@@ -1678,6 +1893,42 @@ impl OKXHttpClient {
         self.cache_instrument(instrument.clone());
 
         Ok(instrument)
+    }
+
+    /// Requests event contract series metadata from OKX.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the HTTP request fails or the response cannot be deserialized.
+    pub async fn request_event_contract_series(
+        &self,
+        params: GetEventContractSeriesParams,
+    ) -> Result<Vec<OKXEventContractSeries>, OKXHttpError> {
+        self.inner.get_event_contract_series(params).await
+    }
+
+    /// Requests event metadata for an event contract series from OKX.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the HTTP request fails or the response cannot be deserialized.
+    pub async fn request_event_contract_events(
+        &self,
+        params: GetEventContractEventsParams,
+    ) -> Result<Vec<OKXEventContractEvent>, OKXHttpError> {
+        self.inner.get_event_contract_events(params).await
+    }
+
+    /// Requests event contract market metadata from OKX.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the HTTP request fails or the response cannot be deserialized.
+    pub async fn request_event_contract_markets(
+        &self,
+        params: GetEventContractMarketsParams,
+    ) -> Result<Vec<OKXEventContractMarket>, OKXHttpError> {
+        self.inner.get_event_contract_markets(params).await
     }
 
     /// Requests forward prices for OKX options using the option summary endpoint.
@@ -2107,8 +2358,6 @@ impl OKXHttpClient {
     /// # Errors
     ///
     /// Returns an error if the HTTP request fails or trade parsing fails.
-    // Guarded by is_empty check
-    #[allow(clippy::missing_panics_doc)]
     pub async fn request_trades(
         &self,
         instrument_id: InstrumentId,
@@ -2470,8 +2719,6 @@ impl OKXHttpClient {
     ///
     /// - <https://tr.okx.com/docs-v5/en/#order-book-trading-market-data-get-candlesticks>
     /// - <https://tr.okx.com/docs-v5/en/#order-book-trading-market-data-get-candlesticks-history>
-    // Guarded by non-empty page check
-    #[allow(clippy::missing_panics_doc)]
     pub async fn request_bars(
         &self,
         bar_type: BarType,
@@ -3081,7 +3328,7 @@ impl OKXHttpClient {
     ///
     /// - <https://www.okx.com/docs-v5/en/#order-book-trading-trade-get-order-history-last-7-days>.
     /// - <https://www.okx.com/docs-v5/en/#order-book-trading-trade-get-order-history-last-3-months>.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub async fn request_order_status_reports(
         &self,
         account_id: AccountId,
@@ -3686,31 +3933,52 @@ impl OKXHttpClient {
         let ts_init = self.generate_ts_init();
         let mut reports = Vec::new();
 
+        // Build a base-currency lookup over the cached spot pairs once per
+        // call. Restricting to `CurrencyPair` (spot) ensures a derivative
+        // sharing the same base (e.g. `BTC-USDT-SWAP`) is never reported as
+        // a spot margin position with the wrong instrument id or size
+        // precision.
+        //
+        // When multiple spot pairs share the same base currency, prefer the
+        // dominant OKX quote (USDT, then USDC, then USD) so a live
+        // `BTC-USDT` margin position stays reported under `BTC-USDT.OKX`
+        // rather than being redirected to `BTC-USD.OKX` or any other
+        // lexically-earlier pair. Unknown quotes fall back to a stable
+        // lexical order by symbol, matching OKX's own listing precedence
+        // and keeping the selection deterministic across runs.
+        let cache_snapshot = self.instruments_cache.load();
+        let mut candidates: Vec<&InstrumentAny> = cache_snapshot
+            .values()
+            .filter(|inst| matches!(inst, InstrumentAny::CurrencyPair(_)))
+            .collect();
+        candidates.sort_by(|a, b| {
+            let a_sym = a.id().symbol.as_str().to_string();
+            let b_sym = b.id().symbol.as_str().to_string();
+            spot_quote_priority(&a_sym)
+                .cmp(&spot_quote_priority(&b_sym))
+                .then_with(|| a_sym.cmp(&b_sym))
+        });
+
+        let mut by_base: AHashMap<Ustr, (InstrumentId, u8)> = AHashMap::new();
+
+        for inst in candidates {
+            if let Some(base) = inst.base_currency() {
+                let base_code = Ustr::from(base.code.as_str());
+                by_base
+                    .entry(base_code)
+                    .or_insert_with(|| (inst.id(), inst.size_precision()));
+            }
+        }
+
         for account in accounts {
             for balance in account.details {
                 let ccy_str = balance.ccy.as_str();
 
-                // Try to find instrument by constructing potential spot pair symbols
-                let potential_symbols = [
-                    format!("{ccy_str}-USDT"),
-                    format!("{ccy_str}-USD"),
-                    format!("{ccy_str}-USDC"),
-                ];
-
-                let instrument_result = potential_symbols.iter().find_map(|symbol| {
-                    self.instrument_from_cache(Ustr::from(symbol))
-                        .ok()
-                        .map(|inst| (inst.id(), inst.size_precision()))
-                });
-
-                let (instrument_id, size_precision) = match instrument_result {
-                    Some((id, prec)) => (id, prec),
-                    None => {
-                        log::debug!(
-                            "Skipping balance for {ccy_str} - no matching instrument in cache"
-                        );
-                        continue;
-                    }
+                let Some((instrument_id, size_precision)) =
+                    by_base.get(&Ustr::from(ccy_str)).copied()
+                else {
+                    log::debug!("Skipping balance for {ccy_str} - no matching instrument in cache");
+                    continue;
                 };
 
                 match parse_spot_margin_position_from_balance(
@@ -3990,7 +4258,7 @@ impl OKXHttpClient {
     /// # Errors
     ///
     /// Returns an error if the request fails.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub async fn amend_algo_order_with_domain_types(
         &self,
         instrument_id: InstrumentId,
@@ -4025,7 +4293,7 @@ impl OKXHttpClient {
     /// # Errors
     ///
     /// Returns an error if the request fails.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub async fn place_order_with_domain_types(
         &self,
         instrument_id: InstrumentId,
@@ -4043,6 +4311,9 @@ impl OKXHttpClient {
         attach_algo_ords: Option<Vec<OKXAttachAlgoOrdRequest>>,
         px_usd: Option<String>,
         px_vol: Option<String>,
+        speed_bump: Option<String>,
+        outcome: Option<String>,
+        slippage_pct: Option<String>,
     ) -> Result<OKXPlaceOrderResponse, OKXHttpError> {
         if !OKX_SUPPORTED_ORDER_TYPES.contains(&order_type) {
             return Err(OKXHttpError::ValidationError(format!(
@@ -4153,6 +4424,22 @@ impl OKXHttpClient {
             (OKXOrderType::from(order_type), price)
         };
 
+        let speed_bump = if instrument_type == OKXInstrumentType::Events {
+            if outcome.is_none() {
+                return Err(OKXHttpError::ValidationError(
+                    "OKX event contract orders require `outcome`".to_string(),
+                ));
+            }
+
+            if ord_type == OKXOrderType::PostOnly {
+                speed_bump
+            } else {
+                Some(speed_bump.unwrap_or_else(|| "1".to_string()))
+            }
+        } else {
+            speed_bump
+        };
+
         // reduceOnly is not applicable to options per OKX docs
         let reduce_only = if instrument_type == OKXInstrumentType::Option {
             None
@@ -4185,6 +4472,9 @@ impl OKXHttpClient {
             reduce_only,
             tgt_ccy,
             attach_algo_ords,
+            speed_bump,
+            outcome,
+            slippage_pct,
         };
 
         self.place_order(request).await
@@ -4198,7 +4488,7 @@ impl OKXHttpClient {
     /// # Errors
     ///
     /// Returns an error if the request fails.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub async fn place_algo_order_with_domain_types(
         &self,
         instrument_id: InstrumentId,
@@ -4401,7 +4691,7 @@ impl OKXHttpClient {
     /// # Errors
     ///
     /// Returns an error if the request fails.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub async fn request_algo_order_status_reports(
         &self,
         account_id: AccountId,
@@ -4483,27 +4773,37 @@ impl OKXHttpClient {
                 return Ok(reports);
             }
 
-            let remaining = limit.map(|l| (l as usize).saturating_sub(reports.len()));
-            let history = self.paginate_algo_history(&params, remaining).await?;
-            self.collect_algo_reports(
-                account_id,
-                &history,
-                &mut instruments_cache,
-                ts_init,
-                &mut seen,
-                &mut reports,
-            )
-            .await?;
+            // OKX's `/orders-algo-history` endpoint rejects calls that
+            // carry neither a `state` nor an `algoId` / `algoClOrdId`
+            // narrowing with code 50015. The reconciliation path wants
+            // only currently-live algo orders (those already appear in
+            // the pending response above), so skip the history leg when
+            // the caller supplied no narrowing. Specific-lookup callers
+            // still hit history because `has_specific_lookup` implies
+            // `algoId` or `algoClOrdId`, which the endpoint accepts.
+            if state.is_some() || has_specific_lookup {
+                let remaining = limit.map(|l| (l as usize).saturating_sub(reports.len()));
+                let history = self.paginate_algo_history(&params, remaining).await?;
+                self.collect_algo_reports(
+                    account_id,
+                    &history,
+                    &mut instruments_cache,
+                    ts_init,
+                    &mut seen,
+                    &mut reports,
+                )
+                .await?;
 
-            if has_specific_lookup && !reports.is_empty() {
-                return Ok(reports);
-            }
+                if has_specific_lookup && !reports.is_empty() {
+                    return Ok(reports);
+                }
 
-            if let Some(lim) = limit
-                && reports.len() >= lim as usize
-            {
-                reports.truncate(lim as usize);
-                return Ok(reports);
+                if let Some(lim) = limit
+                    && reports.len() >= lim as usize
+                {
+                    reports.truncate(lim as usize);
+                    return Ok(reports);
+                }
             }
         }
 

@@ -127,20 +127,20 @@ impl OrderManager {
 
     /// Cancels an order if it's not already pending cancellation or closed.
     pub fn cancel_order(&mut self, order: &OrderAny) {
-        if self
-            .cache
-            .borrow()
-            .is_order_pending_cancel_local(&order.client_order_id())
-        {
+        let client_order_id = order.client_order_id();
+        let cache = self.cache.borrow();
+
+        if cache.is_order_pending_cancel_local(&client_order_id) {
             return;
         }
 
-        if order.is_closed() {
+        if order.is_closed() || cache.is_order_closed(&client_order_id) {
             log::warn!("Cannot cancel order: already closed");
             return;
         }
 
-        self.submit_order_commands.remove(&order.client_order_id());
+        drop(cache);
+        self.submit_order_commands.remove(&client_order_id);
 
         if let Some(handler) = &self.cancel_order_handler {
             handler.handle_cancel_order(order);
@@ -163,9 +163,15 @@ impl OrderManager {
         position_id: Option<PositionId>,
         client_id: Option<ClientId>,
     ) -> anyhow::Result<()> {
+        let order_exists = self.cache.borrow().order_exists(&order.client_order_id());
+
         self.cache
             .borrow_mut()
             .add_order(order.clone(), position_id, client_id, true)?;
+
+        if !order_exists {
+            publish_order_initialized(order);
+        }
 
         let submit = SubmitOrder::new(
             order.trader_id(),
@@ -226,7 +232,7 @@ impl OrderManager {
             .cache
             .borrow()
             .order(&rejected.client_order_id)
-            .cloned();
+            .map(|o| o.clone());
 
         if let Some(order) = cloned_order {
             if order.contingency_type() != Some(ContingencyType::NoContingency) {
@@ -246,7 +252,7 @@ impl OrderManager {
             .cache
             .borrow()
             .order(&canceled.client_order_id)
-            .cloned();
+            .map(|o| o.clone());
 
         if let Some(order) = cloned_order {
             if order.contingency_type() != Some(ContingencyType::NoContingency) {
@@ -262,7 +268,11 @@ impl OrderManager {
     }
 
     pub fn handle_order_expired(&mut self, expired: OrderExpired) {
-        let cloned_order = self.cache.borrow().order(&expired.client_order_id).cloned();
+        let cloned_order = self
+            .cache
+            .borrow()
+            .order(&expired.client_order_id)
+            .map(|o| o.clone());
         if let Some(order) = cloned_order {
             if order.contingency_type() != Some(ContingencyType::NoContingency) {
                 self.handle_contingencies(&order);
@@ -277,7 +287,11 @@ impl OrderManager {
     }
 
     pub fn handle_order_updated(&mut self, updated: OrderUpdated) {
-        let cloned_order = self.cache.borrow().order(&updated.client_order_id).cloned();
+        let cloned_order = self
+            .cache
+            .borrow()
+            .order(&updated.client_order_id)
+            .map(|o| o.clone());
         if let Some(order) = cloned_order {
             if order.contingency_type() != Some(ContingencyType::NoContingency) {
                 self.handle_contingencies_update(&order);
@@ -295,7 +309,11 @@ impl OrderManager {
     ///
     /// Panics if the OTO child order cannot be found for the given client order ID.
     pub fn handle_order_filled(&mut self, filled: OrderFilled) {
-        let order = if let Some(order) = self.cache.borrow().order(&filled.client_order_id).cloned()
+        let order = if let Some(order) = self
+            .cache
+            .borrow()
+            .order(&filled.client_order_id)
+            .map(|o| o.clone())
         {
             order
         } else {
@@ -344,14 +362,18 @@ impl OrderManager {
                 };
 
                 for client_order_id in linked_orders {
-                    let mut child_order =
-                        if let Some(order) = self.cache.borrow().order(client_order_id).cloned() {
-                            order
-                        } else {
-                            panic!(
-                                "Cannot find OTO child order for client_order_id: {client_order_id}"
-                            );
-                        };
+                    let mut child_order = if let Some(order) = self
+                        .cache
+                        .borrow()
+                        .order(client_order_id)
+                        .map(|o| o.clone())
+                    {
+                        order
+                    } else {
+                        panic!(
+                            "Cannot find OTO child order for client_order_id: {client_order_id}"
+                        );
+                    };
 
                     if !self.should_manage_order(&child_order) {
                         continue;
@@ -388,7 +410,11 @@ impl OrderManager {
                 };
 
                 for client_order_id in linked_orders {
-                    let contingent_order = match self.cache.borrow().order(client_order_id).cloned()
+                    let contingent_order = match self
+                        .cache
+                        .borrow()
+                        .order(client_order_id)
+                        .map(|o| o.clone())
                     {
                         Some(contingent_order) => contingent_order,
                         None => {
@@ -445,12 +471,16 @@ impl OrderManager {
         };
 
         for client_order_id in linked_orders {
-            let contingent_order =
-                if let Some(order) = self.cache.borrow().order(client_order_id).cloned() {
-                    order
-                } else {
-                    panic!("Cannot find contingent order for client_order_id: {client_order_id}");
-                };
+            let contingent_order = if let Some(order) = self
+                .cache
+                .borrow()
+                .order(client_order_id)
+                .map(|o| o.clone())
+            {
+                order
+            } else {
+                panic!("Cannot find contingent order for client_order_id: {client_order_id}");
+            };
 
             if !self.should_manage_order(&contingent_order)
                 || client_order_id == &order.client_order_id()
@@ -527,7 +557,12 @@ impl OrderManager {
         };
 
         for client_order_id in linked_orders {
-            let contingent_order = match self.cache.borrow().order(client_order_id).cloned() {
+            let contingent_order = match self
+                .cache
+                .borrow()
+                .order(client_order_id)
+                .map(|o| o.clone())
+            {
                 Some(contingent_order) => contingent_order,
                 None => panic!(
                     "Cannot find OCO contingent order for client_order_id: {client_order_id}"
@@ -616,18 +651,24 @@ fn log_evt_send(event: &OrderEventAny) {
     log::info!("{id} {EVT}{SEND} {event}");
 }
 
+fn publish_order_initialized(order: &OrderAny) {
+    let event = OrderEventAny::Initialized(order.init_event().clone());
+    let topic = format!("events.order.{}", order.strategy_id());
+    msgbus::publish_order_event(topic.into(), &event);
+}
+
 #[cfg(test)]
 mod tests {
     use std::{cell::RefCell, rc::Rc};
 
-    use nautilus_common::{cache::Cache, clock::TestClock};
+    use nautilus_common::{cache::Cache, clock::TestClock, msgbus, msgbus::TypedHandler};
     use nautilus_core::{UUID4, UnixNanos, WeakCell};
     use nautilus_model::{
         enums::{OrderSide, OrderType, TriggerType},
         events::{OrderAccepted, OrderSubmitted},
         identifiers::{AccountId, ClientOrderId, InstrumentId, StrategyId, TraderId, VenueOrderId},
         instruments::{Instrument, stubs::audusd_sim},
-        orders::OrderTestBuilder,
+        orders::{Order, OrderTestBuilder, stubs::TestOrderEventStubs},
         types::{Price, Quantity},
     };
     use rstest::rstest;
@@ -675,6 +716,7 @@ mod tests {
             OrderEventAny::Filled(_) => panic!("Should not match"),
             _ => {}
         }
+
         match accepted {
             OrderEventAny::Rejected(_) => panic!("Should not match"),
             OrderEventAny::Canceled(_) => panic!("Should not match"),
@@ -685,7 +727,7 @@ mod tests {
         }
     }
 
-    #[allow(clippy::type_complexity)]
+    #[expect(clippy::type_complexity)]
     fn create_test_components() -> (
         Rc<RefCell<dyn Clock>>,
         Rc<RefCell<Cache>>,
@@ -709,6 +751,42 @@ mod tests {
             .quantity(Quantity::from(100_000))
             .emulation_trigger(TriggerType::BidAsk)
             .build()
+    }
+
+    // Creates a `SubmitOrder` command suitable for seeding `submit_order_commands`
+    // so that whether `cancel_order` removed the entry can be observed.
+    fn make_submit_command(order: &OrderAny) -> SubmitOrder {
+        SubmitOrder::new(
+            order.trader_id(),
+            None,
+            order.strategy_id(),
+            order.instrument_id(),
+            order.client_order_id(),
+            order.init_event().clone(),
+            None,
+            None,
+            None,
+            UUID4::new(),
+            UnixNanos::default(),
+        )
+    }
+
+    fn subscribe_order_topic(
+        strategy_id: StrategyId,
+    ) -> (TypedHandler<OrderEventAny>, Rc<RefCell<Vec<OrderEventAny>>>) {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let handler = TypedHandler::from({
+            let events = events.clone();
+            move |event: &OrderEventAny| {
+                events.borrow_mut().push(event.clone());
+            }
+        });
+        msgbus::subscribe_order_events(
+            format!("events.order.{strategy_id}").into(),
+            handler.clone(),
+            None,
+        );
+        (handler, events)
     }
 
     #[rstest]
@@ -747,8 +825,18 @@ mod tests {
             .borrow_mut()
             .add_order(order.clone(), None, None, false)
             .unwrap();
+        manager
+            .submit_order_commands
+            .insert(order.client_order_id(), make_submit_command(&order));
 
         manager.cancel_order(&order);
+
+        assert!(
+            !manager
+                .submit_order_commands
+                .contains_key(&order.client_order_id()),
+            "expected dispatch path to remove the submit command",
+        );
     }
 
     #[rstest]
@@ -764,6 +852,44 @@ mod tests {
     }
 
     #[rstest]
+    fn test_create_new_submit_order_publishes_initialized_for_new_order() {
+        let (clock, cache, _emulator) = create_test_components();
+        let mut manager = OrderManager::new(clock, cache, true, None, None, None);
+        let order = create_test_stop_order();
+        let strategy_id = order.strategy_id();
+        let (handler, events) = subscribe_order_topic(strategy_id);
+
+        manager.create_new_submit_order(&order, None, None).unwrap();
+
+        msgbus::unsubscribe_order_events(format!("events.order.{strategy_id}").into(), &handler);
+        let events = events.borrow();
+
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            &events[0],
+            OrderEventAny::Initialized(event) if event.client_order_id == order.client_order_id()
+        ));
+    }
+
+    #[rstest]
+    fn test_create_new_submit_order_does_not_republish_initialized_for_existing_order() {
+        let (clock, cache, _emulator) = create_test_components();
+        let mut manager = OrderManager::new(clock, cache.clone(), true, None, None, None);
+        let order = create_test_stop_order();
+        let strategy_id = order.strategy_id();
+        cache
+            .borrow_mut()
+            .add_order(order.clone(), None, None, true)
+            .unwrap();
+        let (handler, events) = subscribe_order_topic(strategy_id);
+
+        manager.create_new_submit_order(&order, None, None).unwrap();
+
+        msgbus::unsubscribe_order_events(format!("events.order.{strategy_id}").into(), &handler);
+        assert!(events.borrow().is_empty());
+    }
+
+    #[rstest]
     fn test_order_manager_without_handlers() {
         let (clock, cache, _emulator) = create_test_components();
         let mut manager = OrderManager::new(clock, cache.clone(), true, None, None, None);
@@ -772,8 +898,130 @@ mod tests {
             .borrow_mut()
             .add_order(order.clone(), None, None, false)
             .unwrap();
+        manager
+            .submit_order_commands
+            .insert(order.client_order_id(), make_submit_command(&order));
 
         manager.cancel_order(&order);
         manager.modify_order_quantity(&order, Quantity::from(50_000));
+
+        assert!(
+            !manager
+                .submit_order_commands
+                .contains_key(&order.client_order_id()),
+            "no-handler dispatch path should still remove the submit command",
+        );
+    }
+
+    #[rstest]
+    fn test_cancel_order_skips_when_pending_cancel_local() {
+        let (clock, cache, _emulator) = create_test_components();
+        let mut manager = OrderManager::new(clock, cache.clone(), true, None, None, None);
+        let order = create_test_stop_order();
+        cache
+            .borrow_mut()
+            .add_order(order.clone(), None, None, false)
+            .unwrap();
+        cache.borrow_mut().update_order_pending_cancel_local(&order);
+        manager
+            .submit_order_commands
+            .insert(order.client_order_id(), make_submit_command(&order));
+
+        manager.cancel_order(&order);
+
+        assert!(
+            manager
+                .submit_order_commands
+                .contains_key(&order.client_order_id()),
+            "pending-cancel-local gate should short-circuit before removing the submit command",
+        );
+    }
+
+    #[rstest]
+    fn test_cancel_order_skips_when_passed_order_is_closed() {
+        // The caller has applied a closing event to its local clone but has
+        // not yet called `cache.update_order`, so the cache index still
+        // reports open. The gate must short-circuit on the local state.
+        let (clock, cache, _emulator) = create_test_components();
+        let mut manager = OrderManager::new(clock, cache.clone(), true, None, None, None);
+
+        let mut order = OrderTestBuilder::new(OrderType::StopMarket)
+            .instrument_id(audusd_sim().id())
+            .side(OrderSide::Buy)
+            .trigger_price(Price::from("1.00050"))
+            .quantity(Quantity::from(100_000))
+            .emulation_trigger(TriggerType::BidAsk)
+            .submit(true)
+            .build();
+
+        cache
+            .borrow_mut()
+            .add_order(order.clone(), None, None, false)
+            .unwrap();
+
+        let canceled_event =
+            TestOrderEventStubs::canceled(&order, AccountId::from("ACCOUNT-001"), None);
+        order.apply(canceled_event).unwrap();
+
+        assert!(order.is_closed());
+        assert!(!cache.borrow().is_order_closed(&order.client_order_id()));
+
+        manager
+            .submit_order_commands
+            .insert(order.client_order_id(), make_submit_command(&order));
+
+        manager.cancel_order(&order);
+
+        assert!(
+            manager
+                .submit_order_commands
+                .contains_key(&order.client_order_id()),
+            "closed-order gate should short-circuit on the local state when the cache index is stale",
+        );
+    }
+
+    #[rstest]
+    fn test_cancel_order_skips_when_cache_index_marks_closed() {
+        // The passed `OrderAny` is intentionally a stale (Submitted) clone so
+        // this test would fail if `cancel_order` checked `order.is_closed()`
+        // on the argument instead of `cache.is_order_closed(&id)`.
+        let (clock, cache, _emulator) = create_test_components();
+        let mut manager = OrderManager::new(clock, cache.clone(), true, None, None, None);
+
+        let mut order = OrderTestBuilder::new(OrderType::StopMarket)
+            .instrument_id(audusd_sim().id())
+            .side(OrderSide::Buy)
+            .trigger_price(Price::from("1.00050"))
+            .quantity(Quantity::from(100_000))
+            .emulation_trigger(TriggerType::BidAsk)
+            .submit(true)
+            .build();
+
+        cache
+            .borrow_mut()
+            .add_order(order.clone(), None, None, false)
+            .unwrap();
+
+        let stale_order = order.clone();
+
+        let canceled_event =
+            TestOrderEventStubs::canceled(&order, AccountId::from("ACCOUNT-001"), None);
+        order = cache.borrow_mut().update_order(&canceled_event).unwrap();
+
+        assert!(cache.borrow().is_order_closed(&order.client_order_id()));
+
+        manager.submit_order_commands.insert(
+            stale_order.client_order_id(),
+            make_submit_command(&stale_order),
+        );
+
+        manager.cancel_order(&stale_order);
+
+        assert!(
+            manager
+                .submit_order_commands
+                .contains_key(&stale_order.client_order_id()),
+            "closed-order gate should short-circuit even when the passed reference is stale",
+        );
     }
 }

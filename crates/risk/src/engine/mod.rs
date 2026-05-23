@@ -92,6 +92,8 @@ pub struct RiskEngine {
     max_notional_per_order: AHashMap<InstrumentId, Decimal>,
     trading_state: TradingState,
     config: RiskEngineConfig,
+    command_count: u64,
+    event_count: u64,
 }
 
 impl Debug for RiskEngine {
@@ -122,6 +124,8 @@ impl RiskEngine {
             max_notional_per_order: config.max_notional_per_order.clone(),
             trading_state: TradingState::Active,
             config,
+            command_count: 0,
+            event_count: 0,
         }
     }
 
@@ -203,6 +207,7 @@ impl RiskEngine {
                         );
 
                         let timestamp = clock.borrow().timestamp_ns();
+
                         for order in &orders {
                             if order.status() == OrderStatus::Initialized {
                                 let denied = OrderEventAny::Denied(OrderDenied::new(
@@ -347,15 +352,19 @@ impl RiskEngine {
     }
 
     /// Executes a trading command through the risk management pipeline.
-    #[allow(clippy::needless_pass_by_value)] // Required by message bus dispatch
+    // Required by message bus dispatch
     pub fn execute(&mut self, command: TradingCommand) {
+        self.command_count += 1;
+
         // This will extend to other commands such as `RiskCommand`
         self.handle_command(command);
     }
 
     /// Processes an order event for risk monitoring and state updates.
-    #[allow(clippy::needless_pass_by_value)] // Required by message bus dispatch
+    #[expect(clippy::needless_pass_by_value)] // Required by message bus dispatch
     pub fn process(&mut self, event: OrderEventAny) {
+        self.event_count += 1;
+
         // This will extend to other events such as `RiskEvent`
         self.handle_event(&event);
     }
@@ -405,6 +414,8 @@ impl RiskEngine {
         self.throttled_modify_order.reset();
         self.max_notional_per_order = self.config.max_notional_per_order.clone();
         self.trading_state = TradingState::Active;
+        self.command_count = 0;
+        self.event_count = 0;
 
         log::info!("Reset");
     }
@@ -435,6 +446,18 @@ impl RiskEngine {
     #[must_use]
     pub const fn config(&self) -> &RiskEngineConfig {
         &self.config
+    }
+
+    /// Returns the total count of trading commands received by the engine.
+    #[must_use]
+    pub const fn command_count(&self) -> u64 {
+        self.command_count
+    }
+
+    /// Returns the total count of order events received by the engine.
+    #[must_use]
+    pub const fn event_count(&self) -> u64 {
+        self.event_count
     }
 
     /// Returns the current trading state.
@@ -620,7 +643,7 @@ impl RiskEngine {
     fn handle_modify_order(&mut self, command: ModifyOrder) {
         let order_exists = {
             let cache = self.cache.borrow();
-            cache.order(&command.client_order_id).cloned()
+            cache.order(&command.client_order_id).map(|o| o.clone())
         };
 
         let order = if let Some(order) = order_exists {
@@ -816,9 +839,9 @@ impl RiskEngine {
             let cache = self.cache.borrow();
 
             if let Some(account_id) = account_id {
-                cache.account(&account_id).cloned()
+                cache.account_owned(&account_id)
             } else {
-                cache.account_for_venue(&instrument.id().venue).cloned()
+                cache.account_for_venue_owned(&instrument.id().venue)
             }
         };
 
@@ -933,6 +956,7 @@ impl RiskEngine {
         let mut cum_notional_sell: Option<Money> = None;
         let mut cum_margin_required: Option<Money> = None;
         let mut base_currency: Option<Currency> = None;
+
         for order in orders {
             // Determine last price based on order type
             last_px = match order {
@@ -1102,29 +1126,35 @@ impl RiskEngine {
                 order.quantity()
             };
 
-            // Check min/max quantity against effective quantity
-            if let Some(max_quantity) = instrument.max_quantity()
-                && effective_quantity > max_quantity
-            {
-                self.deny_order(
-                    order,
-                    &format!(
-                        "QUANTITY_EXCEEDS_MAXIMUM: effective_quantity={effective_quantity}, max_quantity={max_quantity}"
-                    ),
-                );
-                return false; // Denied
-            }
+            // Base-quantity bounds (`min_quantity`/`max_quantity`) do not apply to
+            // quote-denominated orders: the client-side conversion uses an estimated
+            // price and may differ from the venue fill, and some venues enforce
+            // distinct per-order-type minimums. The venue is authoritative for
+            // quote-denominated sizing; rely on `min_notional`/`max_notional` below.
+            if !order.is_quote_quantity() {
+                if let Some(max_quantity) = instrument.max_quantity()
+                    && effective_quantity > max_quantity
+                {
+                    self.deny_order(
+                        order,
+                        &format!(
+                            "QUANTITY_EXCEEDS_MAXIMUM: effective_quantity={effective_quantity}, max_quantity={max_quantity}"
+                        ),
+                    );
+                    return false; // Denied
+                }
 
-            if let Some(min_quantity) = instrument.min_quantity()
-                && effective_quantity < min_quantity
-            {
-                self.deny_order(
-                    order,
-                    &format!(
-                        "QUANTITY_BELOW_MINIMUM: effective_quantity={effective_quantity}, min_quantity={min_quantity}"
-                    ),
-                );
-                return false; // Denied
+                if let Some(min_quantity) = instrument.min_quantity()
+                    && effective_quantity < min_quantity
+                {
+                    self.deny_order(
+                        order,
+                        &format!(
+                            "QUANTITY_BELOW_MINIMUM: effective_quantity={effective_quantity}, min_quantity={min_quantity}"
+                        ),
+                    );
+                    return false; // Denied
+                }
             }
 
             let notional =
@@ -1563,7 +1593,7 @@ impl RiskEngine {
             TradingCommand::SubmitOrder(command) => {
                 let order = {
                     let cache = self.cache.borrow();
-                    cache.order(&command.client_order_id).cloned()
+                    cache.order(&command.client_order_id).map(|o| o.clone())
                 };
 
                 if let Some(ref order) = order {
@@ -1661,7 +1691,9 @@ impl RiskEngine {
                 TradingCommand::SubmitOrder(submit_order) => {
                     let order = {
                         let cache = self.cache.borrow();
-                        cache.order(&submit_order.client_order_id).cloned()
+                        cache
+                            .order(&submit_order.client_order_id)
+                            .map(|o| o.clone())
                     };
 
                     if let Some(ref order) = order {
@@ -1682,7 +1714,9 @@ impl RiskEngine {
                     TradingCommand::SubmitOrder(submit_order) => {
                         let order = {
                             let cache = self.cache.borrow();
-                            cache.order(&submit_order.client_order_id).cloned()
+                            cache
+                                .order(&submit_order.client_order_id)
+                                .map(|o| o.clone())
                         };
 
                         if let Some(ref order) = order {
@@ -1714,6 +1748,7 @@ impl RiskEngine {
                             &submit_order_list.order_list.client_order_ids,
                             &submit_order_list,
                         );
+
                         for order in &orders {
                             if order.is_buy() && self.portfolio.is_net_long(&instrument.id()) {
                                 self.deny_order_list(

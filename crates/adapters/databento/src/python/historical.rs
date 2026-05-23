@@ -22,7 +22,8 @@ use nautilus_core::{
     time::get_atomic_clock_realtime,
 };
 use nautilus_model::{
-    enums::BarAggregation, identifiers::InstrumentId,
+    enums::BarAggregation,
+    identifiers::{InstrumentId, Symbol},
     python::instruments::instrument_any_to_pyobject,
 };
 use pyo3::{
@@ -89,6 +90,17 @@ impl DatabentoHistoricalClient {
         self.inner.api_key()
     }
 
+    /// Caches a `price_precision` for the given `symbol`.
+    ///
+    /// When market data is fetched without an explicit `price_precision`, the
+    /// client resolves precision per record from this cache. Instruments
+    /// returned by `Self.get_range_instruments` are inserted automatically.
+    #[pyo3(name = "set_price_precision")]
+    fn py_set_price_precision(&self, symbol: &str, price_precision: u8) {
+        self.inner
+            .set_price_precision(Symbol::from(symbol), price_precision);
+    }
+
     /// Gets the date range for a specific dataset.
     #[pyo3(name = "get_dataset_range")]
     fn py_get_dataset_range<'py>(
@@ -115,7 +127,7 @@ impl DatabentoHistoricalClient {
     /// Fetches instrument definitions for the given parameters.
     #[pyo3(name = "get_range_instruments")]
     #[pyo3(signature = (dataset, instrument_ids, start, end=None, limit=None))]
-    #[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
+    #[expect(clippy::needless_pass_by_value)]
     fn py_get_range_instruments<'py>(
         &self,
         py: Python<'py>,
@@ -158,7 +170,7 @@ impl DatabentoHistoricalClient {
     /// Fetches quote ticks for the given parameters.
     #[pyo3(name = "get_range_quotes")]
     #[pyo3(signature = (dataset, instrument_ids, start, end=None, limit=None, price_precision=None, schema=None))]
-    #[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
+    #[expect(clippy::too_many_arguments, clippy::needless_pass_by_value)]
     fn py_get_range_quotes<'py>(
         &self,
         py: Python<'py>,
@@ -194,7 +206,7 @@ impl DatabentoHistoricalClient {
     /// Fetches trade ticks for the given parameters.
     #[pyo3(name = "get_range_trades")]
     #[pyo3(signature = (dataset, instrument_ids, start, end=None, limit=None, price_precision=None))]
-    #[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
+    #[expect(clippy::too_many_arguments, clippy::needless_pass_by_value)]
     fn py_get_range_trades<'py>(
         &self,
         py: Python<'py>,
@@ -229,7 +241,7 @@ impl DatabentoHistoricalClient {
     /// Fetches bars for the given parameters.
     #[pyo3(name = "get_range_bars")]
     #[pyo3(signature = (dataset, instrument_ids, aggregation, start, end=None, limit=None, price_precision=None, timestamp_on_close=true))]
-    #[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
+    #[expect(clippy::too_many_arguments, clippy::needless_pass_by_value)]
     fn py_get_range_bars<'py>(
         &self,
         py: Python<'py>,
@@ -265,7 +277,7 @@ impl DatabentoHistoricalClient {
 
     #[pyo3(name = "get_order_book_depth10")]
     #[pyo3(signature = (dataset, instrument_ids, start, end=None, depth=None))]
-    #[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
+    #[expect(clippy::needless_pass_by_value)]
     fn py_get_order_book_depth10<'py>(
         &self,
         py: Python<'py>,
@@ -299,7 +311,7 @@ impl DatabentoHistoricalClient {
     /// Fetches order book deltas for the given parameters.
     #[pyo3(name = "get_range_order_book_deltas")]
     #[pyo3(signature = (dataset, instrument_ids, start, end=None, limit=None, price_precision=None))]
-    #[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
+    #[expect(clippy::too_many_arguments, clippy::needless_pass_by_value)]
     fn py_get_range_order_book_deltas<'py>(
         &self,
         py: Python<'py>,
@@ -334,7 +346,7 @@ impl DatabentoHistoricalClient {
     /// Fetches imbalance data for the given parameters.
     #[pyo3(name = "get_range_imbalance")]
     #[pyo3(signature = (dataset, instrument_ids, start, end=None, limit=None, price_precision=None))]
-    #[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
+    #[expect(clippy::too_many_arguments, clippy::needless_pass_by_value)]
     fn py_get_range_imbalance<'py>(
         &self,
         py: Python<'py>,
@@ -369,7 +381,7 @@ impl DatabentoHistoricalClient {
     /// Fetches statistics data for the given parameters.
     #[pyo3(name = "get_range_statistics")]
     #[pyo3(signature = (dataset, instrument_ids, start, end=None, limit=None, price_precision=None))]
-    #[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
+    #[expect(clippy::too_many_arguments, clippy::needless_pass_by_value)]
     fn py_get_range_statistics<'py>(
         &self,
         py: Python<'py>,
@@ -404,7 +416,7 @@ impl DatabentoHistoricalClient {
     /// Fetches status data for the given parameters.
     #[pyo3(name = "get_range_status")]
     #[pyo3(signature = (dataset, instrument_ids, start, end=None, limit=None))]
-    #[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
+    #[expect(clippy::needless_pass_by_value)]
     fn py_get_range_status<'py>(
         &self,
         py: Python<'py>,

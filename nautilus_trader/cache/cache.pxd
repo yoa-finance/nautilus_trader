@@ -32,6 +32,7 @@ from nautilus_trader.model.data cimport Bar
 from nautilus_trader.model.data cimport BarType
 from nautilus_trader.model.data cimport FundingRateUpdate
 from nautilus_trader.model.data cimport IndexPriceUpdate
+from nautilus_trader.model.data cimport InstrumentStatus
 from nautilus_trader.model.data cimport MarkPriceUpdate
 from nautilus_trader.model.data cimport QuoteTick
 from nautilus_trader.model.data cimport TradeTick
@@ -70,6 +71,7 @@ cdef class Cache(CacheFacade):
     cdef dict _mark_prices
     cdef dict _index_prices
     cdef dict _funding_rates
+    cdef dict _instrument_statuses
     cdef dict _bars
     cdef dict _bars_bid
     cdef dict _bars_ask
@@ -147,6 +149,7 @@ cdef class Cache(CacheFacade):
     cpdef void purge_closed_positions(self, uint64_t ts_now, uint64_t buffer_secs=*, bint purge_from_database=*)
     cpdef void purge_order(self, ClientOrderId client_order_id, bint purge_from_database=*)
     cpdef void purge_position(self, PositionId position_id, bint purge_from_database=*)
+    cpdef void purge_instrument(self, InstrumentId instrument_id, bint purge_from_database=*)
     cpdef void purge_account_events(self, uint64_t ts_now, uint64_t lookback_secs=*, bint purge_from_database=*)
     cpdef void clear_index(self)
     cpdef void reset(self)
@@ -197,6 +200,7 @@ cdef class Cache(CacheFacade):
     cpdef void add_mark_price(self, MarkPriceUpdate mark_price)
     cpdef void add_index_price(self, IndexPriceUpdate index_price)
     cpdef void add_funding_rate(self, FundingRateUpdate funding_rate)
+    cpdef void add_instrument_status(self, InstrumentStatus status)
     cpdef void add_bar(self, Bar bar)
     cpdef void add_quote_ticks(self, list ticks)
     cpdef void add_trade_ticks(self, list ticks)

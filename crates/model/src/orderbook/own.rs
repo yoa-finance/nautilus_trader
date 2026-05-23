@@ -24,12 +24,12 @@ use std::{
     hash::{Hash, Hasher},
 };
 
-use ahash::{AHashMap, AHashSet};
+use ahash::AHashSet;
 use indexmap::IndexMap;
 use nautilus_core::{UnixNanos, time::nanos_since_unix_epoch};
 use rust_decimal::Decimal;
 
-use super::{BookViewError, display::pprint_own_book};
+use super::{BookViewError, OwnBookError, display::pprint_own_book};
 use crate::{
     enums::{OrderSideSpecified, OrderStatus, OrderType, TimeInForce},
     identifiers::{ClientOrderId, InstrumentId, TraderId, VenueOrderId},
@@ -69,7 +69,7 @@ pub struct OwnBookOrder {
     pub order_type: OrderType,
     /// The order time in force.
     pub time_in_force: TimeInForce,
-    /// The current order status (SUBMITTED/ACCEPTED/PENDING_CANCEL/PENDING_UPDATE/PARTIALLY_FILLED).
+    /// The current order status (`SUBMITTED/ACCEPTED/PENDING_CANCEL/PENDING_UPDATE/PARTIALLY_FILLED`).
     pub status: OrderStatus,
     /// UNIX timestamp (nanoseconds) when the last order event occurred for this order.
     pub ts_last: UnixNanos,
@@ -84,7 +84,7 @@ pub struct OwnBookOrder {
 impl OwnBookOrder {
     /// Creates a new [`OwnBookOrder`] instance.
     #[must_use]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn new(
         trader_id: TraderId,
         client_order_id: ClientOrderId,
@@ -289,7 +289,7 @@ impl OwnOrderBook {
     /// # Errors
     ///
     /// Returns an error if the order is not found.
-    pub fn update(&mut self, order: OwnBookOrder) -> anyhow::Result<()> {
+    pub fn update(&mut self, order: OwnBookOrder) -> Result<(), OwnBookError> {
         let result = match order.side {
             OrderSideSpecified::Buy => self.bids.update(order),
             OrderSideSpecified::Sell => self.asks.update(order),
@@ -307,7 +307,7 @@ impl OwnOrderBook {
     /// # Errors
     ///
     /// Returns an error if the order is not found.
-    pub fn delete(&mut self, order: OwnBookOrder) -> anyhow::Result<()> {
+    pub fn delete(&mut self, order: OwnBookOrder) -> Result<(), OwnBookError> {
         let result = match order.side {
             OrderSideSpecified::Buy => self.bids.delete(order),
             OrderSideSpecified::Sell => self.asks.delete(order),
@@ -337,16 +337,19 @@ impl OwnOrderBook {
     }
 
     /// Returns the client order IDs currently on the bid side.
+    #[must_use]
     pub fn bid_client_order_ids(&self) -> Vec<ClientOrderId> {
         self.bids.cache.keys().copied().collect()
     }
 
     /// Returns the client order IDs currently on the ask side.
+    #[must_use]
     pub fn ask_client_order_ids(&self) -> Vec<ClientOrderId> {
         self.asks.cache.keys().copied().collect()
     }
 
     /// Return whether the given client order ID is in the own book.
+    #[must_use]
     pub fn is_order_in_book(&self, client_order_id: &ClientOrderId) -> bool {
         self.asks.cache.contains_key(client_order_id)
             || self.bids.cache.contains_key(client_order_id)
@@ -356,6 +359,7 @@ impl OwnOrderBook {
     ///
     /// Filters by `status` if provided. With `accepted_buffer_ns`, only includes orders accepted
     /// at least that many nanoseconds before `ts_now` (defaults to now).
+    #[must_use]
     pub fn bids_as_map(
         &self,
         status: Option<&AHashSet<OrderStatus>>,
@@ -369,6 +373,7 @@ impl OwnOrderBook {
     ///
     /// Filters by `status` if provided. With `accepted_buffer_ns`, only includes orders accepted
     /// at least that many nanoseconds before `ts_now` (defaults to now).
+    #[must_use]
     pub fn asks_as_map(
         &self,
         status: Option<&AHashSet<OrderStatus>>,
@@ -385,6 +390,7 @@ impl OwnOrderBook {
     ///
     /// If `group_size` is provided, groups quantities into price buckets.
     /// If `depth` is provided, limits the number of price levels returned.
+    #[must_use]
     pub fn bid_quantity(
         &self,
         status: Option<&AHashSet<OrderStatus>>,
@@ -416,6 +422,7 @@ impl OwnOrderBook {
     ///
     /// If `group_size` is provided, groups quantities into price buckets.
     /// If `depth` is provided, limits the number of price levels returned.
+    #[must_use]
     pub fn ask_quantity(
         &self,
         status: Option<&AHashSet<OrderStatus>>,
@@ -639,7 +646,7 @@ where
 pub(crate) struct OwnBookLadder {
     pub side: OrderSideSpecified,
     pub levels: BTreeMap<BookPrice, OwnBookLevel>,
-    pub cache: AHashMap<ClientOrderId, BookPrice>,
+    pub cache: IndexMap<ClientOrderId, BookPrice>,
 }
 
 impl OwnBookLadder {
@@ -649,7 +656,7 @@ impl OwnBookLadder {
         Self {
             side,
             levels: BTreeMap::new(),
-            cache: AHashMap::new(),
+            cache: IndexMap::new(),
         }
     }
 
@@ -678,14 +685,11 @@ impl OwnBookLadder {
         let book_price = order.to_book_price();
         self.cache.insert(order.client_order_id, book_price);
 
-        match self.levels.get_mut(&book_price) {
-            Some(level) => {
-                level.add(order);
-            }
-            None => {
-                let level = OwnBookLevel::from_order(order);
-                self.levels.insert(book_price, level);
-            }
+        if let Some(level) = self.levels.get_mut(&book_price) {
+            level.add(order);
+        } else {
+            let level = OwnBookLevel::from_order(order);
+            self.levels.insert(book_price, level);
         }
     }
 
@@ -694,33 +698,24 @@ impl OwnBookLadder {
     /// # Errors
     ///
     /// Returns an error if the order is not found.
-    pub fn update(&mut self, order: OwnBookOrder) -> anyhow::Result<()> {
+    pub fn update(&mut self, order: OwnBookOrder) -> Result<(), OwnBookError> {
+        let client_order_id = order.client_order_id;
+
         let Some(price) = self.cache.get(&order.client_order_id).copied() else {
-            log::error!(
-                "Own book update failed - order {client_order_id} not in cache",
-                client_order_id = order.client_order_id
-            );
-            anyhow::bail!(
-                "Order {} not found in own book (cache)",
-                order.client_order_id
-            );
+            return Err(OwnBookError::OrderNotFoundInCache { client_order_id });
         };
 
         let Some(level) = self.levels.get_mut(&price) else {
-            log::error!(
-                "Own book update failed - order {client_order_id} cached level {price:?} missing",
-                client_order_id = order.client_order_id
-            );
-            anyhow::bail!(
-                "Order {} not found in own book (level)",
-                order.client_order_id
-            );
+            return Err(OwnBookError::CachedLevelMissing {
+                client_order_id,
+                price,
+            });
         };
 
         if order.price == level.price.value {
             level.update(order);
             if order.size.is_zero() {
-                self.cache.remove(&order.client_order_id);
+                self.cache.shift_remove(&order.client_order_id);
 
                 if level.is_empty() {
                     self.levels.remove(&price);
@@ -729,8 +724,8 @@ impl OwnBookLadder {
             return Ok(());
         }
 
-        level.delete(&order.client_order_id)?;
-        self.cache.remove(&order.client_order_id);
+        level.delete(&client_order_id)?;
+        self.cache.shift_remove(&order.client_order_id);
 
         if level.is_empty() {
             self.levels.remove(&price);
@@ -745,7 +740,7 @@ impl OwnBookLadder {
     /// # Errors
     ///
     /// Returns an error if the order is not found.
-    pub fn delete(&mut self, order: OwnBookOrder) -> anyhow::Result<()> {
+    pub fn delete(&mut self, order: OwnBookOrder) -> Result<(), OwnBookError> {
         self.remove(&order.client_order_id)
     }
 
@@ -754,17 +749,18 @@ impl OwnBookLadder {
     /// # Errors
     ///
     /// Returns an error if the order is not found.
-    pub fn remove(&mut self, client_order_id: &ClientOrderId) -> anyhow::Result<()> {
+    pub fn remove(&mut self, client_order_id: &ClientOrderId) -> Result<(), OwnBookError> {
         let Some(price) = self.cache.get(client_order_id).copied() else {
-            log::error!("Own book remove failed - order {client_order_id} not in cache");
-            anyhow::bail!("Order {client_order_id} not found in own book (cache)");
+            return Err(OwnBookError::OrderNotFoundInCache {
+                client_order_id: *client_order_id,
+            });
         };
 
         let Some(level) = self.levels.get_mut(&price) else {
-            log::error!(
-                "Own book remove failed - order {client_order_id} cached level {price:?} missing"
-            );
-            anyhow::bail!("Order {client_order_id} not found in own book (level)");
+            return Err(OwnBookError::CachedLevelMissing {
+                client_order_id: *client_order_id,
+                price,
+            });
         };
 
         level.delete(client_order_id)?;
@@ -772,7 +768,7 @@ impl OwnBookLadder {
         if level.is_empty() {
             self.levels.remove(&price);
         }
-        self.cache.remove(client_order_id);
+        self.cache.shift_remove(client_order_id);
 
         Ok(())
     }
@@ -807,6 +803,7 @@ impl Debug for OwnBookLadder {
         f.debug_struct(stringify!(OwnBookLadder))
             .field("side", &self.side)
             .field("levels", &self.levels)
+            .field("cache", &self.cache)
             .finish()
     }
 }
@@ -929,10 +926,12 @@ impl OwnBookLevel {
     /// # Errors
     ///
     /// Returns an error if the order is not found.
-    pub fn delete(&mut self, client_order_id: &ClientOrderId) -> anyhow::Result<()> {
+    pub fn delete(&mut self, client_order_id: &ClientOrderId) -> Result<(), OwnBookError> {
         if self.orders.shift_remove(client_order_id).is_none() {
-            // TODO: Use a generic anyhow result for now pending specific error types
-            anyhow::bail!("Order {client_order_id} not found for delete");
+            return Err(OwnBookError::OrderNotFoundAtLevel {
+                client_order_id: *client_order_id,
+                price: self.price,
+            });
         }
         Ok(())
     }
@@ -958,6 +957,7 @@ impl Ord for OwnBookLevel {
     }
 }
 
+#[must_use]
 pub fn should_handle_own_book_order(order: &OrderAny) -> bool {
     order.has_price()
         && order.time_in_force() != TimeInForce::Ioc

@@ -21,7 +21,7 @@ use std::fmt::Debug;
 
 use aws_lc_rs::hmac;
 use base64::prelude::*;
-use nautilus_core::{env::get_or_env_var_opt, string::REDACTED};
+use nautilus_core::{env::get_or_env_var_opt, string::secret::REDACTED};
 use zeroize::ZeroizeOnDrop;
 
 /// Returns the environment variable names for API credentials.
@@ -132,7 +132,7 @@ impl Credential {
     /// For keys shorter than 8 characters, shows asterisks only.
     #[must_use]
     pub fn api_key_masked(&self) -> String {
-        nautilus_core::string::mask_api_key(&self.api_key)
+        nautilus_core::string::secret::mask_api_key(&self.api_key)
     }
 }
 
@@ -180,7 +180,7 @@ mod tests {
         );
 
         assert!(!signature.is_empty());
-        assert!(BASE64_STANDARD.decode(&signature).is_ok());
+        BASE64_STANDARD.decode(&signature).unwrap();
 
         // Verify the message is constructed correctly
         let expected_message = "2020-12-08T09:08:57.715ZGET/api/v5/account/balance?ccy=BTC";
@@ -210,7 +210,7 @@ mod tests {
         );
 
         assert!(!signature.is_empty());
-        assert!(BASE64_STANDARD.decode(&signature).is_ok());
+        BASE64_STANDARD.decode(&signature).unwrap();
     }
 
     #[rstest]
@@ -231,7 +231,7 @@ mod tests {
         );
 
         assert!(!signature.is_empty());
-        assert!(BASE64_STANDARD.decode(&signature).is_ok());
+        BASE64_STANDARD.decode(&signature).unwrap();
 
         // Verify the message is constructed correctly
         let expected_message =

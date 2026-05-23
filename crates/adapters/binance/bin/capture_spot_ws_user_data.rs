@@ -45,7 +45,7 @@
 //!
 //! For testnet: `BINANCE_TESTNET_API_KEY`, `BINANCE_TESTNET_API_SECRET`
 //! For demo: `BINANCE_DEMO_API_KEY`, `BINANCE_DEMO_API_SECRET`
-//! For mainnet: `BINANCE_API_KEY`, `BINANCE_API_SECRET`
+//! For live: `BINANCE_API_KEY`, `BINANCE_API_SECRET`
 
 use std::{
     env, fs,
@@ -61,7 +61,7 @@ use nautilus_binance::common::{
     enums::{BinanceEnvironment, BinanceProductType},
 };
 use nautilus_network::websocket::{
-    PingHandler, WebSocketClient, WebSocketConfig, channel_message_handler,
+    PingHandler, TransportBackend, WebSocketClient, WebSocketConfig, channel_message_handler,
 };
 use serde::Serialize;
 use tokio_tungstenite::tungstenite::Message;
@@ -74,7 +74,7 @@ const SPOT_USER_DATA_DOCS: &str =
 
 fn ws_api_url(environment: BinanceEnvironment) -> &'static str {
     match environment {
-        BinanceEnvironment::Mainnet => consts::BINANCE_SPOT_SBE_WS_API_URL,
+        BinanceEnvironment::Live => consts::BINANCE_SPOT_SBE_WS_API_URL,
         BinanceEnvironment::Testnet => consts::BINANCE_SPOT_SBE_WS_API_TESTNET_URL,
         BinanceEnvironment::Demo => consts::BINANCE_SPOT_SBE_WS_API_DEMO_URL,
     }
@@ -82,7 +82,7 @@ fn ws_api_url(environment: BinanceEnvironment) -> &'static str {
 
 fn environment_name(env: BinanceEnvironment) -> &'static str {
     match env {
-        BinanceEnvironment::Mainnet => "mainnet",
+        BinanceEnvironment::Live => "live",
         BinanceEnvironment::Testnet => "testnet",
         BinanceEnvironment::Demo => "demo",
     }
@@ -186,6 +186,8 @@ async fn main() -> anyhow::Result<()> {
         reconnect_jitter_ms: None,
         reconnect_max_attempts: Some(0),
         idle_timeout_ms: None,
+        backend: TransportBackend::Tungstenite,
+        proxy_url: None,
     };
 
     let client = WebSocketClient::connect(
@@ -305,6 +307,7 @@ async fn main() -> anyhow::Result<()> {
     if !early_frames.is_empty() {
         println!("Processing {} early binary frames...", early_frames.len());
     }
+
     for data in early_frames {
         capture_binary_frame(&data, &output_root, &mut counts, &mut fixtures)?;
     }
@@ -677,7 +680,7 @@ where
 
 fn parse_environment(value: &str) -> anyhow::Result<BinanceEnvironment> {
     match value.to_ascii_lowercase().as_str() {
-        "mainnet" | "live" => Ok(BinanceEnvironment::Mainnet),
+        "mainnet" | "live" => Ok(BinanceEnvironment::Live),
         "testnet" | "test" => Ok(BinanceEnvironment::Testnet),
         "demo" => Ok(BinanceEnvironment::Demo),
         _ => anyhow::bail!("Unsupported environment: {value}"),
@@ -695,7 +698,7 @@ fn print_usage() {
         "Usage: cargo run --bin binance-spot-ws-user-data-capture --package nautilus-binance -- [OPTIONS]\n\
          \n\
          Options:\n\
-           --environment, --env <testnet|demo|mainnet>  (default: testnet)\n\
+           --environment, --env <testnet|demo|live>  (default: testnet)\n\
            --output-dir <PATH>\n\
            --symbol <SYMBOL>                            (default: BTCUSDT)\n\
            --include-order-flow                         Place and cancel a limit order\n\

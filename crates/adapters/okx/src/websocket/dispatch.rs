@@ -36,6 +36,7 @@ use nautilus_model::{
         AccountId, ClientOrderId, InstrumentId, StrategyId, TradeId, TraderId, VenueOrderId,
     },
     instruments::{Instrument, InstrumentAny},
+    orders::TRIGGERABLE_ORDER_TYPES,
     reports::FillReport,
     types::{Currency, Money, Quantity},
 };
@@ -43,7 +44,9 @@ use ustr::Ustr;
 
 use crate::{
     common::{
-        consts::{OKX_FIELD_CLORDID, OKX_FIELD_SCODE, OKX_FIELD_SMSG, OKX_SUCCESS_CODE},
+        consts::{
+            OKX_FIELD_CLORDID, OKX_FIELD_SCODE, OKX_FIELD_SMSG, OKX_FIELD_SUBCODE, OKX_SUCCESS_CODE,
+        },
         enums::OKXOrderStatus,
         parse::{
             is_market_price, parse_client_order_id, parse_millisecond_timestamp, parse_price,
@@ -185,7 +188,7 @@ impl WsDispatchState {
 /// proper order events (OrderAccepted, OrderCanceled, OrderFilled, etc.).
 /// For untracked orders (external or pre-existing), falls back to execution
 /// reports for downstream reconciliation.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub fn dispatch_ws_message(
     message: OKXWsMessage,
     emitter: &ExecutionEventEmitter,
@@ -227,6 +230,7 @@ pub fn dispatch_ws_message(
         }
         OKXWsMessage::Account(data) => {
             let ts_init = clock.get_time_ns();
+
             match serde_json::from_value::<Vec<OKXAccount>>(data) {
                 Ok(accounts) => {
                     for account in &accounts {
@@ -243,6 +247,7 @@ pub fn dispatch_ws_message(
         }
         OKXWsMessage::Positions(data) => {
             let ts_init = clock.get_time_ns();
+
             match serde_json::from_value::<Vec<OKXPosition>>(data) {
                 Ok(positions) => {
                     for position in positions {
@@ -252,6 +257,7 @@ pub fn dispatch_ws_message(
                         };
                         let instrument_id = instrument.id();
                         let size_precision = instrument.size_precision();
+
                         match crate::common::parse::parse_position_status_report(
                             &position,
                             account_id,
@@ -285,6 +291,11 @@ pub fn dispatch_ws_message(
                     .get(OKX_FIELD_SMSG)
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
+                let sub_code = item
+                    .get(OKX_FIELD_SUBCODE)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let reason = format_order_response_reason(s_code, s_msg, sub_code);
                 let cl_ord_id = item
                     .get(OKX_FIELD_CLORDID)
                     .and_then(|v| v.as_str())
@@ -342,7 +353,7 @@ pub fn dispatch_ws_message(
                             ident.strategy_id,
                             ident.instrument_id,
                             client_order_id,
-                            s_msg,
+                            &reason,
                             ts_init,
                             false,
                         );
@@ -356,7 +367,7 @@ pub fn dispatch_ws_message(
                             ident.instrument_id,
                             client_order_id,
                             venue_order_id,
-                            s_msg,
+                            &reason,
                             ts_init,
                         );
                     }
@@ -367,7 +378,7 @@ pub fn dispatch_ws_message(
                             ident.instrument_id,
                             client_order_id,
                             venue_order_id,
-                            s_msg,
+                            &reason,
                             ts_init,
                         );
                     }
@@ -396,6 +407,7 @@ pub fn dispatch_ws_message(
 
             if let Some(client_order_id) = client_order_id {
                 let ts_init = clock.get_time_ns();
+
                 match op {
                     Some(
                         OKXWsOperation::Order
@@ -481,7 +493,7 @@ pub fn dispatch_ws_message(
 
 /// Dispatches order messages, producing proper order events for tracked orders
 /// and falling back to execution reports for untracked/external orders.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn dispatch_order_messages(
     order_msgs: &[OKXOrderMsg],
     emitter: &ExecutionEventEmitter,
@@ -635,7 +647,7 @@ fn dispatch_order_messages(
 /// Guarantees the `Submitted -> Accepted -> ...` lifecycle by synthesizing
 /// `OrderAccepted` before any other event when one has not yet been emitted.
 /// Duplicate `Accepted` events (e.g. from reconnect replays) are suppressed.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn dispatch_parsed_order_event(
     event: ParsedOrderEvent,
     client_order_id: ClientOrderId,
@@ -669,6 +681,16 @@ fn dispatch_parsed_order_event(
                 log::debug!("Skipping stale Triggered for {client_order_id} (already filled)");
                 return;
             }
+
+            if !TRIGGERABLE_ORDER_TYPES.contains(&identity.order_type) {
+                log::debug!(
+                    "Skipping OrderTriggered for {} order {client_order_id}: market-style stops have no TRIGGERED state",
+                    identity.order_type,
+                );
+                state.insert_triggered(client_order_id);
+                return;
+            }
+
             ensure_accepted_emitted(
                 client_order_id,
                 account_id,
@@ -838,7 +860,7 @@ fn fill_report_to_order_filled(
 }
 
 /// Falls back to the report path for a single order message.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn dispatch_order_msg_as_report(
     msg: &OKXOrderMsg,
     account_id: AccountId,
@@ -909,6 +931,8 @@ pub fn dispatch_execution_reports(
             ExecutionReport::Order(order_report) => {
                 if let Some(cid) = order_report.client_order_id {
                     match order_report.order_status {
+                        // Guard form reformats awkwardly across multiple lines
+                        #[expect(clippy::collapsible_match)]
                         OrderStatus::Accepted => {
                             if state.filled_orders.contains(&cid)
                                 || state.triggered_orders.contains(&cid)
@@ -959,6 +983,17 @@ pub fn dispatch_execution_reports(
                 emitter.send_fill_report(fill_report);
             }
         }
+    }
+}
+
+fn format_order_response_reason(s_code: &str, s_msg: &str, sub_code: &str) -> String {
+    match (s_msg.is_empty(), sub_code.is_empty(), s_code.is_empty()) {
+        (false, true, _) => s_msg.to_string(),
+        (false, false, _) => format!("{s_msg} (subCode={sub_code})"),
+        (true, false, false) => format!("sCode={s_code} subCode={sub_code}"),
+        (true, false, true) => format!("subCode={sub_code}"),
+        (true, true, false) => format!("sCode={s_code}"),
+        (true, true, true) => String::new(),
     }
 }
 
@@ -1021,6 +1056,32 @@ pub fn emit_batch_cancel_failure(
             ctx.venue_order_id,
             error,
             ts,
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rstest::rstest;
+
+    use super::format_order_response_reason;
+
+    #[rstest]
+    #[case("51000", "Rejected", "", "Rejected")]
+    #[case("51000", "Rejected", "51004", "Rejected (subCode=51004)")]
+    #[case("51000", "", "51004", "sCode=51000 subCode=51004")]
+    #[case("51000", "", "", "sCode=51000")]
+    #[case("", "", "51004", "subCode=51004")]
+    #[case("", "", "", "")]
+    fn test_format_order_response_reason(
+        #[case] s_code: &str,
+        #[case] s_msg: &str,
+        #[case] sub_code: &str,
+        #[case] expected: &str,
+    ) {
+        assert_eq!(
+            format_order_response_reason(s_code, s_msg, sub_code),
+            expected
         );
     }
 }

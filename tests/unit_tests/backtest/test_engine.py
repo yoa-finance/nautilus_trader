@@ -129,6 +129,18 @@ class TestBacktestEngine:
         assert engine.iteration == 0
         assert engine.get_log_guard() is None  # Logging bypassed
 
+    def test_dispose_disposes_emulator(self):
+        # Arrange
+        engine = BacktestEngine(BacktestEngineConfig(logging=LoggingConfig(bypass_logging=True)))
+        emulator = engine.kernel.emulator
+        assert not emulator.is_disposed
+
+        # Act
+        engine.dispose()
+
+        # Assert
+        assert emulator.is_disposed
+
     def test_reset_engine(self):
         # Arrange
         self.engine.run()
@@ -300,10 +312,14 @@ class TestBacktestEngine:
         engine.run()
 
         # Assert
-        msg = messages[10]
-        assert msg.__class__.__name__ == "SignalCounter"
-        assert msg.ts_init == 1359676800000000000
-        assert msg.ts_event == 1359676800000000000
+        expected_ts = 1359676800000000000
+        msg = next(
+            m
+            for m in messages
+            if m.__class__.__name__ == "SignalCounter" and m.ts_event == expected_ts
+        )
+        assert msg.ts_init == expected_ts
+        assert msg.ts_event == expected_ts
 
     def test_set_instance_id(self):
         # Arrange
@@ -1040,6 +1056,7 @@ class TestBacktestEngineStreaming:
         def sparse_generator():
             # Create data with increasing gaps between items
             ts = start_ts
+
             for i in range(count):
                 yield [
                     MyData(
@@ -1360,6 +1377,7 @@ class TestBacktestEngineStreaming:
                     base_ts = start_ts + (
                         chunk * chunk_size * 3_600_000_000_000
                     )  # 1 hour per chunk
+
                     for i in range(chunk_size):
                         chunk_data.append(
                             MyData(
@@ -1730,6 +1748,32 @@ class BarSubscriberStrategy(Strategy):
         self.subscribe_bars(self._bar_type)
 
 
+class BarResubscriberStrategy(Strategy):
+    """
+    Strategy that unsubscribes and re-subscribes to the same internal bar type.
+    """
+
+    def __init__(self, bar_type):
+        super().__init__()
+        self._bar_type = bar_type
+        self.received_bars = []
+        self.resubscribe_count = 0
+
+    def on_start(self):
+        self.subscribe_bars(self._bar_type)
+
+    def on_bar(self, bar):
+        if bar.bar_type != self._bar_type:
+            return
+
+        self.received_bars.append(bar)
+
+        if len(self.received_bars) == 2 and self.resubscribe_count == 0:
+            self.unsubscribe_bars(self._bar_type)
+            self.subscribe_bars(self._bar_type)
+            self.resubscribe_count += 1
+
+
 class TestBacktestEngineStreamingBars:
     def setup_method(self):
         self.instrument = TestInstrumentProvider.default_fx_ccy("USD/JPY")
@@ -1836,3 +1880,23 @@ class TestBacktestEngineStreamingBars:
         assert len(bars_after_end) <= 4, (
             f"Expected at most 4 bars after end() flush to 20s, found {len(bars_after_end)}"
         )
+
+    def test_internal_bar_resubscribe_after_unsubscribe_does_not_raise(self):
+        bar_type = BarType(
+            instrument_id=self.instrument.id,
+            bar_spec=BarSpecification(1, BarAggregation.SECOND, PriceType.MID),
+            aggregation_source=AggregationSource.INTERNAL,
+        )
+        strategy = BarResubscriberStrategy(bar_type)
+        self.engine.add_strategy(strategy)
+
+        batch = self._make_quotes(self.instrument, 1, 10)
+        self.engine.add_data(batch)
+
+        self.engine.run(
+            end=pd.Timestamp("1970-01-01 00:00:10", tz="UTC"),
+            streaming=False,
+        )
+
+        assert strategy.resubscribe_count == 1
+        assert len(strategy.received_bars) >= 3

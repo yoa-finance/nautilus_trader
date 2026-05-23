@@ -22,12 +22,23 @@ use nautilus_model::{
     identifiers::{AccountId, ClientOrderId, InstrumentId},
     python::{data::data_to_pycapsule, instruments::pyobject_to_instrument_any},
 };
+use nautilus_network::websocket::TransportBackend;
 use pyo3::{conversion::IntoPyObjectExt, prelude::*};
 
-use crate::websocket::{
-    HyperliquidWebSocketClient,
-    messages::{ExecutionReport, NautilusWsMessage},
+use crate::{
+    common::enums::HyperliquidEnvironment,
+    websocket::{
+        HyperliquidWebSocketClient,
+        messages::{ExecutionReport, NautilusWsMessage},
+    },
 };
+
+fn ws_data_to_pyobject(py: Python<'_>, data: Data) -> PyResult<Py<PyAny>> {
+    match data {
+        Data::Custom(custom) => Py::new(py, custom).map(|obj| obj.into_any()),
+        other => Ok(data_to_pycapsule(py, other)),
+    }
+}
 
 #[pymethods]
 #[pyo3_stub_gen::derive::gen_stub_pymethods]
@@ -37,10 +48,21 @@ impl HyperliquidWebSocketClient {
     /// Orchestrates WebSocket connection and subscriptions using a command-based architecture,
     /// where the inner FeedHandler owns the WebSocketClient and handles all I/O.
     #[new]
-    #[pyo3(signature = (url=None, testnet=false, account_id=None))]
-    fn py_new(url: Option<String>, testnet: bool, account_id: Option<String>) -> Self {
+    #[pyo3(signature = (url=None, environment=HyperliquidEnvironment::Mainnet, account_id=None, proxy_url=None))]
+    fn py_new(
+        url: Option<String>,
+        environment: HyperliquidEnvironment,
+        account_id: Option<String>,
+        proxy_url: Option<String>,
+    ) -> Self {
         let account_id = account_id.map(|s| AccountId::from(s.as_str()));
-        Self::new(url, testnet, account_id)
+        Self::new(
+            url,
+            environment,
+            account_id,
+            TransportBackend::default(),
+            proxy_url,
+        )
     }
 
     /// Returns the URL of this WebSocket client.
@@ -91,8 +113,8 @@ impl HyperliquidWebSocketClient {
 
     /// Removes a cloid mapping from the cache.
     ///
-    /// Should be called when an order reaches a terminal state (filled, canceled, expired)
-    /// to prevent unbounded memory growth in long-running sessions.
+    /// Called on terminal order state. The cache is FIFO-bounded so missed
+    /// removals self-evict (see GH-3972 cancel-replace drain).
     #[pyo3(name = "remove_cloid_mapping")]
     fn py_remove_cloid_mapping(&self, cloid: &str) {
         self.remove_cloid_mapping(&ustr::Ustr::from(cloid));
@@ -122,7 +144,7 @@ impl HyperliquidWebSocketClient {
 
     /// Establishes WebSocket connection and spawns the message handler.
     #[pyo3(name = "connect")]
-    #[allow(clippy::needless_pass_by_value)]
+    #[expect(clippy::needless_pass_by_value)]
     fn py_connect<'py>(
         &self,
         py: Python<'py>,
@@ -174,6 +196,12 @@ impl HyperliquidWebSocketClient {
                                         call_python_threadsafe(py, &call_soon, &callback, py_obj);
                                     });
                                 }
+                                NautilusWsMessage::Depth10(depth) => {
+                                    Python::attach(|py| {
+                                        let py_obj = data_to_pycapsule(py, Data::Depth10(depth));
+                                        call_python_threadsafe(py, &call_soon, &callback, py_obj);
+                                    });
+                                }
                                 NautilusWsMessage::Candle(bar) => {
                                     Python::attach(|py| {
                                         let py_obj = data_to_pycapsule(py, Data::Bar(bar));
@@ -205,6 +233,18 @@ impl HyperliquidWebSocketClient {
                                         }
                                     });
                                 }
+                                NautilusWsMessage::CustomData(data) => {
+                                    Python::attach(|py| match ws_data_to_pyobject(py, data) {
+                                        Ok(py_obj) => {
+                                            call_python_threadsafe(py, &call_soon, &callback, py_obj);
+                                        }
+                                        Err(e) => {
+                                            log::error!(
+                                                "Error converting CustomData to Python object: {e}"
+                                            );
+                                        }
+                                    });
+                                }
                                 NautilusWsMessage::ExecutionReports(reports) => {
                                     Python::attach(|py| {
                                         for report in reports {
@@ -215,6 +255,7 @@ impl HyperliquidWebSocketClient {
                                                         order_report.venue_order_id,
                                                         order_report.order_status
                                                     );
+
                                                     match Py::new(py, order_report) {
                                                         Ok(py_obj) => {
                                                             call_python_threadsafe(py, &call_soon, &callback, py_obj.into_any());
@@ -232,6 +273,7 @@ impl HyperliquidWebSocketClient {
                                                         fill_report.last_qty,
                                                         fill_report.last_px
                                                     );
+
                                                     match Py::new(py, fill_report) {
                                                         Ok(py_obj) => {
                                                             call_python_threadsafe(py, &call_soon, &callback, py_obj.into_any());
@@ -272,6 +314,7 @@ impl HyperliquidWebSocketClient {
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let start = std::time::Instant::now();
+
             loop {
                 if client.is_active() {
                     return Ok(());
@@ -330,6 +373,38 @@ impl HyperliquidWebSocketClient {
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             client
                 .unsubscribe_trades(instrument_id)
+                .await
+                .map_err(to_pyruntime_err)?;
+            Ok(())
+        })
+    }
+
+    /// Subscribe to all mid prices across markets.
+    #[pyo3(name = "subscribe_all_mids")]
+    fn py_subscribe_all_mids<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            client
+                .subscribe_all_mids()
+                .await
+                .map_err(to_pyruntime_err)?;
+            Ok(())
+        })
+    }
+
+    /// Subscribe to all mid prices across markets, optionally scoped to a specific dex.
+    #[pyo3(name = "subscribe_all_mids_with_dex")]
+    fn py_subscribe_all_mids_with_dex<'py>(
+        &self,
+        py: Python<'py>,
+        dex: Option<String>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            client
+                .subscribe_all_mids_with_dex(dex.as_deref())
                 .await
                 .map_err(to_pyruntime_err)?;
             Ok(())
@@ -493,6 +568,38 @@ impl HyperliquidWebSocketClient {
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             client
                 .unsubscribe_bars(bar_type)
+                .await
+                .map_err(to_pyruntime_err)?;
+            Ok(())
+        })
+    }
+
+    /// Unsubscribe from all mid prices across markets.
+    #[pyo3(name = "unsubscribe_all_mids")]
+    fn py_unsubscribe_all_mids<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            client
+                .unsubscribe_all_mids()
+                .await
+                .map_err(to_pyruntime_err)?;
+            Ok(())
+        })
+    }
+
+    /// Unsubscribe from all mid prices across markets, optionally scoped to a specific dex.
+    #[pyo3(name = "unsubscribe_all_mids_with_dex")]
+    fn py_unsubscribe_all_mids_with_dex<'py>(
+        &self,
+        py: Python<'py>,
+        dex: Option<String>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            client
+                .unsubscribe_all_mids_with_dex(dex.as_deref())
                 .await
                 .map_err(to_pyruntime_err)?;
             Ok(())

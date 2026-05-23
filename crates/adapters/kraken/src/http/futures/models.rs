@@ -254,7 +254,7 @@ pub struct FuturesOpenOrdersResponse {
 pub struct FuturesOrderEventWrapper {
     pub order: FuturesOrderEvent,
     #[serde(rename = "type")]
-    pub event_type: String,
+    pub event_type: KrakenFuturesOrderEventType,
     #[serde(default)]
     pub reduced_quantity: Option<f64>,
 }
@@ -565,6 +565,8 @@ pub struct FuturesCancelAllStatus {
 pub struct CancelledOrder {
     #[serde(rename = "order_id", default)]
     pub order_id: Option<String>,
+    #[serde(default)]
+    pub cli_ord_id: Option<String>,
 }
 
 // Futures Public Executions Models
@@ -766,6 +768,52 @@ mod tests {
     }
 
     #[rstest]
+    fn test_parse_futures_cancel_all_orders_with_no_orders_to_cancel_status() {
+        // Regression for the venue response shape that broke parsing in production:
+        // the `cancelStatus.status` field is `noOrdersToCancel` even when one or more
+        // orders were canceled in the same call. The `cancelledOrders` array carries
+        // the actual canceled order ids, so the parser must accept this status.
+        let raw = r#"{
+            "result": "success",
+            "cancelStatus": {
+                "receivedTime": "2026-04-10T13:17:23.291Z",
+                "cancelOnly": "PF_XBTUSD",
+                "status": "noOrdersToCancel",
+                "cancelledOrders": [
+                    {
+                        "order_id": "a182b1c0-cd01-4d1c-853b-605e936f412b",
+                        "cliOrdId": "5f173994-f660-4809-b97a-586221fe5926"
+                    }
+                ],
+                "orderEvents": []
+            },
+            "serverTime": "2026-04-10T13:17:23.291Z"
+        }"#;
+
+        let response: FuturesCancelAllOrdersResponse =
+            serde_json::from_str(raw).expect("Failed to parse cancel-all response");
+
+        assert_eq!(response.result, KrakenApiResult::Success);
+        assert_eq!(
+            response.cancel_status.status,
+            KrakenSendStatus::NoOrdersToCancel
+        );
+        assert_eq!(response.cancel_status.cancelled_orders.len(), 1);
+        assert_eq!(
+            response.cancel_status.cancelled_orders[0]
+                .order_id
+                .as_deref(),
+            Some("a182b1c0-cd01-4d1c-853b-605e936f412b")
+        );
+        assert_eq!(
+            response.cancel_status.cancelled_orders[0]
+                .cli_ord_id
+                .as_deref(),
+            Some("5f173994-f660-4809-b97a-586221fe5926")
+        );
+    }
+
+    #[rstest]
     fn test_parse_futures_open_orders() {
         let data = load_test_data("http_futures_open_orders.json");
         let response: FuturesOpenOrdersResponse =
@@ -854,5 +902,105 @@ mod tests {
 
         let negative_rate = &response.rates[1];
         assert_eq!(negative_rate.relative_funding_rate, -0.00005);
+    }
+
+    #[rstest]
+    fn test_parse_futures_order_events_uses_enum_event_type() {
+        let data = load_test_data("http_futures_order_events.json");
+        let response: FuturesOrderEventsResponse =
+            serde_json::from_str(&data).expect("Failed to parse futures order events");
+
+        assert_eq!(response.order_events.len(), 3);
+        assert_eq!(
+            response.order_events[0].event_type,
+            KrakenFuturesOrderEventType::Place
+        );
+        assert_eq!(
+            response.order_events[1].event_type,
+            KrakenFuturesOrderEventType::Fill
+        );
+        assert_eq!(
+            response.order_events[2].event_type,
+            KrakenFuturesOrderEventType::Cancel
+        );
+    }
+
+    #[rstest]
+    fn test_parse_futures_order_events_tolerates_unknown_enum_values() {
+        // Regression for Kraken Futures change log 2026-05-18: an `"unknown"`
+        // value anywhere in the batch must not fail the surrounding response.
+        let data = load_test_data("http_futures_order_events_unknown.json");
+        let response: FuturesOrderEventsResponse =
+            serde_json::from_str(&data).expect("Failed to parse futures order events with unknown");
+
+        assert_eq!(response.order_events.len(), 1);
+        assert_eq!(
+            response.order_events[0].order.order_type,
+            KrakenFuturesOrderType::Unknown
+        );
+    }
+
+    #[rstest]
+    fn test_parse_futures_order_trigger_data_tolerates_unknown_enum_values() {
+        // Trigger payload uses non-optional enums, so an `"unknown"` on
+        // triggerSide / triggerSignal must not fail the sendStatus batch.
+        let data = load_test_data("http_send_order_futures_unknown_trigger.json");
+        let response: FuturesSendOrderResponse =
+            serde_json::from_str(&data).expect("Failed to parse send-order response with unknown");
+
+        let send_status = response.send_status.expect("sendStatus missing");
+        let order_events = send_status.order_events.expect("orderEvents missing");
+        let trigger = order_events[0]
+            .order_trigger
+            .as_ref()
+            .expect("orderTrigger missing");
+
+        assert_eq!(trigger.order_type, KrakenFuturesOrderType::Unknown);
+        assert_eq!(trigger.trigger_side, KrakenTriggerSide::Unknown);
+        assert_eq!(trigger.trigger_signal, KrakenTriggerSignal::Unknown);
+    }
+
+    #[rstest]
+    fn test_parse_futures_send_order_execution_event_uses_enum_event_type() {
+        let data = r#"
+        {
+          "result": "success",
+          "sendStatus": {
+            "status": "placed",
+            "orderEvents": [
+              {
+                "type": "EXECUTION",
+                "executionId": "c8a35168-8d52-4609-944f-3f32bb0d5c77",
+                "price": 35000.5,
+                "amount": 1.25,
+                "orderPriorExecution": {
+                  "orderId": "c8a35168-8d52-4609-944f-3f32bb0d5c77",
+                  "cliOrdId": "test-order-001",
+                  "type": "lmt",
+                  "symbol": "PI_XBTUSD",
+                  "side": "buy",
+                  "quantity": 2.0,
+                  "filled": 0.0,
+                  "limitPrice": 35000.5,
+                  "timestamp": "2024-01-15T10:30:45.123Z",
+                  "lastUpdateTimestamp": "2024-01-15T10:30:45.123Z",
+                  "reduceOnly": false
+                }
+              }
+            ]
+          }
+        }
+        "#;
+        let response: FuturesSendOrderResponse =
+            serde_json::from_str(data).expect("Failed to parse futures send order response");
+
+        let send_status = response.send_status.expect("sendStatus missing");
+        let order_events = send_status.order_events.expect("orderEvents missing");
+
+        assert_eq!(order_events.len(), 1);
+        assert_eq!(
+            order_events[0].event_type,
+            KrakenFuturesOrderEventType::Execution
+        );
     }
 }

@@ -16,6 +16,7 @@
 //! WebSocket message parsers for converting Kraken streaming data to Nautilus domain models.
 
 use anyhow::Context;
+use chrono::{DateTime, Utc};
 use nautilus_core::{UUID4, nanos::UnixNanos};
 use nautilus_model::{
     data::{Bar, BarSpecification, BarType, BookOrder, OrderBookDelta, QuoteTick, TradeTick},
@@ -32,8 +33,8 @@ use nautilus_model::{
 use super::{
     enums::{KrakenExecType, KrakenLiquidityInd, KrakenWsOrderStatus},
     messages::{
-        KrakenWsBookData, KrakenWsBookLevel, KrakenWsExecutionData, KrakenWsOhlcData,
-        KrakenWsTickerData, KrakenWsTradeData,
+        KrakenSpotWsMessage, KrakenWsBookData, KrakenWsBookLevel, KrakenWsExecutionData,
+        KrakenWsOhlcData, KrakenWsOrderResponse, KrakenWsTickerData, KrakenWsTradeData,
     },
 };
 use crate::common::enums::{KrakenOrderSide, KrakenOrderType, KrakenTimeInForce};
@@ -67,8 +68,7 @@ pub fn parse_quote_tick(
         format!("Failed to construct ask Quantity with precision {size_precision}")
     })?;
 
-    // Kraken ticker doesn't include timestamp
-    let ts_event = ts_init;
+    let ts_event = datetime_to_nanos(ticker.timestamp, "ticker.timestamp")?;
 
     Ok(QuoteTick::new(
         instrument_id,
@@ -108,7 +108,7 @@ pub fn parse_trade_tick(
     };
 
     let trade_id = TradeId::new_checked(trade.trade_id.to_string())?;
-    let ts_event = parse_rfc3339_timestamp(&trade.timestamp, "trade.timestamp")?;
+    let ts_event = datetime_to_nanos(trade.timestamp, "trade.timestamp")?;
 
     TradeTick::new_checked(
         instrument_id,
@@ -141,12 +141,7 @@ pub fn parse_book_deltas(
     let price_precision = instrument.price_precision();
     let size_precision = instrument.size_precision();
 
-    // Parse timestamp if available, otherwise use ts_init
-    let ts_event = if let Some(ref timestamp) = book.timestamp {
-        parse_rfc3339_timestamp(timestamp, "book.timestamp")?
-    } else {
-        ts_init
-    };
+    let ts_event = datetime_to_nanos(book.timestamp, "book.timestamp")?;
 
     let mut deltas = Vec::new();
     let mut current_sequence = sequence;
@@ -188,7 +183,7 @@ pub fn parse_book_deltas(
     Ok(deltas)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn parse_book_level(
     level: &KrakenWsBookLevel,
     side: OrderSide,
@@ -226,10 +221,11 @@ fn parse_book_level(
     ))
 }
 
-fn parse_rfc3339_timestamp(value: &str, field: &str) -> anyhow::Result<UnixNanos> {
-    value
-        .parse::<UnixNanos>()
-        .map_err(|e| anyhow::anyhow!("Failed to parse {field}='{value}': {e}"))
+pub(super) fn datetime_to_nanos(value: DateTime<Utc>, field: &str) -> anyhow::Result<UnixNanos> {
+    let nanos = value
+        .timestamp_nanos_opt()
+        .with_context(|| format!("Failed to convert {field}='{value}' to nanoseconds"))?;
+    Ok(UnixNanos::from(nanos as u64))
 }
 
 /// Parses Kraken WebSocket OHLC data into a Nautilus bar.
@@ -403,7 +399,7 @@ pub fn parse_ws_order_status_report(
         .context("Failed to parse order_qty")?
         .unwrap_or(filled_qty);
 
-    let ts_event = parse_rfc3339_timestamp(&exec.timestamp, "execution.timestamp")?;
+    let ts_event = datetime_to_nanos(exec.timestamp, "execution.timestamp")?;
 
     let mut report = OrderStatusReport::new(
         account_id,
@@ -543,7 +539,7 @@ pub fn parse_ws_fill_report(
         Money::new(0.0, instrument.quote_currency())
     };
 
-    let ts_event = parse_rfc3339_timestamp(&exec.timestamp, "execution.timestamp")?;
+    let ts_event = datetime_to_nanos(exec.timestamp, "execution.timestamp")?;
 
     let client_order_id = exec
         .cl_ord_id
@@ -567,6 +563,34 @@ pub fn parse_ws_fill_report(
         ts_init,
         None, // report_id
     ))
+}
+
+/// Parses a raw WebSocket JSON string and returns [`KrakenSpotWsMessage::OrderResponse`] if the
+/// message is an order-method response envelope, or `Ok(None)` for unrecognised messages.
+///
+/// # Errors
+///
+/// Returns an error if the message appears to be an order response but cannot be deserialized.
+pub fn parse_order_response(text: &str) -> anyhow::Result<Option<KrakenSpotWsMessage>> {
+    let value: serde_json::Value =
+        serde_json::from_str(text).with_context(|| format!("Failed to parse JSON: {text}"))?;
+
+    let method_str = match value.get("method").and_then(|m| m.as_str()) {
+        Some(s) => s.to_owned(),
+        None => return Ok(None),
+    };
+
+    if !matches!(
+        method_str.as_str(),
+        "add_order" | "amend_order" | "cancel_order" | "batch_add"
+    ) {
+        return Ok(None);
+    }
+
+    let response: KrakenWsOrderResponse = serde_json::from_value(value).with_context(|| {
+        format!("Failed to deserialize order response for method '{method_str}'")
+    })?;
+    Ok(Some(KrakenSpotWsMessage::OrderResponse(response)))
 }
 
 #[cfg(test)]
@@ -630,6 +654,11 @@ mod tests {
         assert!(quote_tick.ask_price.as_f64() > 0.0);
         assert!(quote_tick.bid_size.as_f64() > 0.0);
         assert!(quote_tick.ask_size.as_f64() > 0.0);
+        assert_eq!(
+            quote_tick.ts_event,
+            UnixNanos::from(1_671_960_659_123_456_000)
+        );
+        assert_eq!(quote_tick.ts_init, TS);
     }
 
     #[rstest]
@@ -648,6 +677,11 @@ mod tests {
             trade_tick.aggressor_side,
             AggressorSide::Buyer | AggressorSide::Seller
         ));
+        assert_eq!(
+            trade_tick.ts_event,
+            UnixNanos::from(1_696_613_755_440_295_000)
+        );
+        assert_eq!(trade_tick.ts_init, TS);
     }
 
     #[rstest]
@@ -679,6 +713,10 @@ mod tests {
         assert_eq!(first_delta.instrument_id, instrument.id());
         assert!(first_delta.order.price.as_f64() > 0.0);
         assert!(first_delta.order.size.as_f64() > 0.0);
+
+        let expected_ts_event = UnixNanos::from(1_696_613_755_440_295_000);
+        assert!(deltas.iter().all(|d| d.ts_event == expected_ts_event));
+        assert!(deltas.iter().all(|d| d.ts_init == TS));
     }
 
     #[rstest]
@@ -696,13 +734,28 @@ mod tests {
         let first_delta = &deltas[0];
         assert_eq!(first_delta.instrument_id, instrument.id());
         assert!(first_delta.order.price.as_f64() > 0.0);
+
+        let expected_ts_event = UnixNanos::from(1_696_613_755_440_295_000);
+        assert!(deltas.iter().all(|d| d.ts_event == expected_ts_event));
+        assert!(deltas.iter().all(|d| d.ts_init == TS));
     }
 
     #[rstest]
-    fn test_parse_rfc3339_timestamp() {
-        let timestamp = "2023-10-06T17:35:55.440295Z";
-        let result = parse_rfc3339_timestamp(timestamp, "test").unwrap();
-        assert!(result.as_u64() > 0);
+    fn test_datetime_to_nanos() {
+        let dt = "2023-10-06T17:35:55.440295Z"
+            .parse::<DateTime<Utc>>()
+            .unwrap();
+        let result = datetime_to_nanos(dt, "test").unwrap();
+        assert_eq!(result, UnixNanos::from(1_696_613_755_440_295_000));
+    }
+
+    #[rstest]
+    fn test_datetime_to_nanos_out_of_range_errors() {
+        let dt = "1500-01-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let result = datetime_to_nanos(dt, "test");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("test"));
     }
 
     #[rstest]
@@ -767,5 +820,35 @@ mod tests {
     fn test_interval_to_bar_spec_invalid() {
         let result = interval_to_bar_spec(999);
         assert!(result.is_err());
+    }
+
+    #[rstest]
+    fn test_parse_order_response_envelope_returns_order_response_variant() {
+        use crate::websocket::spot_v2::enums::KrakenWsMethod;
+
+        let raw = load_test_json("ws_add_order_response_success.json");
+        let parsed = parse_order_response(&raw).expect("parse ok");
+        match parsed {
+            Some(KrakenSpotWsMessage::OrderResponse(resp)) => {
+                assert_eq!(resp.method, KrakenWsMethod::AddOrder);
+                assert_eq!(resp.req_id, Some(42));
+                assert!(resp.success);
+            }
+            other => panic!("expected OrderResponse, was {other:?}"),
+        }
+    }
+
+    #[rstest]
+    fn test_parse_order_response_returns_none_for_non_order_method() {
+        let json = r#"{"method":"subscribe","req_id":1,"success":true}"#;
+        let result = parse_order_response(json).expect("parse ok");
+        assert!(result.is_none());
+    }
+
+    #[rstest]
+    fn test_parse_order_response_returns_none_for_data_message() {
+        let json = r#"{"channel":"ticker","type":"snapshot","data":[]}"#;
+        let result = parse_order_response(json).expect("parse ok");
+        assert!(result.is_none());
     }
 }

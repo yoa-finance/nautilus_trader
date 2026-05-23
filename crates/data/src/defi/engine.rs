@@ -43,7 +43,7 @@ use crate::engine::{
     },
 };
 
-/// Extracts the block position tuple from a DexPoolData event.
+/// Extracts the block position tuple from a `DexPoolData` event.
 fn get_event_block_position(event: &DexPoolData) -> (u64, u32, u32) {
     match event {
         DexPoolData::Swap(s) => (s.block, s.transaction_index, s.log_index),
@@ -53,7 +53,7 @@ fn get_event_block_position(event: &DexPoolData) -> (u64, u32, u32) {
     }
 }
 
-/// Converts buffered DefiData events to DexPoolData and sorts by block position.
+/// Converts buffered `DefiData` events to `DexPoolData` and sorts by block position.
 fn convert_and_sort_buffered_events(buffered_events: Vec<DefiData>) -> Vec<DexPoolData> {
     let mut events: Vec<DexPoolData> = buffered_events
         .into_iter()
@@ -118,19 +118,19 @@ impl DataEngine {
     ///
     /// Returns an error if the subscription is invalid (e.g., synthetic instrument for book data),
     /// or if the underlying client operation fails.
-    pub fn execute_defi_subscribe(&mut self, cmd: &DefiSubscribeCommand) -> anyhow::Result<()> {
+    pub fn execute_defi_subscribe(&mut self, cmd: DefiSubscribeCommand) -> anyhow::Result<()> {
         if let Some(client_id) = cmd.client_id()
             && self.external_clients.contains(client_id)
         {
             if self.config.debug {
-                log::debug!("Skipping defi subscribe for external client {client_id}: {cmd:?}",);
+                log::debug!("Skipping defi subscribe for external client {client_id}: {cmd:?}");
             }
             return Ok(());
         }
 
         if let Some(client) = self.get_client(cmd.client_id(), cmd.venue()) {
             log::info!("Forwarding subscription to client {}", client.client_id);
-            client.execute_defi_subscribe(cmd);
+            client.execute_defi_subscribe(cmd.clone());
         } else {
             log::error!(
                 "Cannot handle command: no client found for client_id={:?}, venue={:?}",
@@ -171,7 +171,7 @@ impl DataEngine {
             && self.external_clients.contains(client_id)
         {
             if self.config.debug {
-                log::debug!("Skipping defi unsubscribe for external client {client_id}: {cmd:?}",);
+                log::debug!("Skipping defi unsubscribe for external client {client_id}: {cmd:?}");
             }
             return Ok(());
         }
@@ -219,6 +219,8 @@ impl DataEngine {
 
     /// Processes DeFi-specific data events.
     pub fn process_defi_data(&mut self, data: DefiData) {
+        self.increment_data_count();
+
         match data {
             DefiData::Block(block) => {
                 let topic = defi::switchboard::get_defi_blocks_topic(block.chain());

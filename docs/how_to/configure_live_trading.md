@@ -91,7 +91,8 @@ cache_config = CacheConfig(
         port=6379,
         username="nautilus",
         password="pass",
-        timeout=2.0,
+        connection_timeout=2,
+        response_timeout=2,
     ),
     encoding="msgpack",  # or "json"
     timestamps_as_iso8601=True,
@@ -107,7 +108,10 @@ from nautilus_trader.config import MessageBusConfig
 from nautilus_trader.config import DatabaseConfig
 
 message_bus_config = MessageBusConfig(
-    database=DatabaseConfig(timeout=2),
+    database=DatabaseConfig(
+        connection_timeout=2,
+        response_timeout=2,
+    ),
     timestamps_as_iso8601=True,
     use_instance_id=False,
     types_filter=[QuoteTick, TradeTick],  # Filter specific message types
@@ -130,11 +134,11 @@ config = TradingNodeConfig(
     data_clients={
         "BINANCE_SPOT": BinanceDataClientConfig(
             account_type=BinanceAccountType.SPOT,
-            testnet=False,
+            environment=BinanceEnvironment.LIVE,
         ),
         "BINANCE_FUTURES": BinanceDataClientConfig(
             account_type=BinanceAccountType.USDT_FUTURES,
-            testnet=False,
+            environment=BinanceEnvironment.LIVE,
         ),
     },
 
@@ -142,11 +146,11 @@ config = TradingNodeConfig(
     exec_clients={
         "BINANCE_SPOT": BinanceExecClientConfig(
             account_type=BinanceAccountType.SPOT,
-            testnet=False,
+            environment=BinanceEnvironment.LIVE,
         ),
         "BINANCE_FUTURES": BinanceExecClientConfig(
             account_type=BinanceAccountType.USDT_FUTURES,
-            testnet=False,
+            environment=BinanceEnvironment.LIVE,
         ),
     },
 )

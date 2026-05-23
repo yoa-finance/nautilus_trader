@@ -89,23 +89,26 @@ class BinanceDataClientConfig(LiveDataClientConfig, frozen=True):
         Only needed for RSA keys (set explicitly to ``BinanceKeyType.RSA``).
     account_type : BinanceAccountType, default BinanceAccountType.SPOT
         The account type for the client.
+    environment : BinanceEnvironment, optional
+        The Binance environment (LIVE, TESTNET, or DEMO). Defaults to LIVE.
     base_url_http : str, optional
         The HTTP client custom endpoint override.
     base_url_ws : str, optional
         The WebSocket client custom endpoint override.
+        Live USD-M Futures data overrides are normalized onto the matching
+        `/market` and `/public` routes.
     proxy_url : str, optional
-        The proxy URL for HTTP requests.
-    environment : BinanceEnvironment, optional
-        The Binance environment (LIVE, TESTNET, or DEMO). Defaults to LIVE.
+        The proxy URL for HTTP and WebSocket transports.
     us : bool, default False
         If client is connecting to Binance US.
-    testnet : bool, default False
-        Deprecated: use ``environment`` instead.
     update_instruments_interval_mins: PositiveInt or None, default 60
         The interval (minutes) between reloading instruments from the venue.
     use_agg_trade_ticks : bool, default False
         Whether to use aggregated trade tick endpoints instead of raw trades.
         TradeId of ticks will be the Aggregate tradeId returned by Binance.
+        For Futures account types the WebSocket trade subscription always uses
+        ``@aggTrade`` (the non-aggregated ``@trade`` stream is not published),
+        but the HTTP ``request_trade_ticks`` path still honours this flag.
 
     """
 
@@ -114,12 +117,11 @@ class BinanceDataClientConfig(LiveDataClientConfig, frozen=True):
     api_secret: str | None = None
     key_type: BinanceKeyType = BinanceKeyType.HMAC
     account_type: BinanceAccountType = BinanceAccountType.SPOT
+    environment: BinanceEnvironment | None = None
     base_url_http: str | None = None
     base_url_ws: str | None = None
     proxy_url: str | None = None
-    environment: BinanceEnvironment | None = None
     us: bool = False
-    testnet: bool = False
     update_instruments_interval_mins: PositiveInt | None = 60
     use_agg_trade_ticks: bool = False
 
@@ -143,6 +145,8 @@ class BinanceExecClientConfig(LiveExecClientConfig, frozen=True):
         Only needed for RSA keys (set explicitly to ``BinanceKeyType.RSA``).
     account_type : BinanceAccountType, default BinanceAccountType.SPOT
         The account type for the client.
+    environment : BinanceEnvironment, optional
+        The Binance environment (LIVE, TESTNET, or DEMO). Defaults to LIVE.
     base_url_http : str, optional
         The HTTP client custom endpoint override.
     base_url_ws : str, optional
@@ -150,14 +154,11 @@ class BinanceExecClientConfig(LiveExecClientConfig, frozen=True):
     base_url_ws_stream : str, optional
         The WebSocket stream custom endpoint override for futures user data event delivery.
         Only applicable to futures account types. When ``None``, derived from the environment.
+        Live USD-M Futures stream overrides are normalized onto the `/private` route.
     proxy_url : str, optional
-        The proxy URL for HTTP requests.
-    environment : BinanceEnvironment, optional
-        The Binance environment (LIVE, TESTNET, or DEMO). Defaults to LIVE.
+        The proxy URL for HTTP and WebSocket transports.
     us : bool, default False
         If client is connecting to Binance US.
-    testnet : bool, default False
-        Deprecated: use ``environment`` instead.
     use_gtd : bool, default True
         If GTD orders will use the Binance GTD TIF option.
         If False, then GTD time in force will be remapped to GTC (this is useful if managing GTD orders locally).
@@ -201,13 +202,12 @@ class BinanceExecClientConfig(LiveExecClientConfig, frozen=True):
     api_secret: str | None = None
     key_type: BinanceKeyType = BinanceKeyType.HMAC
     account_type: BinanceAccountType = BinanceAccountType.SPOT
+    environment: BinanceEnvironment | None = None
     base_url_http: str | None = None
     base_url_ws: str | None = None
     base_url_ws_stream: str | None = None
     proxy_url: str | None = None
-    environment: BinanceEnvironment | None = None
     us: bool = False
-    testnet: bool = False
     use_gtd: bool = True
     use_reduce_only: bool = True
     use_position_ids: bool = True

@@ -36,6 +36,10 @@ You can find live example scripts [here](https://github.com/nautechsystems/nauti
 
 Before implementing your trading strategies, make sure that either TWS (Trader Workstation) or IB Gateway is running. You can log in to one of these standalone applications with your credentials, or connect programmatically via `DockerizedIBGateway`.
 
+:::warning
+Configure TWS or IB Gateway to return market data timestamps in UTC before connecting NautilusTrader. This setting must be enabled by the user in TWS/IB Gateway, as NautilusTrader is designed to work with UTC timestamps.
+:::
+
 ### Connection methods
 
 There are two primary ways to connect to Interactive Brokers:
@@ -284,10 +288,10 @@ instrument_provider_config = InteractiveBrokersInstrumentProviderConfig(
 
 **Examples of MIC Conversion:**
 
-- `CME` → `XCME` (Chicago Mercantile Exchange)
-- `NASDAQ` → `XNAS` (Nasdaq Stock Market)
-- `NYSE` → `XNYS` (New York Stock Exchange)
-- `LSE` → `XLON` (London Stock Exchange)
+- `CME` -> `XCME` (Chicago Mercantile Exchange)
+- `NASDAQ` -> `XNAS` (Nasdaq Stock Market)
+- `NYSE` -> `XNYS` (New York Stock Exchange)
+- `LSE` -> `XLON` (London Stock Exchange)
 
 #### `symbol_to_mic_venue`
 
@@ -528,8 +532,8 @@ For continuous futures contracts (using `secType='CONTFUT'`), the adapter create
 
 ```python
 # Continuous futures examples
-IBContract(secType='CONTFUT', exchange='CME', symbol='ES')  # → ES.CME
-IBContract(secType='CONTFUT', exchange='NYMEX', symbol='CL') # → CL.NYMEX
+IBContract(secType='CONTFUT', exchange='CME', symbol='ES')  # -> ES.CME
+IBContract(secType='CONTFUT', exchange='NYMEX', symbol='CL') # -> CL.NYMEX
 
 # With MIC venue conversion enabled
 instrument_provider_config = InteractiveBrokersInstrumentProviderConfig(
@@ -1195,6 +1199,18 @@ exec_config = InteractiveBrokersExecClientConfig(
     # ... other parameters
 )
 ```
+
+#### Order params
+
+The execution adapter supports `params["exchange"]` on order submit, order list submit, and
+order modification commands. Use it to override the IB contract exchange for routing the current
+order while preserving the cached instrument contract:
+
+```python
+self.submit_order(order, params={"exchange": "IEX"})
+```
+
+Leave `exchange` unset, or set it to an empty string, to use the cached contract exchange.
 
 #### Order tags and advanced features
 

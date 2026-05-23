@@ -26,6 +26,7 @@ use axum::{
     routing::get,
 };
 use nautilus_binance::{
+    common::consts::{BINANCE_CLIENT_ID, BINANCE_VENUE},
     config::BinanceDataClientConfig,
     spot::{
         BinanceSpotDataClient,
@@ -48,10 +49,7 @@ use nautilus_common::{
     testing::wait_until_async,
 };
 use nautilus_core::UnixNanos;
-use nautilus_model::{
-    enums::BookType,
-    identifiers::{ClientId, InstrumentId, Venue},
-};
+use nautilus_model::{enums::BookType, identifiers::InstrumentId};
 use nautilus_network::http::HttpClient;
 use rstest::rstest;
 use serde_json::json;
@@ -327,7 +325,7 @@ async fn handle_ws_connection(mut socket: WebSocket) {
 
             if method == Some("SUBSCRIBE") {
                 let resp = json!({"result": null, "id": id});
-                let _ = socket.send(Message::Text(resp.to_string().into())).await;
+                let _result = socket.send(Message::Text(resp.to_string().into())).await;
 
                 if let Some(params) = parsed.get("params").and_then(|p| p.as_array()) {
                     for param in params {
@@ -337,26 +335,26 @@ async fn handle_ws_connection(mut socket: WebSocket) {
                                     stream.split('@').next().unwrap_or("BTCUSDT").to_uppercase();
                                 let data = build_sbe_trades_stream_event(&symbol);
                                 tokio::time::sleep(Duration::from_millis(50)).await;
-                                let _ = socket.send(Message::Binary(data.into())).await;
+                                let _result = socket.send(Message::Binary(data.into())).await;
                             } else if stream.contains("@bestBidAsk") {
                                 let symbol =
                                     stream.split('@').next().unwrap_or("BTCUSDT").to_uppercase();
                                 let data = build_sbe_best_bid_ask_stream_event(&symbol);
                                 tokio::time::sleep(Duration::from_millis(50)).await;
-                                let _ = socket.send(Message::Binary(data.into())).await;
+                                let _result = socket.send(Message::Binary(data.into())).await;
                             } else if stream.contains("@depth") {
                                 let symbol =
                                     stream.split('@').next().unwrap_or("BTCUSDT").to_uppercase();
                                 let data = build_sbe_depth_snapshot_stream_event(&symbol);
                                 tokio::time::sleep(Duration::from_millis(50)).await;
-                                let _ = socket.send(Message::Binary(data.into())).await;
+                                let _result = socket.send(Message::Binary(data.into())).await;
                             }
                         }
                     }
                 }
             } else if method == Some("UNSUBSCRIBE") {
                 let resp = json!({"result": null, "id": id});
-                let _ = socket.send(Message::Text(resp.to_string().into())).await;
+                let _result = socket.send(Message::Text(resp.to_string().into())).await;
             }
         }
     }
@@ -421,7 +419,7 @@ fn create_test_data_client(
         ..Default::default()
     };
 
-    let client = BinanceSpotDataClient::new(ClientId::from("BINANCE"), config).unwrap();
+    let client = BinanceSpotDataClient::new(*BINANCE_CLIENT_ID, config).unwrap();
 
     (client, rx)
 }
@@ -435,8 +433,8 @@ async fn test_client_creation() {
 
     let (client, _rx) = create_test_data_client(base_url_http, base_url_ws);
 
-    assert_eq!(client.client_id(), ClientId::from("BINANCE"));
-    assert_eq!(client.venue(), Some(Venue::from("BINANCE")));
+    assert_eq!(client.client_id(), *BINANCE_CLIENT_ID);
+    assert_eq!(client.venue(), Some(*BINANCE_VENUE));
     assert!(!client.is_connected());
 }
 
@@ -502,12 +500,13 @@ async fn test_subscribe_trades() {
         Duration::from_secs(5),
     )
     .await;
+
     while rx.try_recv().is_ok() {}
 
     let instrument_id = InstrumentId::from("BTCUSDT.BINANCE");
     let cmd = SubscribeTrades::new(
         instrument_id,
-        Some(ClientId::from("BINANCE")),
+        Some(*BINANCE_CLIENT_ID),
         None,
         nautilus_core::UUID4::new(),
         UnixNanos::default(),
@@ -515,7 +514,7 @@ async fn test_subscribe_trades() {
         None,
     );
 
-    client.subscribe_trades(&cmd).unwrap();
+    client.subscribe_trades(cmd).unwrap();
 
     wait_until_async(
         || {
@@ -549,12 +548,13 @@ async fn test_subscribe_quotes() {
         Duration::from_secs(5),
     )
     .await;
+
     while rx.try_recv().is_ok() {}
 
     let instrument_id = InstrumentId::from("BTCUSDT.BINANCE");
     let cmd = SubscribeQuotes::new(
         instrument_id,
-        Some(ClientId::from("BINANCE")),
+        Some(*BINANCE_CLIENT_ID),
         None,
         nautilus_core::UUID4::new(),
         UnixNanos::default(),
@@ -562,7 +562,7 @@ async fn test_subscribe_quotes() {
         None,
     );
 
-    client.subscribe_quotes(&cmd).unwrap();
+    client.subscribe_quotes(cmd).unwrap();
 
     wait_until_async(
         || {
@@ -596,13 +596,14 @@ async fn test_subscribe_book_deltas() {
         Duration::from_secs(5),
     )
     .await;
+
     while rx.try_recv().is_ok() {}
 
     let instrument_id = InstrumentId::from("BTCUSDT.BINANCE");
     let cmd = SubscribeBookDeltas::new(
         instrument_id,
         BookType::L2_MBP,
-        Some(ClientId::from("BINANCE")),
+        Some(*BINANCE_CLIENT_ID),
         None,
         nautilus_core::UUID4::new(),
         UnixNanos::default(),
@@ -612,7 +613,7 @@ async fn test_subscribe_book_deltas() {
         None,
     );
 
-    client.subscribe_book_deltas(&cmd).unwrap();
+    client.subscribe_book_deltas(cmd).unwrap();
 
     wait_until_async(
         || {
@@ -646,6 +647,7 @@ async fn test_unsubscribe_trades() {
         Duration::from_secs(5),
     )
     .await;
+
     while rx.try_recv().is_ok() {}
 
     let instrument_id = InstrumentId::from("BTCUSDT.BINANCE");
@@ -653,14 +655,14 @@ async fn test_unsubscribe_trades() {
     // Subscribe first
     let sub_cmd = SubscribeTrades::new(
         instrument_id,
-        Some(ClientId::from("BINANCE")),
+        Some(*BINANCE_CLIENT_ID),
         None,
         nautilus_core::UUID4::new(),
         UnixNanos::default(),
         None,
         None,
     );
-    client.subscribe_trades(&sub_cmd).unwrap();
+    client.subscribe_trades(sub_cmd).unwrap();
 
     // Wait for data to arrive
     wait_until_async(
@@ -671,12 +673,13 @@ async fn test_unsubscribe_trades() {
         Duration::from_secs(5),
     )
     .await;
+
     while rx.try_recv().is_ok() {}
 
     // Unsubscribe (should not error)
     let unsub_cmd = UnsubscribeTrades::new(
         instrument_id,
-        Some(ClientId::from("BINANCE")),
+        Some(*BINANCE_CLIENT_ID),
         None,
         nautilus_core::UUID4::new(),
         UnixNanos::default(),
@@ -684,7 +687,7 @@ async fn test_unsubscribe_trades() {
         None,
     );
     let result = client.unsubscribe_trades(&unsub_cmd);
-    assert!(result.is_ok());
+    result.unwrap();
 }
 
 #[rstest]
@@ -709,6 +712,7 @@ async fn test_unsubscribe_quotes() {
         Duration::from_secs(5),
     )
     .await;
+
     while rx.try_recv().is_ok() {}
 
     let instrument_id = InstrumentId::from("BTCUSDT.BINANCE");
@@ -716,14 +720,14 @@ async fn test_unsubscribe_quotes() {
     // Subscribe first
     let sub_cmd = SubscribeQuotes::new(
         instrument_id,
-        Some(ClientId::from("BINANCE")),
+        Some(*BINANCE_CLIENT_ID),
         None,
         nautilus_core::UUID4::new(),
         UnixNanos::default(),
         None,
         None,
     );
-    client.subscribe_quotes(&sub_cmd).unwrap();
+    client.subscribe_quotes(sub_cmd).unwrap();
 
     // Wait for data to arrive
     wait_until_async(
@@ -734,12 +738,13 @@ async fn test_unsubscribe_quotes() {
         Duration::from_secs(5),
     )
     .await;
+
     while rx.try_recv().is_ok() {}
 
     // Unsubscribe (should not error)
     let unsub_cmd = UnsubscribeQuotes::new(
         instrument_id,
-        Some(ClientId::from("BINANCE")),
+        Some(*BINANCE_CLIENT_ID),
         None,
         nautilus_core::UUID4::new(),
         UnixNanos::default(),
@@ -747,7 +752,7 @@ async fn test_unsubscribe_quotes() {
         None,
     );
     let result = client.unsubscribe_quotes(&unsub_cmd);
-    assert!(result.is_ok());
+    result.unwrap();
 }
 
 #[rstest]
@@ -816,6 +821,7 @@ async fn test_subscribe_trades_and_quotes_simultaneously() {
         Duration::from_secs(5),
     )
     .await;
+
     while rx.try_recv().is_ok() {}
 
     let instrument_id = InstrumentId::from("BTCUSDT.BINANCE");
@@ -823,7 +829,7 @@ async fn test_subscribe_trades_and_quotes_simultaneously() {
     // Subscribe to both trades and quotes for the same instrument
     let trades_cmd = SubscribeTrades::new(
         instrument_id,
-        Some(ClientId::from("BINANCE")),
+        Some(*BINANCE_CLIENT_ID),
         None,
         nautilus_core::UUID4::new(),
         UnixNanos::default(),
@@ -832,7 +838,7 @@ async fn test_subscribe_trades_and_quotes_simultaneously() {
     );
     let quotes_cmd = SubscribeQuotes::new(
         instrument_id,
-        Some(ClientId::from("BINANCE")),
+        Some(*BINANCE_CLIENT_ID),
         None,
         nautilus_core::UUID4::new(),
         UnixNanos::default(),
@@ -840,8 +846,8 @@ async fn test_subscribe_trades_and_quotes_simultaneously() {
         None,
     );
 
-    client.subscribe_trades(&trades_cmd).unwrap();
-    client.subscribe_quotes(&quotes_cmd).unwrap();
+    client.subscribe_trades(trades_cmd).unwrap();
+    client.subscribe_quotes(quotes_cmd).unwrap();
 
     // Should receive data events for both subscriptions
     let mut data_count = 0;

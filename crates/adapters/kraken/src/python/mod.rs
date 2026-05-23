@@ -15,20 +15,21 @@
 
 //! Python bindings from `pyo3`.
 
-#![allow(
+#![expect(
     clippy::missing_errors_doc,
     reason = "errors documented on underlying Rust methods"
 )]
 
+use nautilus_common::factories::{ClientConfig, DataClientFactory, ExecutionClientFactory};
 use nautilus_core::python::{to_pyruntime_err, to_pyvalue_err};
-use nautilus_system::{
-    factories::{ClientConfig, DataClientFactory, ExecutionClientFactory},
-    get_global_pyo3_registry,
-};
+use nautilus_system::get_global_pyo3_registry;
 use pyo3::prelude::*;
 
 use crate::{
-    common::enums::{KrakenEnvironment, KrakenProductType},
+    common::{
+        consts::KRAKEN,
+        enums::{KrakenEnvironment, KrakenProductType},
+    },
     config::{KrakenDataClientConfig, KrakenExecClientConfig},
     factories::{KrakenDataClientFactory, KrakenExecutionClientFactory},
     http::{KrakenFuturesHttpClient, KrakenSpotHttpClient},
@@ -61,7 +62,7 @@ fn py_kraken_product_type_from_symbol(symbol: &str) -> KrakenProductType {
     crate::common::enums::product_type_from_symbol(symbol)
 }
 
-#[allow(clippy::needless_pass_by_value)]
+#[expect(clippy::needless_pass_by_value)]
 fn extract_kraken_data_factory(
     py: Python<'_>,
     factory: Py<PyAny>,
@@ -74,7 +75,7 @@ fn extract_kraken_data_factory(
     }
 }
 
-#[allow(clippy::needless_pass_by_value)]
+#[expect(clippy::needless_pass_by_value)]
 fn extract_kraken_exec_factory(
     py: Python<'_>,
     factory: Py<PyAny>,
@@ -87,7 +88,7 @@ fn extract_kraken_exec_factory(
     }
 }
 
-#[allow(clippy::needless_pass_by_value)]
+#[expect(clippy::needless_pass_by_value)]
 fn extract_kraken_data_config(
     py: Python<'_>,
     config: Py<PyAny>,
@@ -100,7 +101,7 @@ fn extract_kraken_data_config(
     }
 }
 
-#[allow(clippy::needless_pass_by_value)]
+#[expect(clippy::needless_pass_by_value)]
 fn extract_kraken_exec_config(
     py: Python<'_>,
     config: Py<PyAny>,
@@ -130,7 +131,7 @@ pub fn kraken(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let registry = get_global_pyo3_registry();
 
     if let Err(e) =
-        registry.register_factory_extractor("KRAKEN".to_string(), extract_kraken_data_factory)
+        registry.register_factory_extractor(KRAKEN.to_string(), extract_kraken_data_factory)
     {
         return Err(to_pyruntime_err(format!(
             "Failed to register Kraken data factory extractor: {e}"
@@ -138,7 +139,7 @@ pub fn kraken(m: &Bound<'_, PyModule>) -> PyResult<()> {
     }
 
     if let Err(e) =
-        registry.register_exec_factory_extractor("KRAKEN".to_string(), extract_kraken_exec_factory)
+        registry.register_exec_factory_extractor(KRAKEN.to_string(), extract_kraken_exec_factory)
     {
         return Err(to_pyruntime_err(format!(
             "Failed to register Kraken exec factory extractor: {e}"

@@ -175,8 +175,10 @@ order, it uses the standard cancel endpoint.
 Binance Futures can trigger exchange-generated orders in response to risk events:
 
 - **Liquidations**: When insufficient margin exists to maintain a position, Binance forcibly closes it at the bankruptcy price. These orders have client IDs starting with `autoclose-`.
-- **ADL (Auto-Deleveraging)**: When the insurance fund is depleted, Binance closes profitable positions to cover losses. These orders use client ID `adl_autoclose`.
-- **Settlements**: Quarterly contract deliveries use client IDs starting with `settlement_autoclose-`.
+- **ADL (Auto-Deleveraging)**: When the insurance fund is depleted, Binance closes profitable positions to cover losses. These orders use client ID prefix `adl_autoclose`.
+- **Settlements (USDT-M)**: Funding/margin settlement orders use client IDs starting with `settlement_autoclose-`.
+- **Deliveries (COIN-M)**: Expiring delivery contracts auto-close with client IDs starting with `delivery_autoclose-`.
+- **Insurance fund**: Takeover by the insurance fund uses status `NEW_INSURANCE` (deprecated on the public changelog but still observed on the wire).
 
 The adapter detects these special order types via their client ID patterns
 (checked before the execution type), then:
@@ -184,6 +186,11 @@ The adapter detects these special order types via their client ID patterns
 1. Logs a warning with order details for monitoring.
 2. Generates a `FillReport` with correct fill details and TAKER liquidity side.
 3. Generates an `OrderStatusReport` for reconciliation.
+
+Upstream references:
+
+- [USDT-M `ORDER_TRADE_UPDATE`](https://developers.binance.com/docs/derivatives/usds-margined-futures/user-data-streams/Event-Order-Update)
+- [COIN-M `ORDER_TRADE_UPDATE`](https://developers.binance.com/docs/derivatives/coin-margined-futures/user-data-streams/Event-Order-Update)
 
 The execution engine creates external orders from runtime status reports when
 the order is not already in cache. This covers first-seen exchange-generated
@@ -208,12 +215,12 @@ include a `venue_position_id` derived from the instrument and position side
 `BinanceExecClientConfig` for virtual positions with `OmsType.HEDGING`.
 
 :::note
-The fill report is sent before the status report so that the engine
-receives both. Because the order does not exist in cache when the fill
-arrives, the fill report is dropped and the engine creates an inferred fill
-from the status report instead. This produces correct order and position
-state but loses per-fill metadata (trade ID, commission). A future version
-will bundle the fill report with the status report to preserve this data.
+The status report and fill report are emitted bundled as a single
+`OrderWithFills` execution report. The engine creates the external order
+from the status report and then applies the real fill, preserving the
+venue's `trade_id` and `commission`. Any residual quantity not covered by
+the bundled fills is closed with an inferred fill from the status report's
+`avg_px`.
 :::
 
 ### Order querying
@@ -661,12 +668,11 @@ definitive list of Rust config options.
 | `account_type`                     | `SPOT`    | Account type for data endpoints (spot, margin, USDT futures, coin futures). |
 | `base_url_http`                    | `None`    | Override for the HTTP REST base URL. |
 | `base_url_ws`                      | `None`    | Override for the WebSocket base URL. |
-| `proxy_url`                        | `None`    | Optional proxy URL for HTTP requests. |
+| `proxy_url`                        | `None`    | Optional proxy URL for HTTP and WebSocket transports. |
 | `us`                               | `False`   | Route requests to Binance US endpoints when `True`. |
 | `environment`                      | `None`    | Binance environment: `LIVE`, `TESTNET`, or `DEMO`. Defaults to `LIVE` when `None`. |
-| `testnet`                          | `False`   | **Deprecated**: use `environment=BinanceEnvironment.TESTNET` instead. |
 | `update_instruments_interval_mins` | `60`      | Interval (minutes) between instrument catalogue refreshes. |
-| `use_agg_trade_ticks`              | `False`   | When `True`, subscribe to aggregated trade ticks instead of raw trades. |
+| `use_agg_trade_ticks`              | `False`   | When `True`, subscribe to aggregated trade ticks instead of raw trades. Futures WebSocket subscriptions always use `@aggTrade` regardless of this flag. |
 | `instrument_status_poll_secs`      | `3600`    | *Rust only.* Interval (seconds) between exchange info polls to detect instrument status changes. Set to `0` to disable. |
 
 ### Execution client configuration options
@@ -681,10 +687,9 @@ definitive list of Rust config options.
 | `base_url_http`                      | `None`    | Override for the HTTP REST base URL. |
 | `base_url_ws`                        | `None`    | Override for the WebSocket API base URL. |
 | `base_url_ws_stream`                 | `None`    | Override for the WebSocket stream URL (futures user data event delivery). |
-| `proxy_url`                          | `None`    | Optional proxy URL for HTTP requests. |
+| `proxy_url`                          | `None`    | Optional proxy URL for HTTP and WebSocket transports. |
 | `us`                                 | `False`   | Route requests to Binance US endpoints when `True`. |
 | `environment`                        | `None`    | Binance environment: `LIVE`, `TESTNET`, or `DEMO`. Defaults to `LIVE` when `None`. |
-| `testnet`                            | `False`   | **Deprecated**: use `environment=BinanceEnvironment.TESTNET` instead. |
 | `use_gtd`                            | `True`    | When `False`, remaps GTD orders to GTC for local expiry management. |
 | `use_reduce_only`                    | `True`    | When `True`, passes through `reduce_only` instructions to Binance. |
 | `use_position_ids`                   | `True`    | Enable Binance hedging position IDs; set `False` for virtual hedging. |
@@ -798,7 +803,7 @@ Download the [Binance Asymmetric Key Generator](https://github.com/binance/asymm
 
 **Registering with Binance**
 
-1. Log in to Binance and go to **Profile** → **API Management**
+1. Log in to Binance and go to **Profile** -> **API Management**
 2. Click **Create API** and select **Self-generated**
 3. Paste the contents of your public key file (including the `-----BEGIN PUBLIC KEY-----` header/footer)
 4. Configure permissions (Enable Spot & Margin Trading, etc.)
@@ -874,8 +879,8 @@ use.
 | Environment | Config                  | Description                                                            |
 |-------------|-------------------------|------------------------------------------------------------------------|
 | **Live**    | `environment="LIVE"`    | Production trading with real funds (default).                          |
-| **Demo**    | `environment="DEMO"`    | Simulated funds on production infrastructure. Recommended for testing. |
-| **Testnet** | `environment="TESTNET"` | Separate test network (Spot only). Limited futures support.            |
+| **Demo**    | `environment="DEMO"`    | Demo Trading with simulated Spot and Futures funds.                    |
+| **Testnet** | `environment="TESTNET"` | Legacy Spot and Futures test network.                                  |
 
 #### Live (production)
 
@@ -893,52 +898,50 @@ config = BinanceExecClientConfig(
 
 | Variable             | Description         |
 |----------------------|---------------------|
-| `BINANCE_API_KEY`    | Mainnet API key.    |
-| `BINANCE_API_SECRET` | Mainnet API secret. |
+| `BINANCE_API_KEY`    | Live API key.       |
+| `BINANCE_API_SECRET` | Live API secret.    |
 
 #### Demo trading
 
 Practice trading with simulated funds on production infrastructure. Demo
 accounts use the same Binance login as your live account but trade with
-virtual balances. This is the recommended environment for integration testing,
-especially for futures.
+virtual balances.
 
 **How to get demo credentials:**
 
 1. Log in at [binance.com/en/demo-trading](https://www.binance.com/en/demo-trading).
 2. Go to **API Management** and create a demo API key.
-3. Demo keys work for both Spot and Futures on demo endpoints.
+3. Demo keys work for Spot and Futures demo endpoints.
 
-| Endpoint       | URL                          |
-|----------------|------------------------------|
-| Spot HTTP      | `demo-api.binance.com`       |
-| Spot WS        | `demo-stream.binance.com`    |
-| USD-M HTTP     | `demo-fapi.binance.com`      |
+| Endpoint       | URL                           |
+|----------------|-------------------------------|
+| Spot HTTP      | `demo-api.binance.com`        |
+| Spot WS        | `demo-stream.binance.com`     |
+| USD-M HTTP     | `demo-fapi.binance.com`       |
+| USD-M WS       | `demo-fstream.binance.com`    |
+| COIN-M HTTP    | `demo-dapi.binance.com`       |
+| COIN-M WS      | `demo-dstream.binance.com`    |
 
 ```python
 config = BinanceExecClientConfig(
     api_key="YOUR_DEMO_API_KEY",
     api_secret="YOUR_DEMO_API_SECRET",
-    account_type=BinanceAccountType.USDT_FUTURES,
+    account_type=BinanceAccountType.SPOT,
     environment=BinanceEnvironment.DEMO,
 )
 ```
 
-| Variable              | Description                                        |
-|-----------------------|----------------------------------------------------|
-| `BINANCE_DEMO_API_KEY`    | Demo API key (shared across Spot and Futures). |
-| `BINANCE_DEMO_API_SECRET` | Demo API secret.                               |
-
-:::warning
-COIN-M Futures are not supported in demo mode.
-:::
+| Variable                  | Description      |
+|---------------------------|------------------|
+| `BINANCE_DEMO_API_KEY`    | Demo API key.    |
+| `BINANCE_DEMO_API_SECRET` | Demo API secret. |
 
 #### Testnet
 
-A separate test network with its own user accounts, balances, and order books.
-Spot testnet is at `testnet.binance.vision`. The futures testnet at
-`testnet.binancefuture.com` now redirects to demo; use `environment="DEMO"`
-for futures testing instead.
+A legacy test network with its own user accounts, balances, and order books.
+Prefer `environment=BinanceEnvironment.DEMO` for new simulated trading
+setups. Spot testnet remains at `testnet.binance.vision`; futures testnet
+endpoints may route through the Demo Trading infrastructure.
 
 **How to get Spot testnet credentials:**
 
@@ -946,9 +949,8 @@ for futures testing instead.
 2. Log in with GitHub.
 3. Generate an API key (HMAC, RSA, or Ed25519).
 
-**Futures testnet:** Binance has merged the futures testnet into the demo
-environment. If you need to test futures, use `environment="DEMO"` with
-demo credentials instead.
+**Futures testnet:** Existing configs with `BinanceEnvironment.TESTNET`
+continue to work, but new Futures testing should use `BinanceEnvironment.DEMO`.
 
 ```python
 config = BinanceExecClientConfig(
@@ -963,17 +965,12 @@ config = BinanceExecClientConfig(
 |--------------------------------------|----------------------------------------------------|
 | `BINANCE_TESTNET_API_KEY`            | Spot testnet API key.                              |
 | `BINANCE_TESTNET_API_SECRET`         | Spot testnet API secret.                           |
-| `BINANCE_FUTURES_TESTNET_API_KEY`    | Futures testnet API key (deprecated, use demo).    |
-| `BINANCE_FUTURES_TESTNET_API_SECRET` | Futures testnet API secret (deprecated, use demo). |
+| `BINANCE_FUTURES_TESTNET_API_KEY`    | Futures testnet API key.                           |
+| `BINANCE_FUTURES_TESTNET_API_SECRET` | Futures testnet API secret.                        |
 
 :::note
 Testnet credentials are completely separate from your live account. Market
 data and liquidity differ from production.
-:::
-
-:::warning
-The `testnet` config option is deprecated and will be removed in a future
-version. Use `environment="TESTNET"` instead.
 :::
 
 ### Aggregated trades
@@ -983,6 +980,13 @@ trades. Unlike the default trade endpoints, aggregated trade endpoints can
 return all ticks between a `start_time` and `end_time`.
 
 Set `use_agg_trade_ticks=True` to use aggregated trades (`False` by default).
+
+:::note
+For Futures (USD-M and COIN-M), the WebSocket trade subscription always uses
+`@aggTrade`. Binance only publishes aggregated trades on the Futures WebSocket;
+the legacy `@trade` stream was undocumented and has been silenced. The HTTP
+`request_trade_ticks` path continues to honour `use_agg_trade_ticks`.
+:::
 
 ### Commission rate queries
 

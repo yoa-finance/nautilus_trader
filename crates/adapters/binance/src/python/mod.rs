@@ -15,30 +15,23 @@
 
 //! Python bindings for the Binance adapter.
 
-#![allow(
-    clippy::missing_errors_doc,
-    reason = "errors documented on underlying Rust methods"
-)]
-
 pub mod arrow;
 pub mod config;
 pub mod enums;
 pub mod factories;
 pub mod types;
 
+use nautilus_common::factories::{ClientConfig, DataClientFactory, ExecutionClientFactory};
 use nautilus_core::python::{to_pyruntime_err, to_pyvalue_err};
 use nautilus_model::data::ensure_rust_extractor_registered;
 use nautilus_serialization::ensure_custom_data_registered;
-use nautilus_system::{
-    factories::{ClientConfig, DataClientFactory, ExecutionClientFactory},
-    get_global_pyo3_registry,
-};
+use nautilus_system::get_global_pyo3_registry;
 use pyo3::prelude::*;
 
 use crate::{
     common::{
         bar::BinanceBar,
-        consts::{BINANCE_NAUTILUS_FUTURES_BROKER_ID, BINANCE_NAUTILUS_SPOT_BROKER_ID},
+        consts::{BINANCE, BINANCE_NAUTILUS_FUTURES_BROKER_ID, BINANCE_NAUTILUS_SPOT_BROKER_ID},
         encoder::decode_broker_id,
         enums::{BinanceEnvironment, BinanceMarginType, BinancePositionSide, BinanceProductType},
     },
@@ -46,7 +39,7 @@ use crate::{
     factories::{BinanceDataClientFactory, BinanceExecutionClientFactory},
 };
 
-#[allow(clippy::needless_pass_by_value)]
+#[expect(clippy::needless_pass_by_value)]
 fn extract_binance_data_factory(
     py: Python<'_>,
     factory: Py<PyAny>,
@@ -59,7 +52,7 @@ fn extract_binance_data_factory(
     }
 }
 
-#[allow(clippy::needless_pass_by_value)]
+#[expect(clippy::needless_pass_by_value)]
 fn extract_binance_exec_factory(
     py: Python<'_>,
     factory: Py<PyAny>,
@@ -72,7 +65,7 @@ fn extract_binance_exec_factory(
     }
 }
 
-#[allow(clippy::needless_pass_by_value)]
+#[expect(clippy::needless_pass_by_value)]
 fn extract_binance_data_config(
     py: Python<'_>,
     config: Py<PyAny>,
@@ -85,7 +78,7 @@ fn extract_binance_data_config(
     }
 }
 
-#[allow(clippy::needless_pass_by_value)]
+#[expect(clippy::needless_pass_by_value)]
 fn extract_binance_exec_config(
     py: Python<'_>,
     config: Py<PyAny>,
@@ -159,20 +152,20 @@ pub fn binance(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // Register BinanceBar for Arrow/JSON serialization and Python extraction
     ensure_custom_data_registered::<BinanceBar>();
-    let _ = ensure_rust_extractor_registered::<BinanceBar>();
+    let _result = ensure_rust_extractor_registered::<BinanceBar>();
 
     let registry = get_global_pyo3_registry();
 
     if let Err(e) =
-        registry.register_factory_extractor("BINANCE".to_string(), extract_binance_data_factory)
+        registry.register_factory_extractor(BINANCE.to_string(), extract_binance_data_factory)
     {
         return Err(to_pyruntime_err(format!(
             "Failed to register Binance data factory extractor: {e}"
         )));
     }
 
-    if let Err(e) = registry
-        .register_exec_factory_extractor("BINANCE".to_string(), extract_binance_exec_factory)
+    if let Err(e) =
+        registry.register_exec_factory_extractor(BINANCE.to_string(), extract_binance_exec_factory)
     {
         return Err(to_pyruntime_err(format!(
             "Failed to register Binance exec factory extractor: {e}"

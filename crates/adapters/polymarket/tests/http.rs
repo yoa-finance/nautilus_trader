@@ -69,8 +69,12 @@ struct TestServerState {
     last_body: Arc<tokio::sync::Mutex<Option<Value>>>,
     last_headers: Arc<tokio::sync::Mutex<AHashMap<String, String>>>,
     rate_limit_after: Arc<AtomicUsize>,
+    /// Delay before `handle_get_orders` responds. Used by the timeout test.
+    get_orders_delay_secs: Arc<AtomicUsize>,
     orders_pages: Arc<tokio::sync::Mutex<VecDeque<Value>>>,
     gamma_response: Arc<tokio::sync::Mutex<Option<Value>>>,
+    gamma_markets_pages: Arc<tokio::sync::Mutex<VecDeque<Value>>>,
+    gamma_markets_query_log: Arc<tokio::sync::Mutex<Vec<HashMap<String, String>>>>,
     gamma_slug_responses: Arc<tokio::sync::Mutex<AHashMap<String, Value>>>,
     gamma_force_error: Arc<std::sync::atomic::AtomicBool>,
     gamma_event_slug_responses: Arc<tokio::sync::Mutex<AHashMap<String, Value>>>,
@@ -89,8 +93,11 @@ impl Default for TestServerState {
             last_body: Arc::new(tokio::sync::Mutex::new(None)),
             last_headers: Arc::new(tokio::sync::Mutex::new(AHashMap::new())),
             rate_limit_after: Arc::new(AtomicUsize::new(usize::MAX)),
+            get_orders_delay_secs: Arc::new(AtomicUsize::new(0)),
             orders_pages: Arc::new(tokio::sync::Mutex::new(VecDeque::new())),
             gamma_response: Arc::new(tokio::sync::Mutex::new(None)),
+            gamma_markets_pages: Arc::new(tokio::sync::Mutex::new(VecDeque::new())),
+            gamma_markets_query_log: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             gamma_slug_responses: Arc::new(tokio::sync::Mutex::new(AHashMap::new())),
             gamma_force_error: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             gamma_event_slug_responses: Arc::new(tokio::sync::Mutex::new(AHashMap::new())),
@@ -119,11 +126,18 @@ fn test_credential() -> Credential {
 }
 
 fn create_clob_client(addr: &SocketAddr) -> PolymarketClobHttpClient {
+    create_clob_client_with_timeout(addr, 5)
+}
+
+fn create_clob_client_with_timeout(
+    addr: &SocketAddr,
+    timeout_secs: u64,
+) -> PolymarketClobHttpClient {
     PolymarketClobHttpClient::new(
         test_credential(),
         TEST_ADDRESS.to_string(),
         Some(format!("http://{addr}")),
-        5,
+        timeout_secs,
     )
     .unwrap()
 }
@@ -193,6 +207,10 @@ async fn maybe_rate_limit(state: &TestServerState) -> Option<Response> {
 async fn handle_get_orders(State(state): State<TestServerState>, headers: HeaderMap) -> Response {
     if let Some(r) = maybe_rate_limit(&state).await {
         return r;
+    }
+    let delay = state.get_orders_delay_secs.load(Ordering::Relaxed);
+    if delay > 0 {
+        tokio::time::sleep(Duration::from_secs(delay as u64)).await;
     }
     *state.last_headers.lock().await = extract_headers(&headers);
     let mut pages = state.orders_pages.lock().await;
@@ -302,6 +320,12 @@ async fn handle_gamma_markets(
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
 
+    state
+        .gamma_markets_query_log
+        .lock()
+        .await
+        .push(params.clone());
+
     if let Some(slug) = params.get("slug") {
         let slug_map = state.gamma_slug_responses.lock().await;
         if let Some(v) = slug_map.get(slug) {
@@ -312,6 +336,11 @@ async fn handle_gamma_markets(
     // Check for clob_token_ids-based lookup
     if let Some(resp) = handle_gamma_markets_with_clob_tokens(&state, &params).await {
         return resp;
+    }
+
+    // Paginated queue takes precedence so tests can simulate multi-page responses
+    if let Some(page) = state.gamma_markets_pages.lock().await.pop_front() {
+        return Json(page).into_response();
     }
 
     let resp = state.gamma_response.lock().await;
@@ -500,10 +529,11 @@ async fn test_get_balance_allowance_returns_data() {
         .await
         .unwrap();
 
-    assert_eq!(balance.balance, rust_decimal_macros::dec!(1000.000000));
+    // Fixture is now in integer-micro-pUSD form, matching the live API.
+    assert_eq!(balance.balance, rust_decimal_macros::dec!(1_000_000_000));
     assert_eq!(
         balance.allowance,
-        Some(rust_decimal_macros::dec!(999999999.000000))
+        Some(rust_decimal_macros::dec!(999_999_999_000_000)),
     );
 }
 
@@ -629,6 +659,49 @@ async fn test_rate_limit_returns_error() {
     // Third request exceeds the limit
     let result = client.get_orders(GetOrdersParams::default()).await;
     assert!(result.is_err());
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_request_times_out_when_server_is_slow() {
+    // Server stalls for 3s; client is configured with a 1s transport timeout.
+    // The request must error with a timeout near the 1s mark, not earlier
+    // (would mean a different error class) and not later (would mean the
+    // timeout did not engage).
+    let state = TestServerState::default();
+    state.get_orders_delay_secs.store(3, Ordering::Relaxed);
+    let addr = start_mock_server(state.clone()).await;
+    let client = create_clob_client_with_timeout(&addr, 1);
+
+    let started = std::time::Instant::now();
+    let result = client.get_orders(GetOrdersParams::default()).await;
+    let elapsed = started.elapsed();
+
+    let err = result.expect_err("request must error when server exceeds timeout");
+    let err_text = err.to_string().to_lowercase();
+    assert!(
+        err_text.contains("timeout") || err_text.contains("timed out"),
+        "error must indicate a timeout, not some other failure (got: {err_text})",
+    );
+
+    // Lower bound: must not have errored before the configured timeout.
+    assert!(
+        elapsed >= Duration::from_millis(800),
+        "request errored before the timeout could engage (took {elapsed:?})",
+    );
+    // Upper bound: must not have hung past the configured timeout.
+    assert!(
+        elapsed < Duration::from_millis(2_500),
+        "request did not honour the timeout (took {elapsed:?})",
+    );
+
+    // Server must have actually received the request (one increment via
+    // `maybe_rate_limit` before the handler stalls).
+    assert_eq!(
+        *state.request_count.lock().await,
+        1,
+        "exactly one request should have reached the mock"
+    );
 }
 
 #[rstest]
@@ -1365,6 +1438,142 @@ async fn test_load_ids_skips_already_loaded() {
 
     // Count should still be 2 (no additional fetch)
     assert_eq!(provider.store().count(), 2);
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_load_ids_chunks_at_100_condition_ids() {
+    let state = TestServerState::default();
+    *state.gamma_response.lock().await = Some(json!([]));
+
+    let addr = start_mock_server(state.clone()).await;
+    let http_client = create_gamma_domain_client(&addr);
+    let mut provider = PolymarketInstrumentProvider::new(http_client);
+
+    let mut instrument_ids = Vec::with_capacity(250);
+    let mut expected: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+
+    for i in 0..250 {
+        let condition_id = format!("0xcond{i:060x}");
+        expected.insert(condition_id.clone());
+        let token_id =
+            format!("100000000000000000000000000000000000000000000000000000000000{i:04}");
+        instrument_ids.push(InstrumentId::from(
+            format!("{condition_id}-{token_id}.POLYMARKET").as_str(),
+        ));
+    }
+
+    provider.load_ids(&instrument_ids, None).await.unwrap();
+
+    let log = state.gamma_markets_query_log.lock().await;
+    assert_eq!(log.len(), 3, "expected 3 chunked /markets requests");
+
+    let mut chunk_sizes = Vec::with_capacity(3);
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+
+    for entry in log.iter() {
+        let raw = entry
+            .get("condition_ids")
+            .expect("each chunk request must carry condition_ids");
+        let ids: Vec<&str> = raw.split(',').collect();
+        chunk_sizes.push(ids.len());
+
+        for id in ids {
+            seen.insert(id.to_string());
+        }
+    }
+    chunk_sizes.sort_by(|a, b| b.cmp(a));
+    assert_eq!(chunk_sizes, vec![100, 100, 50]);
+    assert_eq!(
+        seen, expected,
+        "union of chunks must cover all condition_ids"
+    );
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_load_ids_preserves_caller_filters_in_each_chunk() {
+    let state = TestServerState::default();
+    *state.gamma_response.lock().await = Some(json!([]));
+
+    let addr = start_mock_server(state.clone()).await;
+    let http_client = create_gamma_domain_client(&addr);
+    let mut provider = PolymarketInstrumentProvider::new(http_client);
+
+    let mut instrument_ids = Vec::with_capacity(150);
+
+    for i in 0..150 {
+        let condition_id = format!("0xcond{i:060x}");
+        let token_id =
+            format!("200000000000000000000000000000000000000000000000000000000000{i:04}");
+        instrument_ids.push(InstrumentId::from(
+            format!("{condition_id}-{token_id}.POLYMARKET").as_str(),
+        ));
+    }
+
+    let mut filters = HashMap::new();
+    filters.insert("active".to_string(), "true".to_string());
+    filters.insert("closed".to_string(), "false".to_string());
+
+    provider
+        .load_ids(&instrument_ids, Some(&filters))
+        .await
+        .unwrap();
+
+    let log = state.gamma_markets_query_log.lock().await;
+    assert_eq!(log.len(), 2, "150 ids should produce two chunks (100 + 50)");
+    for entry in log.iter() {
+        assert_eq!(entry.get("active").map(String::as_str), Some("true"));
+        assert_eq!(entry.get("closed").map(String::as_str), Some("false"));
+        assert!(entry.contains_key("condition_ids"));
+    }
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_fetch_gamma_markets_paginated_uses_100_per_page() {
+    let state = TestServerState::default();
+    let make_page = |prefix: char, n: usize| -> Value {
+        let markets: Vec<Value> = (0..n)
+            .map(|i| {
+                gamma_market_with_slug(
+                    &format!("{prefix}-{i}"),
+                    &format!("0x{prefix}{i:063x}"),
+                    [
+                        &format!("3{prefix}000000000000000000000000000000000000000000000000000000000{i:04}"),
+                        &format!("4{prefix}000000000000000000000000000000000000000000000000000000000{i:04}"),
+                    ],
+                )
+            })
+            .collect();
+        json!(markets)
+    };
+    {
+        let mut pages = state.gamma_markets_pages.lock().await;
+        pages.push_back(make_page('a', 100));
+        pages.push_back(make_page('b', 100));
+        pages.push_back(make_page('c', 37));
+    }
+
+    let addr = start_mock_server(state.clone()).await;
+    let http_client = create_gamma_domain_client(&addr);
+    let mut provider = PolymarketInstrumentProvider::new(http_client);
+
+    provider.load_all(None).await.unwrap();
+
+    let log = state.gamma_markets_query_log.lock().await;
+    assert_eq!(log.len(), 3, "expected 3 paginated /markets requests");
+    let offsets: Vec<&str> = log
+        .iter()
+        .map(|entry| entry.get("offset").map_or("", String::as_str))
+        .collect();
+    assert_eq!(offsets, vec!["0", "100", "200"]);
+    for entry in log.iter() {
+        assert_eq!(entry.get("limit").map(String::as_str), Some("100"));
+    }
+
+    // 237 markets x 2 tokens each = 474 instruments
+    assert_eq!(provider.store().count(), 474);
 }
 
 #[rstest]

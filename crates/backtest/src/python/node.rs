@@ -18,8 +18,16 @@
 use std::collections::HashMap;
 
 use nautilus_common::{actor::data_actor::ImportableActorConfig, python::actor::PyDataActor};
+#[cfg(feature = "examples")]
+use nautilus_core::python::to_pytype_err;
 use nautilus_core::python::{to_pyruntime_err, to_pyvalue_err};
 use nautilus_model::identifiers::{ActorId, ComponentId, StrategyId};
+#[cfg(feature = "examples")]
+use nautilus_trading::examples::strategies::{
+    CompositeMarketMaker, CompositeMarketMakerConfig, DeltaNeutralVol, DeltaNeutralVolConfig,
+    EmaCross, EmaCrossConfig, GridMarketMaker, GridMarketMakerConfig, HurstVpinDirectional,
+    HurstVpinDirectionalConfig,
+};
 use nautilus_trading::{
     ImportableStrategyConfig,
     python::strategy::{PyStrategy, PyStrategyInner},
@@ -78,7 +86,7 @@ impl BacktestNode {
         reason = "Required for Python actor component registration"
     )]
     #[pyo3(name = "add_actor_from_config")]
-    #[allow(clippy::needless_pass_by_value)]
+    #[expect(clippy::needless_pass_by_value)]
     fn py_add_actor_from_config(
         &mut self,
         _py: Python,
@@ -236,7 +244,7 @@ impl BacktestNode {
         reason = "Required for Python strategy component registration"
     )]
     #[pyo3(name = "add_strategy_from_config")]
-    #[allow(clippy::needless_pass_by_value)]
+    #[expect(clippy::needless_pass_by_value)]
     fn py_add_strategy_from_config(
         &mut self,
         _py: Python,
@@ -297,7 +305,16 @@ impl BacktestNode {
                         } else {
                             anyhow::bail!("Invalid `strategy_id` type");
                         };
-                        py_strategy_ref.set_strategy_id(strategy_id_val);
+                        py_strategy_ref.set_strategy_id(strategy_id_val)?;
+                    }
+
+                    if let Ok(order_id_tag) = config_obj.getattr("order_id_tag")
+                        && !order_id_tag.is_none()
+                    {
+                        let order_id_tag_val = order_id_tag
+                            .extract::<String>()
+                            .map_err(|e| anyhow::anyhow!("Invalid `order_id_tag` type: {e}"))?;
+                        py_strategy_ref.set_order_id_tag(&order_id_tag_val)?;
                     }
 
                     if let Ok(log_events) = config_obj.getattr("log_events")
@@ -389,6 +406,61 @@ impl BacktestNode {
         Ok(())
     }
 
+    /// Adds a native Rust strategy from its config to the engine for the given run config.
+    ///
+    /// The config type determines which built-in strategy is constructed.
+    /// All execution happens in Rust; Python is the configuration layer.
+    ///
+    /// Custom native Rust strategies require the native strategy plugin API.
+    #[pyo3(name = "add_native_strategy")]
+    fn py_add_native_strategy(
+        &mut self,
+        run_config_id: &str,
+        config: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        #[cfg(feature = "examples")]
+        {
+            let engine = self.get_engine_mut(run_config_id).ok_or_else(|| {
+                to_pyruntime_err(format!("No engine for run config '{run_config_id}'"))
+            })?;
+
+            if let Ok(config) = config.extract::<EmaCrossConfig>() {
+                engine
+                    .add_strategy(EmaCross::from_config(config))
+                    .map_err(to_pyruntime_err)
+            } else if let Ok(config) = config.extract::<GridMarketMakerConfig>() {
+                engine
+                    .add_strategy(GridMarketMaker::new(config))
+                    .map_err(to_pyruntime_err)
+            } else if let Ok(config) = config.extract::<CompositeMarketMakerConfig>() {
+                engine
+                    .add_strategy(CompositeMarketMaker::new(config))
+                    .map_err(to_pyruntime_err)
+            } else if let Ok(config) = config.extract::<DeltaNeutralVolConfig>() {
+                engine
+                    .add_strategy(DeltaNeutralVol::new(config))
+                    .map_err(to_pyruntime_err)
+            } else if let Ok(config) = config.extract::<HurstVpinDirectionalConfig>() {
+                engine
+                    .add_strategy(HurstVpinDirectional::new(config))
+                    .map_err(to_pyruntime_err)
+            } else {
+                let type_name = config.get_type().name()?;
+                Err(to_pytype_err(format!(
+                    "Unsupported native strategy config type: {type_name}",
+                )))
+            }
+        }
+
+        #[cfg(not(feature = "examples"))]
+        {
+            let _ = (run_config_id, config);
+            Err(to_pyruntime_err(
+                "add_native_strategy requires the `examples` feature",
+            ))
+        }
+    }
+
     fn __repr__(&self) -> String {
         format!("{self:?}")
     }
@@ -423,6 +495,7 @@ pub(crate) fn create_config_instance<'py>(
 
     // Convert config dict to Python dict
     let py_dict = PyDict::new(py);
+
     for (key, value) in config {
         let json_str = serde_json::to_string(value)
             .map_err(|e| anyhow::anyhow!("Failed to serialize config value: {e}"))?;

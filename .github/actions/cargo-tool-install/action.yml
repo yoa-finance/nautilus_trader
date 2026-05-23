@@ -31,14 +31,14 @@ runs:
 
     # https://github.com/actions-rust-lang/setup-rust-toolchain
     - name: Set up Rust toolchain
-      uses: actions-rust-lang/setup-rust-toolchain@1780873c7b576612439a134613cc4cc74ce5538c # v1.15.2
+      uses: actions-rust-lang/setup-rust-toolchain@2b1f5e9b395427c92ee4e3331786ca3c37afe2d7 # v1.16.0
       with:
         toolchain: ${{ env.TOOLCHAIN }}
         override: true
 
     # https://github.com/actions/cache
     - name: Cache tool binary
-      uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+      uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
       with:
         path: ${{ runner.tool_cache }}/${{ inputs.tool-name }}
         key: ${{ inputs.tool-name }}-bin-${{ env.TOOL_VERSION }}-${{ runner.os }}-${{ env.TOOLCHAIN }}
@@ -53,7 +53,7 @@ runs:
       shell: bash
       env:
         TOOL_CACHE: ${{ runner.tool_cache }}
-      run: |
+      run: |-
         if [[ -x "$TOOL_CACHE/$TOOL_NAME/bin/$TOOL_NAME" ]]; then
           echo "$TOOL_NAME $TOOL_VERSION already installed from cache"
         else

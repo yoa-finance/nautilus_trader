@@ -204,7 +204,9 @@ pub enum DydxOrderType {
     StopLimit,
     /// Stop-market order (triggered at stop price, executed as market).
     StopMarket,
-    /// Take-profit order (limit).
+    /// Take-profit order (limit). The dYdX Indexer reports this as `TAKE_PROFIT`.
+    #[serde(rename = "TAKE_PROFIT", alias = "TAKE_PROFIT_LIMIT")]
+    #[strum(serialize = "TAKE_PROFIT", serialize = "TAKE_PROFIT_LIMIT")]
     TakeProfitLimit,
     /// Take-profit order (market).
     TakeProfitMarket,
@@ -718,6 +720,68 @@ impl DydxCandleResolution {
     }
 }
 
+/// dYdX network environment (mainnet vs testnet).
+///
+/// This selects the underlying Cosmos chain for transaction submission.
+#[derive(
+    Copy,
+    Clone,
+    Debug,
+    Default,
+    Display,
+    PartialEq,
+    Eq,
+    Hash,
+    AsRefStr,
+    EnumIter,
+    EnumString,
+    Serialize,
+    Deserialize,
+)]
+#[strum(serialize_all = "lowercase")]
+#[serde(rename_all = "lowercase")]
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(
+        eq,
+        eq_int,
+        module = "nautilus_trader.core.nautilus_pyo3.dydx",
+        from_py_object,
+        rename_all = "SCREAMING_SNAKE_CASE",
+    )
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass_enum(module = "nautilus_trader.dydx")
+)]
+pub enum DydxNetwork {
+    /// dYdX mainnet (dydx-mainnet-1).
+    #[default]
+    Mainnet,
+    /// dYdX testnet (dydx-testnet-4).
+    Testnet,
+}
+
+impl DydxNetwork {
+    /// Maps the logical network to the underlying gRPC chain identifier.
+    #[must_use]
+    pub const fn chain_id(self) -> ChainId {
+        match self {
+            Self::Mainnet => ChainId::Mainnet1,
+            Self::Testnet => ChainId::Testnet4,
+        }
+    }
+
+    /// Returns the canonical lowercase string used in config/env.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Mainnet => "mainnet",
+            Self::Testnet => "testnet",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use rstest::rstest;
@@ -865,6 +929,21 @@ mod tests {
         );
     }
 
+    // The dYdX Indexer reports the take-profit-limit variant as `"TAKE_PROFIT"`
+    // (no `_LIMIT` suffix). The serde alias keeps `TAKE_PROFIT_LIMIT` working
+    // for callers that already use the explicit form.
+    #[rstest]
+    #[case("\"TAKE_PROFIT\"", DydxOrderType::TakeProfitLimit)]
+    #[case("\"TAKE_PROFIT_LIMIT\"", DydxOrderType::TakeProfitLimit)]
+    #[case("\"TAKE_PROFIT_MARKET\"", DydxOrderType::TakeProfitMarket)]
+    fn test_dydx_order_type_take_profit_serde(
+        #[case] input: &str,
+        #[case] expected: DydxOrderType,
+    ) {
+        let parsed: DydxOrderType = serde_json::from_str(input).unwrap();
+        assert_eq!(parsed, expected);
+    }
+
     #[rstest]
     fn test_dydx_network_chain_id_mapping() {
         // Test canonical chain ID mapping
@@ -901,60 +980,5 @@ mod tests {
 
         let deserialized: DydxNetwork = serde_json::from_str("\"testnet\"").unwrap();
         assert_eq!(deserialized, DydxNetwork::Testnet);
-    }
-}
-
-/// dYdX network environment (mainnet vs testnet).
-///
-/// This selects the underlying Cosmos chain for transaction submission.
-#[derive(
-    Copy,
-    Clone,
-    Debug,
-    Default,
-    Display,
-    PartialEq,
-    Eq,
-    Hash,
-    AsRefStr,
-    EnumString,
-    Serialize,
-    Deserialize,
-)]
-#[strum(serialize_all = "lowercase")]
-#[serde(rename_all = "lowercase")]
-#[cfg_attr(
-    feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.dydx", from_py_object)
-)]
-#[cfg_attr(
-    feature = "python",
-    pyo3_stub_gen::derive::gen_stub_pyclass_enum(module = "nautilus_trader.dydx")
-)]
-pub enum DydxNetwork {
-    /// dYdX mainnet (dydx-mainnet-1).
-    #[default]
-    Mainnet,
-    /// dYdX testnet (dydx-testnet-4).
-    Testnet,
-}
-
-impl DydxNetwork {
-    /// Maps the logical network to the underlying gRPC chain identifier.
-    #[must_use]
-    pub const fn chain_id(self) -> ChainId {
-        match self {
-            Self::Mainnet => ChainId::Mainnet1,
-            Self::Testnet => ChainId::Testnet4,
-        }
-    }
-
-    /// Returns the canonical lowercase string used in config/env.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Mainnet => "mainnet",
-            Self::Testnet => "testnet",
-        }
     }
 }

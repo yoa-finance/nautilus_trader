@@ -18,17 +18,18 @@
 //! Prerequisites:
 //! - Set `HYPERLIQUID_PK` (or `HYPERLIQUID_TESTNET_PK` for testnet)
 //!
-//! Run with: `cargo run --example hyperliquid-exec-tester --package nautilus-hyperliquid`
+//! Run with: `cargo run --example hyperliquid-exec-tester --package nautilus-hyperliquid --features examples`
 
 use log::LevelFilter;
 use nautilus_common::{enums::Environment, logging::logger::LoggerConfig};
 use nautilus_hyperliquid::{
     HyperliquidDataClientConfig, HyperliquidDataClientFactory, HyperliquidExecClientConfig,
     HyperliquidExecFactoryConfig, HyperliquidExecutionClientFactory,
+    common::{consts::HYPERLIQUID_CLIENT_ID, enums::HyperliquidEnvironment},
 };
 use nautilus_live::node::LiveNode;
 use nautilus_model::{
-    identifiers::{AccountId, ClientId, InstrumentId, StrategyId, TraderId},
+    identifiers::{AccountId, InstrumentId, StrategyId, TraderId},
     types::Quantity,
 };
 use nautilus_testkit::testers::{ExecTester, ExecTesterConfig};
@@ -38,17 +39,16 @@ use nautilus_trading::strategy::StrategyConfig;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenvy::dotenv().ok();
 
-    let is_testnet = false;
-
-    let environment = Environment::Live;
+    let nt_environment = Environment::Live;
+    let hl_environment = HyperliquidEnvironment::Mainnet;
     let trader_id = TraderId::from("TESTER-001");
     let account_id = AccountId::from("HYPERLIQUID-001");
     let node_name = "HYPERLIQUID-EXEC-TESTER-001".to_string();
-    let client_id = ClientId::new("HYPERLIQUID");
+    let client_id = *HYPERLIQUID_CLIENT_ID;
     let instrument_id = InstrumentId::from("ETH-USD-PERP.HYPERLIQUID");
 
     let data_config = HyperliquidDataClientConfig {
-        is_testnet,
+        environment: hl_environment,
         ..Default::default()
     };
 
@@ -56,7 +56,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         trader_id,
         account_id,
         config: HyperliquidExecClientConfig {
-            is_testnet,
+            environment: hl_environment,
             ..Default::default()
         },
     };
@@ -69,7 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..Default::default()
     };
 
-    let mut node = LiveNode::builder(trader_id, environment)?
+    let mut node = LiveNode::builder(trader_id, nt_environment)?
         .with_name(node_name)
         .with_logging(log_config)
         .add_data_client(None, Box::new(data_factory), Box::new(data_config))?

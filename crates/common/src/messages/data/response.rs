@@ -22,6 +22,7 @@ use nautilus_model::{
     instruments::InstrumentAny,
     orderbook::OrderBook,
 };
+use serde::{Deserialize, Serialize};
 
 use super::Payload;
 
@@ -40,7 +41,7 @@ pub struct CustomDataResponse {
 
 impl CustomDataResponse {
     /// Creates a new [`CustomDataResponse`] instance.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn new<T: Any + Send + Sync>(
         correlation_id: UUID4,
         client_id: ClientId,
@@ -71,7 +72,7 @@ impl CustomDataResponse {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct InstrumentResponse {
     pub correlation_id: UUID4,
     pub client_id: ClientId,
@@ -90,7 +91,7 @@ impl InstrumentResponse {
     }
 
     /// Creates a new [`InstrumentResponse`] instance.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn new(
         correlation_id: UUID4,
         client_id: ClientId,
@@ -114,7 +115,7 @@ impl InstrumentResponse {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct InstrumentsResponse {
     pub correlation_id: UUID4,
     pub client_id: ClientId,
@@ -133,7 +134,7 @@ impl InstrumentsResponse {
     }
 
     /// Creates a new [`InstrumentsResponse`] instance.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn new(
         correlation_id: UUID4,
         client_id: ClientId,
@@ -176,7 +177,7 @@ impl BookResponse {
     }
 
     /// Creates a new [`BookResponse`] instance.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn new(
         correlation_id: UUID4,
         client_id: ClientId,
@@ -200,7 +201,7 @@ impl BookResponse {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct QuotesResponse {
     pub correlation_id: UUID4,
     pub client_id: ClientId,
@@ -219,7 +220,7 @@ impl QuotesResponse {
     }
 
     /// Creates a new [`QuotesResponse`] instance.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn new(
         correlation_id: UUID4,
         client_id: ClientId,
@@ -243,7 +244,7 @@ impl QuotesResponse {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TradesResponse {
     pub correlation_id: UUID4,
     pub client_id: ClientId,
@@ -262,7 +263,7 @@ impl TradesResponse {
     }
 
     /// Creates a new [`TradesResponse`] instance.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn new(
         correlation_id: UUID4,
         client_id: ClientId,
@@ -286,7 +287,7 @@ impl TradesResponse {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FundingRatesResponse {
     pub correlation_id: UUID4,
     pub client_id: ClientId,
@@ -305,7 +306,7 @@ impl FundingRatesResponse {
     }
 
     /// Creates a new [`FundingRatesResponse`] instance.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn new(
         correlation_id: UUID4,
         client_id: ClientId,
@@ -329,7 +330,7 @@ impl FundingRatesResponse {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ForwardPricesResponse {
     pub correlation_id: UUID4,
     pub client_id: ClientId,
@@ -360,7 +361,7 @@ impl ForwardPricesResponse {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BarsResponse {
     pub correlation_id: UUID4,
     pub client_id: ClientId,
@@ -379,7 +380,7 @@ impl BarsResponse {
     }
 
     /// Creates a new [`BarsResponse`] instance.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn new(
         correlation_id: UUID4,
         client_id: ClientId,

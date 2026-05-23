@@ -5,7 +5,8 @@
 set -euo pipefail
 
 DESIRED_FEATURES=(ffi python high-precision defi)
-PROFILE="nextest"
+PROFILE="${CARGO_CI_PROFILE:-nextest}"
+export HIGH_PRECISION="${HIGH_PRECISION:-1}"
 
 run_full() {
   echo "Running full workspace clippy"
@@ -21,6 +22,17 @@ run_full() {
 changed_files=$(git diff --cached --name-only --diff-filter=ACMR -- '*.rs' '*.toml' 2> /dev/null || true)
 if [ -z "$changed_files" ]; then
   changed_files=$(git diff --name-only HEAD -- '*.rs' '*.toml' 2> /dev/null || true)
+fi
+
+# CI fallback: clean checkouts have no diff vs HEAD; derive changed files
+# from CHANGED_BASE_SHA (exported by the workflow as the PR base or push before SHA).
+if [ -z "$changed_files" ] &&
+  [ -n "${CHANGED_BASE_SHA:-}" ] &&
+  [ "$CHANGED_BASE_SHA" != "0000000000000000000000000000000000000000" ]; then
+  base=$(git merge-base "$CHANGED_BASE_SHA" HEAD 2> /dev/null || true)
+  if [ -n "$base" ]; then
+    changed_files=$(git diff --name-only "$base"..HEAD -- '*.rs' '*.toml' 2> /dev/null || true)
+  fi
 fi
 
 # Clean checkout (CI --all-files) or no Rust/TOML changes at all
@@ -97,6 +109,21 @@ for p in data['packages']:
   done
 done
 
+# When 'defi' is enabled on nautilus-common, Cargo feature unification adds the
+# DeFi variant to DataEvent for all consumers. nautilus-live matches on DataEvent
+# and gates its arm behind its own 'defi' feature, so it must be in the package
+# list to receive the feature flag and compile the match arm.
+if [[ " $feat_seen " == *" defi "* ]]; then
+  case " $seen " in
+    *" nautilus-live "*) ;;
+    *)
+      seen="$seen nautilus-live"
+      seen_list+=("nautilus-live")
+      pkg_args+=("-p" "nautilus-live")
+      ;;
+  esac
+fi
+
 feat_args=()
 if [ -n "$feat_seen" ]; then
   feat_str="${feat_seen## }"
@@ -105,5 +132,7 @@ if [ -n "$feat_seen" ]; then
 fi
 
 echo "Running clippy on: ${seen_list[*]}"
-cargo clippy "${pkg_args[@]}" --lib --tests "${feat_args[@]}" \
+# `${feat_args[@]+...}` guards the expansion: bash 3.2 (macOS default) treats an
+# empty array as unbound under `set -u`, which fires when no features are needed.
+cargo clippy "${pkg_args[@]}" --lib --tests ${feat_args[@]+"${feat_args[@]}"} \
   --profile "$PROFILE" -- -D warnings

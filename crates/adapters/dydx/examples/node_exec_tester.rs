@@ -19,18 +19,18 @@
 //! - Set `DYDX_PRIVATE_KEY` (or `DYDX_TESTNET_PRIVATE_KEY` for testnet)
 //! - Optionally set `DYDX_WALLET_ADDRESS` (derived from private key if not set)
 //!
-//! Run with: `cargo run --example dydx-exec-tester --package nautilus-dydx`
+//! Run with: `cargo run --example dydx-exec-tester --package nautilus-dydx --features examples`
 
 use log::LevelFilter;
 use nautilus_common::{enums::Environment, logging::logger::LoggerConfig};
 use nautilus_dydx::{
-    common::enums::DydxNetwork,
+    common::{consts::DYDX_CLIENT_ID, enums::DydxNetwork},
     config::{DydxDataClientConfig, DydxExecClientConfig},
     factories::{DydxDataClientFactory, DydxExecutionClientFactory},
 };
 use nautilus_live::node::LiveNode;
 use nautilus_model::{
-    identifiers::{AccountId, ClientId, InstrumentId, StrategyId, TraderId},
+    identifiers::{AccountId, InstrumentId, StrategyId, TraderId},
     types::Quantity,
 };
 use nautilus_testkit::testers::{ExecTester, ExecTesterConfig};
@@ -40,22 +40,17 @@ use nautilus_trading::strategy::StrategyConfig;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenvy::dotenv().ok();
 
-    let is_testnet = false;
-    let network = if is_testnet {
-        DydxNetwork::Testnet
-    } else {
-        DydxNetwork::Mainnet
-    };
+    let network = DydxNetwork::Mainnet;
 
     let environment = Environment::Live;
     let trader_id = TraderId::from("TESTER-001");
     let account_id = AccountId::from("DYDX-001");
     let node_name = "DYDX-EXEC-TESTER-001".to_string();
-    let client_id = ClientId::new("DYDX");
+    let client_id = *DYDX_CLIENT_ID;
     let instrument_id = InstrumentId::from("ETH-USD-PERP.DYDX");
 
     let data_config = DydxDataClientConfig {
-        is_testnet,
+        network,
         ..Default::default()
     };
 

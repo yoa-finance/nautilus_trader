@@ -36,8 +36,9 @@ from nautilus_trader.adapters.binance.common.enums import BinanceTimeInForce
 from nautilus_trader.adapters.binance.common.schemas.account import BinanceOrder
 from nautilus_trader.adapters.binance.common.schemas.account import BinanceUserTrade
 from nautilus_trader.adapters.binance.common.symbol import BinanceSymbol
+from nautilus_trader.adapters.binance.common.urls import get_usdm_ws_route_base_url
 from nautilus_trader.adapters.binance.common.urls import get_ws_api_base_url
-from nautilus_trader.adapters.binance.common.urls import get_ws_base_url
+from nautilus_trader.adapters.binance.common.urls import get_ws_private_base_url
 from nautilus_trader.adapters.binance.config import BinanceExecClientConfig
 from nautilus_trader.adapters.binance.http.account import BinanceAccountHttpAPI
 from nautilus_trader.adapters.binance.http.client import BinanceHttpClient
@@ -221,11 +222,20 @@ class BinanceCommonExecutionClient(LiveExecutionClient):
         stream_base_url: str | None = None
 
         if account_type.is_futures:
-            stream_base_url = config.base_url_ws_stream or get_ws_base_url(
+            stream_base_url = config.base_url_ws_stream or get_ws_private_base_url(
                 account_type=account_type,
                 environment=environment,
                 is_us=config.us,
             )
+
+            if (
+                environment == BinanceEnvironment.LIVE
+                and account_type == BinanceAccountType.USDT_FUTURES
+            ):
+                stream_base_url = get_usdm_ws_route_base_url(
+                    stream_base_url,
+                    "private",
+                )
 
         # Force Ed25519 when explicitly configured, otherwise auto-detect
         if config.key_type == BinanceKeyType.ED25519:
@@ -254,6 +264,8 @@ class BinanceCommonExecutionClient(LiveExecutionClient):
             is_ed25519=is_ed25519,
             http_client=http_client_for_ws,
             account_type=account_type_for_ws,
+            on_resubscribe=self._reconcile_after_resubscribe,
+            proxy_url=config.proxy_url,
         )
 
         self._submit_order_method: dict[
@@ -410,6 +422,19 @@ class BinanceCommonExecutionClient(LiveExecutionClient):
                     ),
                 )
         except BinanceError as e:
+            if _is_no_such_order(e):
+                self._log.warning(
+                    f"Cannot generate order status report for {command.client_order_id!r}, "
+                    f"{command.venue_order_id!r}: order not found",
+                )
+
+                if (
+                    command.client_order_id
+                    and command.client_order_id in self._generate_order_status_retries
+                ):
+                    del self._generate_order_status_retries[command.client_order_id]
+                return None
+
             retries += 1
             self._log.error(
                 f"Cannot generate order status report for {command.client_order_id!r}: {e.message}. Retry {retries}/{self._max_retries}",
@@ -570,6 +595,7 @@ class BinanceCommonExecutionClient(LiveExecutionClient):
         end_ms: int | None,
     ) -> list[OrderStatusReport]:
         reports: list[OrderStatusReport] = []
+
         for order in binance_orders:
             if start_ms is not None and order.time < start_ms:
                 continue  # Filter start on the Nautilus side
@@ -623,6 +649,7 @@ class BinanceCommonExecutionClient(LiveExecutionClient):
 
         # Parse all Binance trades
         reports: list[FillReport] = []
+
         for trade in binance_trades:
             if trade.symbol is None:
                 self._log.warning(f"No symbol for trade {trade}")
@@ -1544,6 +1571,15 @@ class BinanceCommonExecutionClient(LiveExecutionClient):
             finally:
                 await self._retry_manager_pool.release(retry_manager)
 
+    async def _reconcile_after_resubscribe(self) -> None:
+        # Listen key rotation leaves a brief window where Binance may have sent
+        # events into a stream with no active subscriber. Request a full mass
+        # status (no lookback cap) so resting GTC orders older than any cap
+        # still reconcile if they were canceled or filled during the gap.
+        mass_status = await self.generate_mass_status(lookback_mins=None)
+        if mass_status is not None:
+            self._send_mass_status_report(mass_status)
+
     def _handle_user_ws_message(self, raw: bytes) -> None:
         # Implement in child class
         raise NotImplementedError
@@ -1557,6 +1593,10 @@ def _is_post_only_rejection(error: BinanceError) -> bool:
         msg = _get_error_msg(error)
         return msg == BINANCE_SPOT_POST_ONLY_REJECT_MSG
     return False
+
+
+def _is_no_such_order(error: BinanceError) -> bool:
+    return get_binance_error_code(error) == BinanceErrorCode.NO_SUCH_ORDER
 
 
 def _get_error_msg(error: BinanceError) -> str:

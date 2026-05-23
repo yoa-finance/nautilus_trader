@@ -23,11 +23,16 @@ use std::{
 };
 
 use nautilus_common::{
-    cache::Cache, clock::TestClock, live::runner::set_data_event_sender, messages::DataEvent,
+    cache::Cache,
+    clock::TestClock,
+    factories::{ClientConfig, DataClientFactory},
+    live::runner::set_data_event_sender,
+    messages::DataEvent,
 };
 use nautilus_model::identifiers::ClientId;
-use nautilus_system::factories::{ClientConfig, DataClientFactory};
-use nautilus_tardis::{config::TardisDataClientConfig, factories::TardisDataClientFactory};
+use nautilus_tardis::{
+    common::consts::TARDIS, config::TardisDataClientConfig, factories::TardisDataClientFactory,
+};
 use rstest::rstest;
 
 #[derive(Debug)]
@@ -55,7 +60,7 @@ fn setup_test_env() {
 #[rstest]
 fn test_tardis_data_client_factory_creation() {
     let factory = TardisDataClientFactory::new();
-    assert_eq!(factory.name(), "TARDIS");
+    assert_eq!(factory.name(), TARDIS);
     assert_eq!(factory.config_type(), "TardisDataClientConfig");
 }
 
@@ -81,11 +86,11 @@ fn test_tardis_data_client_factory_creates_client() {
     let cache = Rc::new(RefCell::new(Cache::default()));
     let clock = Rc::new(RefCell::new(TestClock::new()));
 
-    let result = factory.create("TARDIS", &config, cache, clock);
+    let result = factory.create(TARDIS, &config, cache.into(), clock);
     assert!(result.is_ok());
 
     let client = result.unwrap();
-    assert_eq!(client.client_id(), ClientId::from("TARDIS"));
+    assert_eq!(client.client_id(), ClientId::from(TARDIS));
 }
 
 #[rstest]
@@ -98,7 +103,9 @@ fn test_client_initial_state() {
     let cache = Rc::new(RefCell::new(Cache::default()));
     let clock = Rc::new(RefCell::new(TestClock::new()));
 
-    let client = factory.create("TARDIS", &config, cache, clock).unwrap();
+    let client = factory
+        .create(TARDIS, &config, cache.into(), clock)
+        .unwrap();
     assert!(!client.is_connected());
     assert!(client.is_disconnected());
     assert!(client.venue().is_none());
@@ -114,7 +121,7 @@ fn test_factory_create_wrong_config_type_errors() {
     let cache = Rc::new(RefCell::new(Cache::default()));
     let clock = Rc::new(RefCell::new(TestClock::new()));
 
-    let result = factory.create("TARDIS", &config, cache, clock);
+    let result = factory.create(TARDIS, &config, cache.into(), clock);
     assert!(result.is_err());
 
     let err = result.err().unwrap();
@@ -132,7 +139,9 @@ async fn test_stop_then_disconnect_completes() {
     let config = TardisDataClientConfig::default();
     let cache = Rc::new(RefCell::new(Cache::default()));
     let clock = Rc::new(RefCell::new(TestClock::new()));
-    let mut client = factory.create("TARDIS", &config, cache, clock).unwrap();
+    let mut client = factory
+        .create(TARDIS, &config, cache.into(), clock)
+        .unwrap();
 
     assert!(client.is_disconnected());
 

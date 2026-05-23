@@ -35,7 +35,11 @@ pub extern "C" fn orderbook_deltas_new(
     let deltas: Vec<OrderBookDelta> =
         unsafe { Vec::from_raw_parts(ptr.cast::<OrderBookDelta>(), len, cap) };
     let cloned_deltas = deltas.clone();
-    std::mem::forget(deltas); // Prevents Rust from dropping `deltas`
+    #[allow(
+        clippy::mem_forget,
+        reason = "C ABI retains ownership of the original vector; clone is returned to Rust"
+    )]
+    std::mem::forget(deltas);
     OrderBookDeltas_API::new(OrderBookDeltas::new(instrument_id, cloned_deltas))
 }
 
@@ -95,7 +99,6 @@ pub extern "C" fn orderbook_deltas_ts_init(deltas: &OrderBookDeltas_API) -> Unix
 /// # Panics
 ///
 /// Panics if `CVec` invariants are violated (corrupted metadata).
-#[allow(clippy::drop_non_drop)]
 #[unsafe(no_mangle)]
 pub extern "C" fn orderbook_deltas_vec_drop(v: CVec) {
     let CVec { ptr, len, cap } = v;

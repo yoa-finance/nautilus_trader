@@ -16,7 +16,8 @@
 use std::{cell::RefCell, rc::Rc};
 
 use nautilus_blockchain::{
-    config::BlockchainExecutionClientConfig, constants::BLOCKCHAIN_VENUE,
+    config::BlockchainExecutionClientConfig,
+    constants::{BLOCKCHAIN_CLIENT_ID, BLOCKCHAIN_VENUE},
     execution::client::BlockchainExecutionClient,
 };
 use nautilus_common::{
@@ -30,7 +31,7 @@ use nautilus_live::ExecutionClientCore;
 use nautilus_model::{
     defi::chain::chains,
     enums::{AccountType, OmsType},
-    identifiers::{AccountId, ClientId, TraderId},
+    identifiers::{AccountId, TraderId},
     stubs::TestDefault,
 };
 
@@ -55,36 +56,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ethereum_rpc_url =
         std::env::var("ETHEREUM_RPC_HTTP_URL").expect("ETHEREUM_RPC_HTTP_URL must be set");
 
-    let arbitrum_config = BlockchainExecutionClientConfig::new(
-        trader_id,
-        account,
-        arbitrum,
-        String::from("0x49E96E255bA418d08E66c35b588E2f2F3766E1d0"),
-        Some(vec![
+    let arbitrum_config = BlockchainExecutionClientConfig::builder()
+        .trader_id(trader_id)
+        .client_id(account)
+        .chain(arbitrum)
+        .wallet_address(String::from("0x49E96E255bA418d08E66c35b588E2f2F3766E1d0"))
+        .tokens(vec![
             "0x912CE59144191C1204E64559FE8253a0e49E6548".to_string(),
             "0x40BD670A58238e6E230c430BBb5cE6ec0d40df48".to_string(),
-        ]),
-        arbitrum_rpc_url,
-        None,
-    );
-    let ethereum_config = BlockchainExecutionClientConfig::new(
-        trader_id,
-        account,
-        ethereum,
-        String::from("0x49E96E255bA418d08E66c35b588E2f2F3766E1d0"),
-        Some(vec![
+        ])
+        .http_rpc_url(arbitrum_rpc_url)
+        .build();
+    let ethereum_config = BlockchainExecutionClientConfig::builder()
+        .trader_id(trader_id)
+        .client_id(account)
+        .chain(ethereum)
+        .wallet_address(String::from("0x49E96E255bA418d08E66c35b588E2f2F3766E1d0"))
+        .tokens(vec![
             "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48".to_string(),
             "0xd5F7838F5C461fefF7FE49ea5ebaF7728bB0ADfa".to_string(),
             "0xB1D1eae60EEA9525032a6DCb4c1CE336a1dE71BE".to_string(),
             "0x4fE83213D56308330EC302a8BD641f1d0113A4Cc".to_string(),
-        ]),
-        ethereum_rpc_url,
-        None,
-    );
+        ])
+        .http_rpc_url(ethereum_rpc_url)
+        .build();
     let cache = Rc::new(RefCell::new(Cache::default()));
     let core_execution_client = ExecutionClientCore::new(
         trader_id,
-        ClientId::new("BLOCKCHAIN"),
+        *BLOCKCHAIN_CLIENT_ID,
         *BLOCKCHAIN_VENUE,
         OmsType::Netting,
         account,

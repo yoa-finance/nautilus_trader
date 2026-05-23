@@ -18,6 +18,8 @@
 use std::collections::HashMap;
 
 use nautilus_model::identifiers::AccountId;
+use nautilus_network::websocket::TransportBackend;
+use serde::{Deserialize, Serialize};
 
 use crate::common::{
     enums::{BybitEnvironment, BybitMarginMode, BybitPositionMode, BybitProductType},
@@ -25,7 +27,8 @@ use crate::common::{
 };
 
 /// Configuration for the Bybit live data client.
-#[derive(Clone, Debug, bon::Builder)]
+#[derive(Debug, Clone, Serialize, Deserialize, bon::Builder)]
+#[serde(default, deny_unknown_fields)]
 #[cfg_attr(
     feature = "python",
     pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.bybit", from_py_object)
@@ -51,13 +54,8 @@ pub struct BybitDataClientConfig {
     pub base_url_ws_public: Option<String>,
     /// Optional override for the private WebSocket URL.
     pub base_url_ws_private: Option<String>,
-    /// Optional HTTP proxy URL.
-    pub http_proxy_url: Option<String>,
-    /// Optional WebSocket proxy URL.
-    ///
-    /// Note: WebSocket proxy support is not yet implemented. This field is reserved
-    /// for future functionality. Use `http_proxy_url` for REST API proxy support.
-    pub ws_proxy_url: Option<String>,
+    /// Optional proxy URL for HTTP and WebSocket transports.
+    pub proxy_url: Option<String>,
     /// REST timeout in seconds.
     #[builder(default = 60)]
     pub http_timeout_secs: u64,
@@ -82,6 +80,9 @@ pub struct BybitDataClientConfig {
     /// Interval in seconds for polling instrument status changes.
     /// When `None`, status polling is disabled.
     pub instrument_status_poll_secs: Option<u64>,
+    /// WebSocket transport backend (defaults to `Tungstenite`).
+    #[builder(default)]
+    pub transport_backend: TransportBackend,
 }
 
 impl Default for BybitDataClientConfig {
@@ -154,7 +155,8 @@ impl BybitDataClientConfig {
 }
 
 /// Configuration for the Bybit live execution client.
-#[derive(Clone, Debug, bon::Builder)]
+#[derive(Debug, Clone, Serialize, Deserialize, bon::Builder)]
+#[serde(default, deny_unknown_fields)]
 #[cfg_attr(
     feature = "python",
     pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.bybit", from_py_object)
@@ -180,13 +182,8 @@ pub struct BybitExecClientConfig {
     pub base_url_ws_private: Option<String>,
     /// Optional override for the trade WebSocket URL.
     pub base_url_ws_trade: Option<String>,
-    /// Optional HTTP proxy URL.
-    pub http_proxy_url: Option<String>,
-    /// Optional WebSocket proxy URL.
-    ///
-    /// Note: WebSocket proxy support is not yet implemented. This field is reserved
-    /// for future functionality. Use `http_proxy_url` for REST API proxy support.
-    pub ws_proxy_url: Option<String>,
+    /// Optional proxy URL for HTTP and WebSocket transports.
+    pub proxy_url: Option<String>,
     /// REST timeout in seconds.
     #[builder(default = 60)]
     pub http_timeout_secs: u64,
@@ -216,6 +213,9 @@ pub struct BybitExecClientConfig {
     pub position_mode: Option<HashMap<String, BybitPositionMode>>,
     /// Unified margin mode setting.
     pub margin_mode: Option<BybitMarginMode>,
+    /// WebSocket transport backend (defaults to `Tungstenite`).
+    #[builder(default)]
+    pub transport_backend: TransportBackend,
 }
 
 impl Default for BybitExecClientConfig {
@@ -442,5 +442,40 @@ mod tests {
         assert_eq!(config.http_base_url(), "https://custom-http.bybit.com");
         assert_eq!(config.ws_private_url(), "wss://custom-private.bybit.com");
         assert_eq!(config.ws_trade_url(), "wss://custom-trade.bybit.com");
+    }
+
+    #[rstest]
+    fn test_data_config_toml_minimal() {
+        let config: BybitDataClientConfig = toml::from_str(
+            r#"
+environment = "testnet"
+product_types = ["spot", "linear"]
+http_timeout_secs = 45
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.environment, BybitEnvironment::Testnet);
+        assert_eq!(
+            config.product_types,
+            vec![BybitProductType::Spot, BybitProductType::Linear]
+        );
+        assert_eq!(config.http_timeout_secs, 45);
+    }
+
+    #[rstest]
+    fn test_exec_config_toml_empty_uses_defaults() {
+        let config: BybitExecClientConfig = toml::from_str("").unwrap();
+        let expected = BybitExecClientConfig::default();
+
+        assert_eq!(config.environment, expected.environment);
+        assert_eq!(config.product_types, expected.product_types);
+        assert_eq!(config.http_timeout_secs, expected.http_timeout_secs);
+        assert_eq!(
+            config.heartbeat_interval_secs,
+            expected.heartbeat_interval_secs,
+        );
+        assert_eq!(config.recv_window_ms, expected.recv_window_ms);
+        assert_eq!(config.transport_backend, expected.transport_backend);
     }
 }

@@ -131,9 +131,9 @@ impl Display for BinanceProductType {
     pyo3_stub_gen::derive::gen_stub_pyclass_enum(module = "nautilus_trader.binance")
 )]
 pub enum BinanceEnvironment {
-    /// Production/mainnet environment.
+    /// Live exchange environment.
     #[default]
-    Mainnet,
+    Live,
     /// Testnet environment.
     Testnet,
     /// Demo trading environment.
@@ -664,6 +664,9 @@ pub enum BinanceWsEventType {
     /// Order/trade update event.
     #[serde(rename = "ORDER_TRADE_UPDATE")]
     OrderTradeUpdate,
+    /// Trade Lite event (low-latency fill notification).
+    #[serde(rename = "TRADE_LITE")]
+    TradeLite,
     /// Algo order update event (Binance Futures Algo Service).
     #[serde(rename = "ALGO_UPDATE")]
     AlgoUpdate,
@@ -698,6 +701,7 @@ impl BinanceWsEventType {
             Self::MiniTicker24Hr => "24hrMiniTicker",
             Self::AccountUpdate => "ACCOUNT_UPDATE",
             Self::OrderTradeUpdate => "ORDER_TRADE_UPDATE",
+            Self::TradeLite => "TRADE_LITE",
             Self::AlgoUpdate => "ALGO_UPDATE",
             Self::MarginCall => "MARGIN_CALL",
             Self::AccountConfigUpdate => "ACCOUNT_CONFIG_UPDATE",
@@ -779,7 +783,7 @@ pub enum BinanceFilterType {
 impl Display for BinanceEnvironment {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Mainnet => write!(f, "Mainnet"),
+            Self::Live => write!(f, "Live"),
             Self::Testnet => write!(f, "Testnet"),
             Self::Demo => write!(f, "Demo"),
         }
@@ -1052,6 +1056,6 @@ mod tests {
     #[case("invalid")]
     #[case("")]
     fn test_price_match_from_param_invalid(#[case] input: &str) {
-        assert!(BinancePriceMatch::from_param(input).is_err());
+        BinancePriceMatch::from_param(input).unwrap_err();
     }
 }

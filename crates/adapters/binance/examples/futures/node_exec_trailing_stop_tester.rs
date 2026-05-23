@@ -1,3 +1,18 @@
+// -------------------------------------------------------------------------------------------------
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
+//  https://nautechsystems.io
+//
+//  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
+//  You may not use this file except in compliance with the License.
+//  You may obtain a copy of the License at https://www.gnu.org/licenses/lgpl-3.0.en.html
+//
+//  Unless required by applicable law or agreed to in writing, software
+//  distributed under the License is distributed on an "AS IS" BASIS,
+//  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+//  See the License for the specific language governing permissions and
+//  limitations under the License.
+// -------------------------------------------------------------------------------------------------
+
 use std::{
     str::FromStr,
     time::{Duration, Instant},
@@ -6,6 +21,7 @@ use std::{
 use anyhow::Context;
 use nautilus_binance::{
     common::{
+        consts::BINANCE_CLIENT_ID,
         credential::resolve_credentials,
         enums::{BinanceEnvironment, BinanceFuturesOrderType, BinanceProductType},
         symbol::format_binance_symbol,
@@ -22,7 +38,7 @@ use nautilus_core::time::get_atomic_clock_realtime;
 use nautilus_live::node::{LiveNode, LiveNodeHandle};
 use nautilus_model::{
     enums::{OrderType, TrailingOffsetType, TriggerType},
-    identifiers::{AccountId, ClientId, InstrumentId, StrategyId, TraderId},
+    identifiers::{AccountId, InstrumentId, StrategyId, TraderId},
     types::Quantity,
 };
 use nautilus_testkit::testers::{ExecTester, ExecTesterConfig};
@@ -37,7 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let trader_id = TraderId::from("TESTER-001");
     let account_id = AccountId::from("BINANCE-FUTURES-001");
     let node_name = "BINANCE-FUTURES-TRAILING-STOP-TESTER-001".to_string();
-    let client_id = ClientId::new("BINANCE");
+    let client_id = *BINANCE_CLIENT_ID;
     let instrument_id = InstrumentId::from("BTCUSDT-PERP.BINANCE");
     let product_type = BinanceProductType::UsdM;
     let order_qty = Quantity::from("0.001");

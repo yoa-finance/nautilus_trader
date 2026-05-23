@@ -16,14 +16,18 @@
 //! Configuration types for the BitMEX adapter clients.
 
 use nautilus_model::identifiers::AccountId;
+use nautilus_network::websocket::TransportBackend;
+use serde::{Deserialize, Serialize};
 
 use crate::common::{
     consts::{BITMEX_HTTP_TESTNET_URL, BITMEX_HTTP_URL, BITMEX_WS_TESTNET_URL, BITMEX_WS_URL},
     credential::credential_env_vars,
+    enums::BitmexEnvironment,
 };
 
 /// Configuration for the BitMEX live data client.
-#[derive(Clone, Debug, bon::Builder)]
+#[derive(Debug, Clone, Serialize, Deserialize, bon::Builder)]
+#[serde(default, deny_unknown_fields)]
 #[cfg_attr(
     feature = "python",
     pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.bitmex", from_py_object)
@@ -41,13 +45,8 @@ pub struct BitmexDataClientConfig {
     pub base_url_http: Option<String>,
     /// Optional override for the WebSocket URL.
     pub base_url_ws: Option<String>,
-    /// Optional HTTP proxy URL for general HTTP client operations.
-    pub http_proxy_url: Option<String>,
-    /// Optional WebSocket proxy URL for WebSocket client.
-    ///
-    /// Note: WebSocket proxy support is not yet implemented. This field is reserved
-    /// for future functionality. Use `http_proxy_url` for REST API proxy support.
-    pub ws_proxy_url: Option<String>,
+    /// Optional proxy URL for HTTP and WebSocket transports.
+    pub proxy_url: Option<String>,
     /// REST timeout in seconds.
     #[builder(default = 60)]
     pub http_timeout_secs: u64,
@@ -84,15 +83,18 @@ pub struct BitmexDataClientConfig {
     pub active_only: bool,
     /// Optional interval (minutes) for instrument refresh from REST.
     pub update_instruments_interval_mins: Option<u64>,
-    /// When `true`, use BitMEX testnet endpoints by default.
+    /// BitMEX environment (mainnet or testnet).
     #[builder(default)]
-    pub use_testnet: bool,
+    pub environment: BitmexEnvironment,
     /// Maximum number of requests per second (burst limit).
     #[builder(default = 10)]
     pub max_requests_per_second: u32,
     /// Maximum number of requests per minute (rolling window).
     #[builder(default = 120)]
     pub max_requests_per_minute: u32,
+    /// WebSocket transport backend (defaults to `Tungstenite`).
+    #[builder(default)]
+    pub transport_backend: TransportBackend,
 }
 
 impl Default for BitmexDataClientConfig {
@@ -112,39 +114,38 @@ impl BitmexDataClientConfig {
     /// (either explicitly set or resolvable from environment variables).
     #[must_use]
     pub fn has_api_credentials(&self) -> bool {
-        let (key_var, secret_var) = credential_env_vars(self.use_testnet);
+        let (key_var, secret_var) = credential_env_vars(self.environment);
         let has_key = self.api_key.is_some() || std::env::var(key_var).is_ok();
         let has_secret = self.api_secret.is_some() || std::env::var(secret_var).is_ok();
         has_key && has_secret
     }
 
-    /// Returns the REST base URL, considering overrides and the testnet flag.
+    /// Returns the REST base URL, considering overrides and the environment.
     #[must_use]
     pub fn http_base_url(&self) -> String {
-        self.base_url_http.clone().unwrap_or_else(|| {
-            if self.use_testnet {
-                BITMEX_HTTP_TESTNET_URL.to_string()
-            } else {
-                BITMEX_HTTP_URL.to_string()
-            }
-        })
+        self.base_url_http
+            .clone()
+            .unwrap_or_else(|| match self.environment {
+                BitmexEnvironment::Testnet => BITMEX_HTTP_TESTNET_URL.to_string(),
+                BitmexEnvironment::Mainnet => BITMEX_HTTP_URL.to_string(),
+            })
     }
 
-    /// Returns the WebSocket URL, considering overrides and the testnet flag.
+    /// Returns the WebSocket URL, considering overrides and the environment.
     #[must_use]
     pub fn ws_url(&self) -> String {
-        self.base_url_ws.clone().unwrap_or_else(|| {
-            if self.use_testnet {
-                BITMEX_WS_TESTNET_URL.to_string()
-            } else {
-                BITMEX_WS_URL.to_string()
-            }
-        })
+        self.base_url_ws
+            .clone()
+            .unwrap_or_else(|| match self.environment {
+                BitmexEnvironment::Testnet => BITMEX_WS_TESTNET_URL.to_string(),
+                BitmexEnvironment::Mainnet => BITMEX_WS_URL.to_string(),
+            })
     }
 }
 
 /// Configuration for the BitMEX live execution client.
-#[derive(Clone, Debug, bon::Builder)]
+#[derive(Debug, Clone, Serialize, Deserialize, bon::Builder)]
+#[serde(default, deny_unknown_fields)]
 #[cfg_attr(
     feature = "python",
     pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.bitmex", from_py_object)
@@ -162,13 +163,8 @@ pub struct BitmexExecClientConfig {
     pub base_url_http: Option<String>,
     /// Optional override for the WebSocket URL.
     pub base_url_ws: Option<String>,
-    /// Optional HTTP proxy URL for general HTTP client operations.
-    pub http_proxy_url: Option<String>,
-    /// Optional WebSocket proxy URL for WebSocket client.
-    ///
-    /// Note: WebSocket proxy support is not yet implemented. This field is reserved
-    /// for future functionality. Use `http_proxy_url` for REST API proxy support.
-    pub ws_proxy_url: Option<String>,
+    /// Optional proxy URL for HTTP and WebSocket transports.
+    pub proxy_url: Option<String>,
     /// REST timeout in seconds.
     #[builder(default = 60)]
     pub http_timeout_secs: u64,
@@ -204,9 +200,9 @@ pub struct BitmexExecClientConfig {
     /// When `true`, only active instruments are requested during bootstrap.
     #[builder(default = true)]
     pub active_only: bool,
-    /// When `true`, use BitMEX testnet endpoints by default.
+    /// BitMEX environment (mainnet or testnet).
     #[builder(default)]
-    pub use_testnet: bool,
+    pub environment: BitmexEnvironment,
     /// Optional account identifier to associate with the execution client.
     pub account_id: Option<AccountId>,
     /// Maximum number of requests per second (burst limit).
@@ -230,6 +226,9 @@ pub struct BitmexExecClientConfig {
     /// and BitMEX cancels all open orders. Calling with `timeout=0` disarms the switch.
     /// The refresh interval is derived as `timeout / 4` (minimum 1 second).
     pub deadmans_switch_timeout_secs: Option<u64>,
+    /// WebSocket transport backend (defaults to `Tungstenite`).
+    #[builder(default)]
+    pub transport_backend: TransportBackend,
 }
 
 impl Default for BitmexExecClientConfig {
@@ -249,33 +248,76 @@ impl BitmexExecClientConfig {
     /// (either explicitly set or resolvable from environment variables).
     #[must_use]
     pub fn has_api_credentials(&self) -> bool {
-        let (key_var, secret_var) = credential_env_vars(self.use_testnet);
+        let (key_var, secret_var) = credential_env_vars(self.environment);
         let has_key = self.api_key.is_some() || std::env::var(key_var).is_ok();
         let has_secret = self.api_secret.is_some() || std::env::var(secret_var).is_ok();
         has_key && has_secret
     }
 
-    /// Returns the REST base URL, considering overrides and the testnet flag.
+    /// Returns the REST base URL, considering overrides and the environment.
     #[must_use]
     pub fn http_base_url(&self) -> String {
-        self.base_url_http.clone().unwrap_or_else(|| {
-            if self.use_testnet {
-                BITMEX_HTTP_TESTNET_URL.to_string()
-            } else {
-                BITMEX_HTTP_URL.to_string()
-            }
-        })
+        self.base_url_http
+            .clone()
+            .unwrap_or_else(|| match self.environment {
+                BitmexEnvironment::Testnet => BITMEX_HTTP_TESTNET_URL.to_string(),
+                BitmexEnvironment::Mainnet => BITMEX_HTTP_URL.to_string(),
+            })
     }
 
-    /// Returns the WebSocket URL, considering overrides and the testnet flag.
+    /// Returns the WebSocket URL, considering overrides and the environment.
     #[must_use]
     pub fn ws_url(&self) -> String {
-        self.base_url_ws.clone().unwrap_or_else(|| {
-            if self.use_testnet {
-                BITMEX_WS_TESTNET_URL.to_string()
-            } else {
-                BITMEX_WS_URL.to_string()
-            }
-        })
+        self.base_url_ws
+            .clone()
+            .unwrap_or_else(|| match self.environment {
+                BitmexEnvironment::Testnet => BITMEX_WS_TESTNET_URL.to_string(),
+                BitmexEnvironment::Mainnet => BITMEX_WS_URL.to_string(),
+            })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rstest::rstest;
+
+    use super::*;
+
+    #[rstest]
+    fn test_data_config_toml_minimal() {
+        let config: BitmexDataClientConfig = toml::from_str(
+            r#"
+environment = "testnet"
+http_timeout_secs = 30
+active_only = false
+max_requests_per_second = 5
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.environment, BitmexEnvironment::Testnet);
+        assert_eq!(config.http_timeout_secs, 30);
+        assert!(!config.active_only);
+        assert_eq!(config.max_requests_per_second, 5);
+    }
+
+    #[rstest]
+    fn test_exec_config_toml_empty_uses_defaults() {
+        let config: BitmexExecClientConfig = toml::from_str("").unwrap();
+        let expected = BitmexExecClientConfig::default();
+
+        assert_eq!(config.environment, expected.environment);
+        assert_eq!(config.http_timeout_secs, expected.http_timeout_secs);
+        assert_eq!(
+            config.heartbeat_interval_secs,
+            expected.heartbeat_interval_secs,
+        );
+        assert_eq!(config.recv_window_ms, expected.recv_window_ms);
+        assert_eq!(config.active_only, expected.active_only);
+        assert_eq!(
+            config.max_requests_per_second,
+            expected.max_requests_per_second,
+        );
+        assert_eq!(config.transport_backend, expected.transport_backend);
     }
 }

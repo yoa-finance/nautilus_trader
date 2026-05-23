@@ -18,20 +18,20 @@
 use std::{any::Any, cell::RefCell, rc::Rc};
 
 use nautilus_common::{
-    cache::Cache,
+    cache::CacheView,
     clients::{DataClient, ExecutionClient},
     clock::Clock,
+    factories::{ClientConfig, DataClientFactory, ExecutionClientFactory},
 };
 use nautilus_live::ExecutionClientCore;
 use nautilus_model::{
     enums::{AccountType, OmsType},
     identifiers::ClientId,
 };
-use nautilus_system::factories::{ClientConfig, DataClientFactory, ExecutionClientFactory};
 
 use crate::{
     common::{
-        consts::{AX_VENUE, AX_WS_PUBLIC_URL, AX_WS_SANDBOX_PUBLIC_URL},
+        consts::{AX, AX_VENUE},
         credential::Credential,
     },
     config::{AxDataClientConfig, AxExecClientConfig},
@@ -76,7 +76,7 @@ impl DataClientFactory for AxDataClientFactory {
         &self,
         name: &str,
         config: &dyn ClientConfig,
-        _cache: Rc<RefCell<Cache>>,
+        _cache: CacheView,
         _clock: Rc<RefCell<dyn Clock>>,
     ) -> anyhow::Result<Box<dyn DataClient>> {
         let ax_config = config
@@ -105,7 +105,7 @@ impl DataClientFactory for AxDataClientFactory {
                 ax_config.max_retries,
                 ax_config.retry_delay_initial_ms,
                 ax_config.retry_delay_max_ms,
-                ax_config.http_proxy_url.clone(),
+                ax_config.proxy_url.clone(),
             )
             .map_err(|e| anyhow::anyhow!("Failed to create HTTP client: {e}"))?
         } else {
@@ -116,29 +116,27 @@ impl DataClientFactory for AxDataClientFactory {
                 ax_config.max_retries,
                 ax_config.retry_delay_initial_ms,
                 ax_config.retry_delay_max_ms,
-                ax_config.http_proxy_url.clone(),
+                ax_config.proxy_url.clone(),
             )
             .map_err(|e| anyhow::anyhow!("Failed to create HTTP client: {e}"))?
         };
 
-        let ws_url = ax_config.base_url_ws_public.clone().unwrap_or_else(|| {
-            if ax_config.is_sandbox {
-                AX_WS_SANDBOX_PUBLIC_URL.to_string()
-            } else {
-                AX_WS_PUBLIC_URL.to_string()
-            }
-        });
+        let ws_url = ax_config.ws_public_url();
 
         // Token set during connect
-        let ws_client =
-            AxMdWebSocketClient::without_auth(ws_url, ax_config.heartbeat_interval_secs);
+        let ws_client = AxMdWebSocketClient::without_auth(
+            ws_url,
+            ax_config.heartbeat_interval_secs,
+            ax_config.transport_backend,
+            ax_config.proxy_url.clone(),
+        );
 
         let client = AxDataClient::new(client_id, ax_config, http_client, ws_client)?;
         Ok(Box::new(client))
     }
 
     fn name(&self) -> &'static str {
-        "AX"
+        AX
     }
 
     fn config_type(&self) -> &'static str {
@@ -169,7 +167,7 @@ impl ExecutionClientFactory for AxExecutionClientFactory {
         &self,
         name: &str,
         config: &dyn ClientConfig,
-        cache: Rc<RefCell<Cache>>,
+        cache: CacheView,
     ) -> anyhow::Result<Box<dyn ExecutionClient>> {
         let ax_config = config
             .as_any()
@@ -202,7 +200,7 @@ impl ExecutionClientFactory for AxExecutionClientFactory {
     }
 
     fn name(&self) -> &'static str {
-        "AX"
+        AX
     }
 
     fn config_type(&self) -> &'static str {
@@ -212,7 +210,7 @@ impl ExecutionClientFactory for AxExecutionClientFactory {
 
 #[cfg(test)]
 mod tests {
-    use nautilus_system::factories::ClientConfig;
+    use nautilus_common::factories::ClientConfig;
     use rstest::rstest;
 
     use super::*;
@@ -231,13 +229,13 @@ mod tests {
     #[rstest]
     fn test_ax_data_client_factory_creation() {
         let factory = AxDataClientFactory::new();
-        assert_eq!(factory.name(), "AX");
+        assert_eq!(factory.name(), AX);
         assert_eq!(factory.config_type(), "AxDataClientConfig");
     }
 
     #[rstest]
     fn test_ax_data_client_factory_default() {
         let factory = AxDataClientFactory;
-        assert_eq!(factory.name(), "AX");
+        assert_eq!(factory.name(), AX);
     }
 }

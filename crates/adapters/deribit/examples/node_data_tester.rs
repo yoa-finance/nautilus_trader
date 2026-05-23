@@ -15,17 +15,19 @@
 
 //! Example demonstrating live data testing with the Deribit adapter.
 //!
-//! Run with: `cargo run --example deribit-data-tester --package nautilus-deribit`
+//! Run with: `cargo run --example deribit-data-tester --package nautilus-deribit --features examples`
 
 use nautilus_common::enums::Environment;
 use nautilus_deribit::{
-    config::DeribitDataClientConfig, factories::DeribitDataClientFactory,
+    common::{consts::DERIBIT_CLIENT_ID, enums::DeribitEnvironment},
+    config::DeribitDataClientConfig,
+    factories::DeribitDataClientFactory,
     http::models::DeribitProductType,
 };
 use nautilus_live::node::LiveNode;
 use nautilus_model::{
     data::bar::BarType,
-    identifiers::{ClientId, InstrumentId, TraderId},
+    identifiers::{InstrumentId, TraderId},
     stubs::TestDefault,
 };
 use nautilus_testkit::testers::{DataTester, DataTesterConfig};
@@ -46,12 +48,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         api_key: None,    // Will use 'DERIBIT_API_KEY' env var
         api_secret: None, // Will use 'DERIBIT_API_SECRET' env var
         product_types: vec![DeribitProductType::Future],
-        use_testnet: false,
+        environment: DeribitEnvironment::Mainnet,
         ..Default::default()
     };
 
     let client_factory = DeribitDataClientFactory::new();
-    let client_id = ClientId::new("DERIBIT");
+    let client_id = *DERIBIT_CLIENT_ID;
 
     let mut node = LiveNode::builder(trader_id, environment)?
         .with_name(node_name)

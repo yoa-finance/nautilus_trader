@@ -305,6 +305,7 @@ impl OKXWsFeedHandler {
                             return Some(OKXWsMessage::Error(error));
                         }
                         OKXWsFrame::Reconnected => {
+                            self.auth_tracker.invalidate();
                             return Some(OKXWsMessage::Reconnected);
                         }
                         OKXWsFrame::Subscription {
@@ -561,7 +562,8 @@ impl OKXWsFeedHandler {
                 None
             }
             Message::Binary(msg) => {
-                log::debug!("Raw binary: {msg:?}");
+                log::debug!("Raw binary frame ({} bytes)", msg.len());
+                log::trace!("Raw binary: {msg:?}");
                 None
             }
             Message::Close(_) => {

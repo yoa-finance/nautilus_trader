@@ -125,7 +125,7 @@ class TestBinanceFactories:
                 BinanceAccountType.USDT_FUTURES,
                 BinanceEnvironment.TESTNET,
                 False,
-                "https://testnet.binancefuture.com",
+                "https://demo-fapi.binance.com",
             ),
             # Demo
             (
@@ -151,6 +151,12 @@ class TestBinanceFactories:
                 BinanceEnvironment.DEMO,
                 False,
                 "https://demo-fapi.binance.com",
+            ),
+            (
+                BinanceAccountType.COIN_FUTURES,
+                BinanceEnvironment.DEMO,
+                False,
+                "https://demo-dapi.binance.com",
             ),
         ],
     )
@@ -187,7 +193,7 @@ class TestBinanceFactories:
                 BinanceAccountType.USDT_FUTURES,
                 BinanceEnvironment.LIVE,
                 False,
-                "wss://fstream.binance.com",
+                "wss://fstream.binance.com/market",
             ),
             (
                 BinanceAccountType.COIN_FUTURES,
@@ -217,7 +223,7 @@ class TestBinanceFactories:
                 BinanceAccountType.USDT_FUTURES,
                 BinanceEnvironment.LIVE,
                 True,
-                "wss://fstream.binance.us",
+                "wss://fstream.binance.us/market",
             ),
             (
                 BinanceAccountType.COIN_FUTURES,
@@ -273,7 +279,13 @@ class TestBinanceFactories:
                 BinanceAccountType.USDT_FUTURES,
                 BinanceEnvironment.DEMO,
                 False,
-                "wss://stream.binancefuture.com",
+                "wss://demo-fstream.binance.com",
+            ),
+            (
+                BinanceAccountType.COIN_FUTURES,
+                BinanceEnvironment.DEMO,
+                False,
+                "wss://demo-dstream.binance.com",
             ),
         ],
     )
@@ -317,6 +329,29 @@ class TestBinanceFactories:
         )
 
         assert isinstance(data_client, BinanceFuturesDataClient)
+        assert data_client._ws_client.url == "wss://fstream.binance.com/market"
+        assert data_client._ws_public_client.url == "wss://fstream.binance.com/public"
+
+    def test_create_binance_live_futures_data_client_normalizes_legacy_ws_override(
+        self,
+        binance_http_client,
+    ):
+        data_client = BinanceLiveDataClientFactory.create(
+            loop=self.loop,
+            name="BINANCE",
+            config=BinanceDataClientConfig(  # (S106 Possible hardcoded password)
+                api_key="SOME_BINANCE_API_KEY",
+                api_secret="SOME_BINANCE_API_SECRET",
+                account_type=BinanceAccountType.USDT_FUTURES,
+                base_url_ws="wss://fstream.binance.com/ws",
+            ),
+            msgbus=self.msgbus,
+            cache=self.cache,
+            clock=self.clock,
+        )
+
+        assert data_client._ws_client.url == "wss://fstream.binance.com/market"
+        assert data_client._ws_public_client.url == "wss://fstream.binance.com/public"
 
     def test_create_binance_spot_exec_client(self, binance_http_client):
         # Arrange, Act
@@ -351,3 +386,24 @@ class TestBinanceFactories:
         )
 
         assert isinstance(exec_client, BinanceFuturesExecutionClient)
+        assert exec_client._ws_client._stream_base_url == "wss://fstream.binance.com/private"
+
+    def test_create_binance_futures_exec_client_normalizes_legacy_stream_override(
+        self,
+        binance_http_client,
+    ):
+        exec_client = BinanceLiveExecClientFactory.create(
+            loop=self.loop,
+            name="BINANCE",
+            config=BinanceExecClientConfig(  # (S106 Possible hardcoded password)
+                api_key="SOME_BINANCE_API_KEY",
+                api_secret="SOME_BINANCE_API_SECRET",
+                account_type=BinanceAccountType.USDT_FUTURES,
+                base_url_ws_stream="wss://fstream.binance.com/ws",
+            ),
+            msgbus=self.msgbus,
+            cache=self.cache,
+            clock=self.clock,
+        )
+
+        assert exec_client._ws_client._stream_base_url == "wss://fstream.binance.com/private"

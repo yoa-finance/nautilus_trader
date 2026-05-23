@@ -16,7 +16,9 @@
 //! Python bindings exposing OKX HTTP helper functions and data conversions.
 
 use chrono::{DateTime, Utc};
-use nautilus_core::python::{IntoPyObjectNautilusExt, to_pyruntime_err, to_pyvalue_err};
+use nautilus_core::python::{
+    IntoPyObjectNautilusExt, params::value_to_pyobject, to_pyruntime_err, to_pyvalue_err,
+};
 use nautilus_model::{
     data::{BarType, forward::ForwardPrice},
     enums::{OrderSide, OrderType, PositionSide, TimeInForce, TriggerType},
@@ -32,13 +34,33 @@ use pyo3::{
 
 use super::{extract_optional_string, extract_optional_trigger_type};
 use crate::{
-    common::enums::{OKXInstrumentType, OKXOrderStatus, OKXPositionMode, OKXTradeMode},
+    common::enums::{
+        OKXEnvironment, OKXInstrumentType, OKXOrderStatus, OKXPositionMode, OKXTradeMode,
+    },
     http::{
         client::OKXHttpClient,
         error::OKXHttpError,
         models::{OKXAttachAlgoOrdRequest, OKXCancelAlgoOrderRequest},
+        query::{
+            GetEventContractEventsParams, GetEventContractMarketsParams,
+            GetEventContractSeriesParams,
+        },
     },
 };
+
+fn serializable_items_to_pylist<T>(py: Python<'_>, items: Vec<T>) -> PyResult<Py<PyAny>>
+where
+    T: serde::Serialize,
+{
+    let py_items: PyResult<Vec<_>> = items
+        .into_iter()
+        .map(|item| {
+            let value = serde_json::to_value(item).map_err(to_pyvalue_err)?;
+            value_to_pyobject(py, &value)
+        })
+        .collect();
+    Ok(PyList::new(py, py_items?)?.into_py_any_unwrap(py))
+}
 
 fn parse_attach_algo_ords(
     py: Python<'_>,
@@ -67,6 +89,12 @@ fn parse_attach_algo_ords(
                             dict,
                             "tp_trigger_px_type",
                         )?,
+                        callback_ratio: extract_optional_string(dict, "callback_ratio")?,
+                        callback_spread: extract_optional_string(dict, "callback_spread")?,
+                        active_px: extract_optional_string(dict, "active_px")?,
+                        new_callback_ratio: extract_optional_string(dict, "new_callback_ratio")?,
+                        new_callback_spread: extract_optional_string(dict, "new_callback_spread")?,
+                        new_active_px: extract_optional_string(dict, "new_active_px")?,
                     })
                 })
                 .collect::<PyResult<Vec<_>>>()
@@ -91,10 +119,10 @@ impl OKXHttpClient {
         max_retries=3,
         retry_delay_ms=1_000,
         retry_delay_max_ms=10_000,
-        is_demo=false,
+        environment=OKXEnvironment::Live,
         proxy_url=None,
     ))]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn py_new(
         api_key: Option<String>,
         api_secret: Option<String>,
@@ -104,7 +132,7 @@ impl OKXHttpClient {
         max_retries: u32,
         retry_delay_ms: u64,
         retry_delay_max_ms: u64,
-        is_demo: bool,
+        environment: OKXEnvironment,
         proxy_url: Option<String>,
     ) -> PyResult<Self> {
         Self::with_credentials(
@@ -116,7 +144,7 @@ impl OKXHttpClient {
             max_retries,
             retry_delay_ms,
             retry_delay_max_ms,
-            is_demo,
+            environment,
             proxy_url,
         )
         .map_err(to_pyvalue_err)
@@ -300,6 +328,94 @@ impl OKXHttpClient {
         })
     }
 
+    /// Requests event contract series metadata from OKX.
+    #[pyo3(name = "request_event_contract_series")]
+    #[pyo3(signature = (series_id=None))]
+    fn py_request_event_contract_series<'py>(
+        &self,
+        py: Python<'py>,
+        series_id: Option<String>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let series = client
+                .request_event_contract_series(GetEventContractSeriesParams { series_id })
+                .await
+                .map_err(to_pyvalue_err)?;
+
+            Python::attach(|py| serializable_items_to_pylist(py, series))
+        })
+    }
+
+    /// Requests event metadata for an event contract series from OKX.
+    #[expect(clippy::too_many_arguments)]
+    #[pyo3(name = "request_event_contract_events")]
+    #[pyo3(signature = (series_id, event_id=None, state=None, limit=None, before=None, after=None))]
+    fn py_request_event_contract_events<'py>(
+        &self,
+        py: Python<'py>,
+        series_id: String,
+        event_id: Option<String>,
+        state: Option<String>,
+        limit: Option<String>,
+        before: Option<String>,
+        after: Option<String>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let events = client
+                .request_event_contract_events(GetEventContractEventsParams {
+                    series_id,
+                    event_id,
+                    state,
+                    limit,
+                    before,
+                    after,
+                })
+                .await
+                .map_err(to_pyvalue_err)?;
+
+            Python::attach(|py| serializable_items_to_pylist(py, events))
+        })
+    }
+
+    /// Requests event contract market metadata from OKX.
+    #[expect(clippy::too_many_arguments)]
+    #[pyo3(name = "request_event_contract_markets")]
+    #[pyo3(signature = (series_id, event_id=None, inst_id=None, state=None, limit=None, before=None, after=None))]
+    fn py_request_event_contract_markets<'py>(
+        &self,
+        py: Python<'py>,
+        series_id: String,
+        event_id: Option<String>,
+        inst_id: Option<String>,
+        state: Option<String>,
+        limit: Option<String>,
+        before: Option<String>,
+        after: Option<String>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let markets = client
+                .request_event_contract_markets(GetEventContractMarketsParams {
+                    series_id,
+                    event_id,
+                    inst_id,
+                    state,
+                    limit,
+                    before,
+                    after,
+                })
+                .await
+                .map_err(to_pyvalue_err)?;
+
+            Python::attach(|py| serializable_items_to_pylist(py, markets))
+        })
+    }
+
     /// Requests the account state for the `account_id` from OKX.
     #[pyo3(name = "request_account_state")]
     fn py_request_account_state<'py>(
@@ -319,6 +435,7 @@ impl OKXHttpClient {
         })
     }
 
+    /// Requests trades for the `instrument_id` and `start` -> `end` time range.
     #[pyo3(name = "request_trades")]
     #[pyo3(signature = (instrument_id, start=None, end=None, limit=None))]
     fn py_request_trades<'py>(
@@ -344,6 +461,42 @@ impl OKXHttpClient {
         })
     }
 
+    /// Requests historical bars for the given bar type and time range.
+    ///
+    /// The aggregation source must be `EXTERNAL`. Time range validation ensures start < end.
+    /// Returns bars sorted oldest to newest.
+    ///
+    /// # Endpoint Selection
+    ///
+    /// The OKX API has different endpoints with different limits:
+    /// - Regular endpoint (`/api/v5/market/candles`): ≤ 300 rows/call, ≤ 40 req/2s
+    ///   - Used when: start is None OR age ≤ 100 days
+    /// - History endpoint (`/api/v5/market/history-candles`): ≤ 100 rows/call, ≤ 20 req/2s
+    ///   - Used when: start is Some AND age > 100 days
+    ///
+    /// Age is calculated as `Utc::now() - start` at the time of the first request.
+    ///
+    /// # Supported Aggregations
+    ///
+    /// Maps to OKX bar query parameter:
+    /// - `Second` → `{n}s`
+    /// - `Minute` → `{n}m`
+    /// - `Hour` → `{n}H`
+    /// - `Day` → `{n}D`
+    /// - `Week` → `{n}W`
+    /// - `Month` → `{n}M`
+    ///
+    /// # Pagination
+    ///
+    /// - Uses `before` parameter for backwards pagination
+    /// - Pages backwards from end time (or now) to start time
+    /// - Stops when: limit reached, time window covered, or API returns empty
+    /// - Rate limit safety: ≥ 50ms between requests
+    ///
+    /// # References
+    ///
+    /// - <https://tr.okx.com/docs-v5/en/#order-book-trading-market-data-get-candlesticks>
+    /// - <https://tr.okx.com/docs-v5/en/#order-book-trading-market-data-get-candlesticks-history>
     #[pyo3(name = "request_bars")]
     #[pyo3(signature = (bar_type, start=None, end=None, limit=None))]
     fn py_request_bars<'py>(
@@ -492,7 +645,7 @@ impl OKXHttpClient {
     /// - <https://www.okx.com/docs-v5/en/#order-book-trading-trade-get-order-history-last-3-months>.
     #[pyo3(name = "request_order_status_reports")]
     #[pyo3(signature = (account_id, instrument_type=None, instrument_id=None, start=None, end=None, open_only=false, limit=None))]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn py_request_order_status_reports<'py>(
         &self,
         py: Python<'py>,
@@ -531,7 +684,7 @@ impl OKXHttpClient {
     /// Requests algo order status reports.
     #[pyo3(name = "request_algo_order_status_reports")]
     #[pyo3(signature = (account_id, instrument_type=None, instrument_id=None, algo_id=None, algo_client_order_id=None, state=None, limit=None))]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn py_request_algo_order_status_reports<'py>(
         &self,
         py: Python<'py>,
@@ -598,7 +751,7 @@ impl OKXHttpClient {
     /// <https://www.okx.com/docs-v5/en/#order-book-trading-trade-get-transaction-details-last-3-days>.
     #[pyo3(name = "request_fill_reports")]
     #[pyo3(signature = (account_id, instrument_type=None, instrument_id=None, start=None, end=None, limit=None))]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn py_request_fill_reports<'py>(
         &self,
         py: Python<'py>,
@@ -702,8 +855,11 @@ impl OKXHttpClient {
         attach_algo_ords=None,
         px_usd=None,
         px_vol=None,
+        speed_bump=None,
+        outcome=None,
+        slippage_pct=None,
     ))]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn py_place_order<'py>(
         &self,
         py: Python<'py>,
@@ -724,6 +880,9 @@ impl OKXHttpClient {
         attach_algo_ords: Option<Vec<Py<PyDict>>>,
         px_usd: Option<String>,
         px_vol: Option<String>,
+        speed_bump: Option<String>,
+        outcome: Option<String>,
+        slippage_pct: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let attach_algo_ords = parse_attach_algo_ords(py, attach_algo_ords)?;
         let client = self.clone();
@@ -748,6 +907,9 @@ impl OKXHttpClient {
                     attach_algo_ords,
                     px_usd,
                     px_vol,
+                    speed_bump,
+                    outcome,
+                    slippage_pct,
                 )
                 .await
                 .map_err(to_pyvalue_err)?;
@@ -769,6 +931,10 @@ impl OKXHttpClient {
 
                 if let Some(s_msg) = resp.s_msg {
                     dict.set_item("s_msg", s_msg)?;
+                }
+
+                if let Some(sub_code) = resp.sub_code {
+                    dict.set_item("sub_code", sub_code)?;
                 }
 
                 Ok(dict.into_py_any_unwrap(py))
@@ -800,7 +966,7 @@ impl OKXHttpClient {
         callback_spread=None,
         activation_price=None,
     ))]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn py_place_algo_order<'py>(
         &self,
         py: Python<'py>,
@@ -910,7 +1076,7 @@ impl OKXHttpClient {
     /// # References
     ///
     /// <https://www.okx.com/docs-v5/en/#order-book-trading-algo-trading-post-amend-algo-order>
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     #[pyo3(name = "amend_algo_order")]
     #[pyo3(signature = (
         instrument_id,

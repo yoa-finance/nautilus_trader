@@ -16,6 +16,8 @@
 //! Configuration structures for the AX Exchange adapter.
 
 use nautilus_model::identifiers::{AccountId, TraderId};
+use nautilus_network::websocket::TransportBackend;
+use serde::{Deserialize, Serialize};
 
 use crate::common::{credential::credential_env_vars, enums::AxEnvironment};
 
@@ -31,25 +33,24 @@ use crate::common::{credential::credential_env_vars, enums::AxEnvironment};
     feature = "python",
     pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.architect_ax")
 )]
-#[derive(Clone, Debug, bon::Builder)]
+#[derive(Debug, Clone, Serialize, Deserialize, bon::Builder)]
+#[serde(default, deny_unknown_fields)]
 pub struct AxDataClientConfig {
     /// Optional API key for authenticated REST/WebSocket requests.
     pub api_key: Option<String>,
     /// Optional API secret for authenticated REST/WebSocket requests.
     pub api_secret: Option<String>,
-    /// Use sandbox environment (default: false).
+    /// Trading environment (Sandbox or Production).
     #[builder(default)]
-    pub is_sandbox: bool,
+    pub environment: AxEnvironment,
     /// Optional override for the REST base URL.
     pub base_url_http: Option<String>,
     /// Optional override for the public WebSocket URL.
     pub base_url_ws_public: Option<String>,
     /// Optional override for the private WebSocket URL.
     pub base_url_ws_private: Option<String>,
-    /// Optional HTTP proxy URL.
-    pub http_proxy_url: Option<String>,
-    /// Optional WebSocket proxy URL.
-    pub ws_proxy_url: Option<String>,
+    /// Optional proxy URL for HTTP and WebSocket transports.
+    pub proxy_url: Option<String>,
     /// REST timeout in seconds.
     #[builder(default = 60)]
     pub http_timeout_secs: u64,
@@ -74,6 +75,9 @@ pub struct AxDataClientConfig {
     /// Funding rate poll interval in minutes.
     #[builder(default = 15)]
     pub funding_rate_poll_interval_mins: u64,
+    /// WebSocket transport backend (defaults to `Tungstenite`).
+    #[builder(default)]
+    pub transport_backend: TransportBackend,
 }
 
 impl Default for AxDataClientConfig {
@@ -98,22 +102,12 @@ impl AxDataClientConfig {
         has_key && has_secret
     }
 
-    /// Returns the resolved environment.
-    #[must_use]
-    pub fn environment(&self) -> AxEnvironment {
-        if self.is_sandbox {
-            AxEnvironment::Sandbox
-        } else {
-            AxEnvironment::Production
-        }
-    }
-
     /// Returns the REST base URL, considering overrides and environment.
     #[must_use]
     pub fn http_base_url(&self) -> String {
         self.base_url_http
             .clone()
-            .unwrap_or_else(|| self.environment().http_url().to_string())
+            .unwrap_or_else(|| self.environment.http_url().to_string())
     }
 
     /// Returns the public WebSocket URL, considering overrides and environment.
@@ -121,7 +115,7 @@ impl AxDataClientConfig {
     pub fn ws_public_url(&self) -> String {
         self.base_url_ws_public
             .clone()
-            .unwrap_or_else(|| self.environment().ws_md_url().to_string())
+            .unwrap_or_else(|| self.environment.ws_md_url().to_string())
     }
 
     /// Returns the private WebSocket URL, considering overrides and environment.
@@ -129,7 +123,7 @@ impl AxDataClientConfig {
     pub fn ws_private_url(&self) -> String {
         self.base_url_ws_private
             .clone()
-            .unwrap_or_else(|| self.environment().ws_orders_url().to_string())
+            .unwrap_or_else(|| self.environment.ws_orders_url().to_string())
     }
 }
 
@@ -145,7 +139,8 @@ impl AxDataClientConfig {
     feature = "python",
     pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.architect_ax")
 )]
-#[derive(Clone, Debug, bon::Builder)]
+#[derive(Debug, Clone, Serialize, Deserialize, bon::Builder)]
+#[serde(default, deny_unknown_fields)]
 pub struct AxExecClientConfig {
     /// The trader ID for the client.
     #[builder(default = TraderId::from("TRADER-001"))]
@@ -157,19 +152,17 @@ pub struct AxExecClientConfig {
     pub api_key: Option<String>,
     /// API secret for authenticated requests.
     pub api_secret: Option<String>,
-    /// Use sandbox environment (default: true).
-    #[builder(default = true)]
-    pub is_sandbox: bool,
+    /// Trading environment (Sandbox or Production).
+    #[builder(default)]
+    pub environment: AxEnvironment,
     /// Optional override for the REST base URL.
     pub base_url_http: Option<String>,
     /// Optional override for the orders REST base URL.
     pub base_url_orders: Option<String>,
     /// Optional override for the private WebSocket URL.
     pub base_url_ws_private: Option<String>,
-    /// Optional HTTP proxy URL.
-    pub http_proxy_url: Option<String>,
-    /// Optional WebSocket proxy URL.
-    pub ws_proxy_url: Option<String>,
+    /// Optional proxy URL for HTTP and WebSocket transports.
+    pub proxy_url: Option<String>,
     /// REST timeout in seconds.
     #[builder(default = 60)]
     pub http_timeout_secs: u64,
@@ -191,6 +184,9 @@ pub struct AxExecClientConfig {
     /// Cancel all open orders when the orders WebSocket disconnects.
     #[builder(default)]
     pub cancel_on_disconnect: bool,
+    /// WebSocket transport backend (defaults to `Tungstenite`).
+    #[builder(default)]
+    pub transport_backend: TransportBackend,
 }
 
 impl Default for AxExecClientConfig {
@@ -215,22 +211,12 @@ impl AxExecClientConfig {
         has_key && has_secret
     }
 
-    /// Returns the resolved environment.
-    #[must_use]
-    pub fn environment(&self) -> AxEnvironment {
-        if self.is_sandbox {
-            AxEnvironment::Sandbox
-        } else {
-            AxEnvironment::Production
-        }
-    }
-
     /// Returns the REST base URL, considering overrides and environment.
     #[must_use]
     pub fn http_base_url(&self) -> String {
         self.base_url_http
             .clone()
-            .unwrap_or_else(|| self.environment().http_url().to_string())
+            .unwrap_or_else(|| self.environment.http_url().to_string())
     }
 
     /// Returns the orders REST base URL, considering overrides and environment.
@@ -238,7 +224,7 @@ impl AxExecClientConfig {
     pub fn orders_base_url(&self) -> String {
         self.base_url_orders
             .clone()
-            .unwrap_or_else(|| self.environment().orders_url().to_string())
+            .unwrap_or_else(|| self.environment.orders_url().to_string())
     }
 
     /// Returns the private WebSocket URL, considering overrides and environment.
@@ -246,7 +232,7 @@ impl AxExecClientConfig {
     pub fn ws_private_url(&self) -> String {
         self.base_url_ws_private
             .clone()
-            .unwrap_or_else(|| self.environment().ws_orders_url().to_string())
+            .unwrap_or_else(|| self.environment.ws_orders_url().to_string())
     }
 }
 
@@ -262,7 +248,9 @@ mod tests {
 
     #[rstest]
     fn test_data_config_sandbox_urls_match_consts() {
-        let config = AxDataClientConfig::builder().is_sandbox(true).build();
+        let config = AxDataClientConfig::builder()
+            .environment(AxEnvironment::Sandbox)
+            .build();
         assert_eq!(config.http_base_url(), AX_HTTP_SANDBOX_URL);
         assert_eq!(config.ws_public_url(), AX_WS_SANDBOX_PUBLIC_URL);
         assert_eq!(config.ws_private_url(), AX_WS_SANDBOX_PRIVATE_URL);
@@ -270,7 +258,9 @@ mod tests {
 
     #[rstest]
     fn test_data_config_production_urls_match_consts() {
-        let config = AxDataClientConfig::builder().is_sandbox(false).build();
+        let config = AxDataClientConfig::builder()
+            .environment(AxEnvironment::Production)
+            .build();
         assert_eq!(config.http_base_url(), AX_HTTP_URL);
         assert_eq!(config.ws_public_url(), AX_WS_PUBLIC_URL);
         assert_eq!(config.ws_private_url(), AX_WS_PRIVATE_URL);
@@ -290,7 +280,9 @@ mod tests {
 
     #[rstest]
     fn test_exec_config_sandbox_urls_match_consts() {
-        let config = AxExecClientConfig::builder().is_sandbox(true).build();
+        let config = AxExecClientConfig::builder()
+            .environment(AxEnvironment::Sandbox)
+            .build();
         assert_eq!(config.http_base_url(), AX_HTTP_SANDBOX_URL);
         assert_eq!(config.orders_base_url(), AX_ORDERS_SANDBOX_URL);
         assert_eq!(config.ws_private_url(), AX_WS_SANDBOX_PRIVATE_URL);
@@ -298,7 +290,9 @@ mod tests {
 
     #[rstest]
     fn test_exec_config_production_urls_match_consts() {
-        let config = AxExecClientConfig::builder().is_sandbox(false).build();
+        let config = AxExecClientConfig::builder()
+            .environment(AxEnvironment::Production)
+            .build();
         assert_eq!(config.http_base_url(), AX_HTTP_URL);
         assert_eq!(config.orders_base_url(), AX_ORDERS_URL);
         assert_eq!(config.ws_private_url(), AX_WS_PRIVATE_URL);
@@ -316,5 +310,50 @@ mod tests {
             .cancel_on_disconnect(true)
             .build();
         assert!(config.cancel_on_disconnect);
+    }
+
+    #[rstest]
+    fn test_default_environment_is_sandbox() {
+        let data = AxDataClientConfig::default();
+        assert_eq!(data.environment, AxEnvironment::Sandbox);
+
+        let exec = AxExecClientConfig::default();
+        assert_eq!(exec.environment, AxEnvironment::Sandbox);
+    }
+
+    #[rstest]
+    fn test_data_config_toml_minimal() {
+        let config: AxDataClientConfig = toml::from_str(
+            r#"
+environment = "PRODUCTION"
+http_timeout_secs = 30
+heartbeat_interval_secs = 10
+update_instruments_interval_mins = 5
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.environment, AxEnvironment::Production);
+        assert_eq!(config.http_timeout_secs, 30);
+        assert_eq!(config.heartbeat_interval_secs, 10);
+        assert_eq!(config.update_instruments_interval_mins, 5);
+    }
+
+    #[rstest]
+    fn test_exec_config_toml_empty_uses_defaults() {
+        let config: AxExecClientConfig = toml::from_str("").unwrap();
+        let expected = AxExecClientConfig::default();
+
+        assert_eq!(config.trader_id, expected.trader_id);
+        assert_eq!(config.account_id, expected.account_id);
+        assert_eq!(config.environment, expected.environment);
+        assert_eq!(config.http_timeout_secs, expected.http_timeout_secs);
+        assert_eq!(
+            config.heartbeat_interval_secs,
+            expected.heartbeat_interval_secs,
+        );
+        assert_eq!(config.recv_window_ms, expected.recv_window_ms);
+        assert_eq!(config.cancel_on_disconnect, expected.cancel_on_disconnect);
+        assert_eq!(config.transport_backend, expected.transport_backend);
     }
 }

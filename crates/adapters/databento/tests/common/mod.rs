@@ -99,6 +99,20 @@ fn str_to_cchar_array<const N: usize>(s: &str) -> [c_char; N] {
 }
 
 pub fn symbol_mapping_msg(instrument_id: u32, raw_symbol: &str) -> SymbolMappingMsg {
+    symbol_mapping_msg_with_stype(
+        instrument_id,
+        dbn::SType::InstrumentId,
+        &instrument_id.to_string(),
+        raw_symbol,
+    )
+}
+
+pub fn symbol_mapping_msg_with_stype(
+    instrument_id: u32,
+    stype_in: dbn::SType,
+    stype_in_symbol: &str,
+    raw_symbol: &str,
+) -> SymbolMappingMsg {
     SymbolMappingMsg {
         hd: RecordHeader::new::<SymbolMappingMsg>(
             rtype::SYMBOL_MAPPING,
@@ -106,8 +120,8 @@ pub fn symbol_mapping_msg(instrument_id: u32, raw_symbol: &str) -> SymbolMapping
             instrument_id,
             1_000_000_000,
         ),
-        stype_in: dbn::SType::InstrumentId as u8,
-        stype_in_symbol: str_to_cchar_array::<SYMBOL_CSTR_LEN>(&instrument_id.to_string()),
+        stype_in: stype_in as u8,
+        stype_in_symbol: str_to_cchar_array::<SYMBOL_CSTR_LEN>(stype_in_symbol),
         stype_out: dbn::SType::RawSymbol as u8,
         stype_out_symbol: str_to_cchar_array::<SYMBOL_CSTR_LEN>(raw_symbol),
         start_ts: 1_000_000_000,
@@ -248,7 +262,7 @@ pub fn status_msg(instrument_id: u32) -> StatusMsg {
     }
 }
 
-#[allow(
+#[expect(
     clippy::field_reassign_with_default,
     reason = "conditional fields (options) prevent struct init syntax"
 )]
@@ -329,6 +343,7 @@ pub fn statistics_msg(instrument_id: u32) -> StatMsg {
 
 pub fn error_msg(message: &str) -> ErrorMsg {
     let mut err = [0 as c_char; 302];
+
     for (i, byte) in message.bytes().enumerate() {
         if i >= 301 {
             break;
@@ -345,6 +360,7 @@ pub fn error_msg(message: &str) -> ErrorMsg {
 
 pub fn system_msg(message: &str, code: u8) -> SystemMsg {
     let mut msg_bytes = [0 as c_char; 303];
+
     for (i, byte) in message.bytes().enumerate() {
         if i >= 302 {
             break;

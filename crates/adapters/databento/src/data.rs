@@ -43,7 +43,9 @@ use nautilus_common::{
         },
     },
 };
-use nautilus_core::{AtomicMap, MUTEX_POISONED, string::REDACTED, time::AtomicTime};
+use nautilus_core::{
+    AtomicMap, MUTEX_POISONED, Params, string::secret::REDACTED, time::AtomicTime,
+};
 use nautilus_model::{
     enums::BarAggregation,
     identifiers::{ClientId, Symbol, Venue},
@@ -61,6 +63,8 @@ use crate::{
     types::PublisherId,
 };
 
+const PRICE_PRECISION_PARAM: &str = "price_precision";
+
 /// Configuration for the Databento data client.
 #[derive(Clone)]
 pub struct DatabentoDataClientConfig {
@@ -74,10 +78,6 @@ pub struct DatabentoDataClientConfig {
     pub bars_timestamp_on_close: bool,
     /// Reconnection timeout in minutes (None for infinite retries).
     pub reconnect_timeout_mins: Option<u64>,
-    /// Optional HTTP proxy URL.
-    pub http_proxy_url: Option<String>,
-    /// Optional WebSocket proxy URL.
-    pub ws_proxy_url: Option<String>,
 }
 
 impl Debug for DatabentoDataClientConfig {
@@ -88,8 +88,6 @@ impl Debug for DatabentoDataClientConfig {
             .field("use_exchange_as_venue", &self.use_exchange_as_venue)
             .field("bars_timestamp_on_close", &self.bars_timestamp_on_close)
             .field("reconnect_timeout_mins", &self.reconnect_timeout_mins)
-            .field("http_proxy_url", &self.http_proxy_url)
-            .field("ws_proxy_url", &self.ws_proxy_url)
             .finish()
     }
 }
@@ -109,8 +107,6 @@ impl DatabentoDataClientConfig {
             use_exchange_as_venue,
             bars_timestamp_on_close,
             reconnect_timeout_mins: Some(10), // Default: 10 minutes
-            http_proxy_url: None,
-            ws_proxy_url: None,
         }
     }
 
@@ -294,6 +290,7 @@ impl DatabentoDataClient {
         // Spawn message processing task with cancellation support
         let msg_handle = get_runtime().spawn(async move {
             let mut msg_rx = msg_rx;
+
             loop {
                 tokio::select! {
                     msg = msg_rx.recv() => {
@@ -479,7 +476,7 @@ impl DataClient for DatabentoDataClient {
     /// # Errors
     ///
     /// Returns an error if the subscription request fails.
-    fn subscribe_instrument(&mut self, cmd: &SubscribeInstrument) -> anyhow::Result<()> {
+    fn subscribe_instrument(&mut self, cmd: SubscribeInstrument) -> anyhow::Result<()> {
         log::debug!("Subscribe instrument: {cmd:?}");
 
         let dataset = self.get_dataset_for_venue(cmd.instrument_id.venue)?;
@@ -514,7 +511,7 @@ impl DataClient for DatabentoDataClient {
     /// # Errors
     ///
     /// Returns an error if the subscription request fails.
-    fn subscribe_quotes(&mut self, cmd: &SubscribeQuotes) -> anyhow::Result<()> {
+    fn subscribe_quotes(&mut self, cmd: SubscribeQuotes) -> anyhow::Result<()> {
         log::debug!("Subscribe quotes: {cmd:?}");
 
         let dataset = self.get_dataset_for_venue(cmd.instrument_id.venue)?;
@@ -533,6 +530,12 @@ impl DataClient for DatabentoDataClient {
         self.symbol_venue_map
             .insert(cmd.instrument_id.symbol, cmd.instrument_id.venue);
         let symbol = cmd.instrument_id.symbol.to_string();
+        if let Some(price_precision) = price_precision_from_params(cmd.params.as_ref())? {
+            self.send_command_to_dataset(
+                &dataset,
+                HandlerCommand::SetPricePrecision(cmd.instrument_id.symbol, price_precision),
+            )?;
+        }
 
         let subscription = Subscription::builder()
             .schema(databento::dbn::Schema::Mbp1) // Market by price level 1 for quotes
@@ -549,7 +552,7 @@ impl DataClient for DatabentoDataClient {
     /// # Errors
     ///
     /// Returns an error if the subscription request fails.
-    fn subscribe_trades(&mut self, cmd: &SubscribeTrades) -> anyhow::Result<()> {
+    fn subscribe_trades(&mut self, cmd: SubscribeTrades) -> anyhow::Result<()> {
         log::debug!("Subscribe trades: {cmd:?}");
 
         let dataset = self.get_dataset_for_venue(cmd.instrument_id.venue)?;
@@ -568,6 +571,12 @@ impl DataClient for DatabentoDataClient {
         self.symbol_venue_map
             .insert(cmd.instrument_id.symbol, cmd.instrument_id.venue);
         let symbol = cmd.instrument_id.symbol.to_string();
+        if let Some(price_precision) = price_precision_from_params(cmd.params.as_ref())? {
+            self.send_command_to_dataset(
+                &dataset,
+                HandlerCommand::SetPricePrecision(cmd.instrument_id.symbol, price_precision),
+            )?;
+        }
 
         let subscription = Subscription::builder()
             .schema(databento::dbn::Schema::Trades)
@@ -584,7 +593,7 @@ impl DataClient for DatabentoDataClient {
     /// # Errors
     ///
     /// Returns an error if the subscription request fails.
-    fn subscribe_book_deltas(&mut self, cmd: &SubscribeBookDeltas) -> anyhow::Result<()> {
+    fn subscribe_book_deltas(&mut self, cmd: SubscribeBookDeltas) -> anyhow::Result<()> {
         log::debug!("Subscribe book deltas: {cmd:?}");
 
         let dataset = self.get_dataset_for_venue(cmd.instrument_id.venue)?;
@@ -621,7 +630,7 @@ impl DataClient for DatabentoDataClient {
     /// Returns an error if the subscription request fails.
     fn subscribe_instrument_status(
         &mut self,
-        cmd: &SubscribeInstrumentStatus,
+        cmd: SubscribeInstrumentStatus,
     ) -> anyhow::Result<()> {
         log::debug!("Subscribe instrument status: {cmd:?}");
 
@@ -890,5 +899,50 @@ impl DataClient for DatabentoDataClient {
         });
 
         Ok(())
+    }
+}
+
+fn price_precision_from_params(params: Option<&Params>) -> anyhow::Result<Option<u8>> {
+    let Some(price_precision) = params.and_then(|params| params.get_u64(PRICE_PRECISION_PARAM))
+    else {
+        return Ok(None);
+    };
+
+    Ok(Some(u8::try_from(price_precision).map_err(|_| {
+        anyhow::anyhow!(
+            "`{PRICE_PRECISION_PARAM}` must be less than or equal to {}",
+            u8::MAX
+        )
+    })?))
+}
+
+#[cfg(test)]
+mod tests {
+    use rstest::rstest;
+    use serde_json::json;
+
+    use super::*;
+
+    #[rstest]
+    fn test_price_precision_from_params() {
+        let mut params = Params::new();
+        params.insert(PRICE_PRECISION_PARAM.to_string(), json!(5));
+
+        let price_precision = price_precision_from_params(Some(&params)).unwrap();
+
+        assert_eq!(price_precision, Some(5));
+    }
+
+    #[rstest]
+    fn test_price_precision_from_params_rejects_out_of_range_value() {
+        let mut params = Params::new();
+        params.insert(
+            PRICE_PRECISION_PARAM.to_string(),
+            json!(u64::from(u8::MAX) + 1),
+        );
+
+        let result = price_precision_from_params(Some(&params));
+
+        assert!(result.is_err());
     }
 }

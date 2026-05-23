@@ -18,9 +18,12 @@ import traceback
 from typing import Any
 
 import msgspec
-from py_clob_client.client import ClobClient
+from py_clob_client_v2.client import ClobClient
+from py_clob_client_v2.exceptions import PolyApiException
 
 from nautilus_trader.adapters.polymarket.common.constants import POLYMARKET_VENUE
+from nautilus_trader.adapters.polymarket.common.gamma_markets import GAMMA_CONDITION_IDS_BATCH_SIZE
+from nautilus_trader.adapters.polymarket.common.gamma_markets import fetch_fee_schedules
 from nautilus_trader.adapters.polymarket.common.gamma_markets import list_markets
 from nautilus_trader.adapters.polymarket.common.gamma_markets import (
     normalize_gamma_market_to_clob_format,
@@ -157,6 +160,7 @@ class PolymarketInstrumentProvider(InstrumentProvider):
 
     def _load_instruments_from_event(self, event: dict[str, Any]) -> int:
         count = 0
+
         for market in event.get("markets", []):
             condition_id = market.get("conditionId")
             if not condition_id:
@@ -204,66 +208,91 @@ class PolymarketInstrumentProvider(InstrumentProvider):
         self,
         instrument_ids: list[InstrumentId],
         filters: dict | None = None,
+        *,
+        transient_condition_ids: set[str] | None = None,
     ) -> None:
         # Extract unique condition IDs (markets can have multiple tokens/instruments)
         condition_ids = list({get_polymarket_condition_id(inst_id) for inst_id in instrument_ids})
+        condition_ids_set = set(condition_ids)
 
         # Create a copy to avoid mutating the caller's filters
         filters = filters.copy() if filters is not None else {}
 
-        if (
-            len(condition_ids) <= 100
-        ):  # We can filter directly by condition_id, but there is an API limit of max 100 condition_ids in the query string
-            self._log.info(
-                f"Loading {len(instrument_ids)} instruments from {len(condition_ids)} markets, using direct condition_id filtering",
-            )
-            filters["condition_ids"] = condition_ids
-        else:
-            self._log.info(
-                f"Loading {len(instrument_ids)} instruments from {len(condition_ids)} markets, using bulk load of all markets",
-            )
+        self._log.info(
+            f"Loading {len(instrument_ids)} instruments from {len(condition_ids)} markets, "
+            f"using direct condition_id filtering in batches of {GAMMA_CONDITION_IDS_BATCH_SIZE}",
+        )
 
-        markets = await list_markets(http_client=self._http_client, filters=filters)
-        self._log.info(f"Loaded {len(markets)} markets using Gamma API")
-        for market in markets:
-            condition_id = market.get("conditionId")
-            if not condition_id:
-                continue
+        total_loaded = 0
 
-            if condition_ids and condition_id not in condition_ids:
-                continue
+        for start in range(0, len(condition_ids), GAMMA_CONDITION_IDS_BATCH_SIZE):
+            batch = condition_ids[start : start + GAMMA_CONDITION_IDS_BATCH_SIZE]
+            batch_filters = filters.copy()
+            batch_filters["condition_ids"] = batch
 
-            normalized_market = normalize_gamma_market_to_clob_format(market)
+            markets = await list_markets(http_client=self._http_client, filters=batch_filters)
+            total_loaded += len(markets)
 
-            for token_info in normalized_market.get("tokens", []):
-                token_id = token_info["token_id"]
-                if not token_id:
-                    self._log.warning(f"Market {condition_id} had an empty token")
+            for market in markets:
+                condition_id = market.get("conditionId")
+                if not condition_id:
                     continue
 
-                outcome = token_info["outcome"]
-                self._load_instrument(normalized_market, token_id, outcome)
+                if condition_id not in condition_ids_set:
+                    continue
+
+                normalized_market = normalize_gamma_market_to_clob_format(market)
+
+                for token_info in normalized_market.get("tokens", []):
+                    token_id = token_info["token_id"]
+                    if not token_id:
+                        self._log.warning(f"Market {condition_id} had an empty token")
+                        if transient_condition_ids is not None:
+                            transient_condition_ids.add(condition_id)
+                        continue
+
+                    outcome = token_info["outcome"]
+                    self._load_instrument(normalized_market, token_id, outcome)
+
+        self._log.info(f"Loaded {total_loaded} markets using Gamma API")
 
     async def _load_ids_using_clob_api(
         self,
         instrument_ids: list[InstrumentId],
         filters: dict | None = None,
+        *,
+        transient_condition_ids: set[str] | None = None,
     ) -> None:
         """
         Load instruments using CLOB API.
         """
-        if len(instrument_ids) > 200:
+        # The bulk pager (`_load_markets`) only sees markets present in the
+        # paged catalog; a market still in the CLOB pre-hydration 404 phase
+        # is simply absent there and indistinguishable from a genuine miss.
+        # Retry-capable callers must therefore use the per-condition path
+        # regardless of batch size so 404s surface as transients.
+        if transient_condition_ids is None and len(instrument_ids) > 200:
             self._log.warning(
                 f"Loading {len(instrument_ids)} instruments, using bulk load of all markets as a faster alternative",
             )
-            await self._load_markets(instrument_ids, filters)
+            await self._load_markets(
+                instrument_ids,
+                filters,
+                transient_condition_ids=transient_condition_ids,
+            )
         else:
-            await self._load_markets_seq(instrument_ids, filters)
+            await self._load_markets_seq(
+                instrument_ids,
+                filters,
+                transient_condition_ids=transient_condition_ids,
+            )
 
     async def load_ids_async(
         self,
         instrument_ids: list[InstrumentId],
         filters: dict | None = None,
+        *,
+        transient_condition_ids: set[str] | None = None,
     ) -> None:
         if not instrument_ids:
             self._log.info("No instrument IDs given for loading")
@@ -279,17 +308,54 @@ class PolymarketInstrumentProvider(InstrumentProvider):
             )
 
         if self._config.use_gamma_markets:
-            await self._load_ids_using_gamma_markets(instrument_ids, filters)
+            await self._load_ids_using_gamma_markets(
+                instrument_ids,
+                filters,
+                transient_condition_ids=transient_condition_ids,
+            )
         else:
-            await self._load_ids_using_clob_api(instrument_ids, filters)
+            await self._load_ids_using_clob_api(
+                instrument_ids,
+                filters,
+                transient_condition_ids=transient_condition_ids,
+            )
 
-    async def load_async(self, instrument_id: InstrumentId, filters: dict | None = None) -> None:
+    async def load_async(
+        self,
+        instrument_id: InstrumentId,
+        filters: dict | None = None,
+        *,
+        transient_condition_ids: set[str] | None = None,
+    ) -> None:
         PyCondition.not_none(instrument_id, "instrument_id")
         condition_id = get_polymarket_condition_id(instrument_id)
         token_id = get_polymarket_token_id(instrument_id)
 
-        response = await asyncio.to_thread(self._client.get_market, condition_id)
+        try:
+            response = await asyncio.to_thread(self._client.get_market, condition_id)
+        except PolyApiException as e:
+            # CLOB 404 immediately after Gamma activation is the lifecycle
+            # race: the venue is still hydrating. Only treat it as transient
+            # when the caller can act on the retry signal; otherwise propagate
+            # so startup / one-shot loads still surface the failure.
+            if e.status_code == 404 and transient_condition_ids is not None:
+                self._log.warning(
+                    f"Market {condition_id} not found on CLOB (pre-hydration); will retry",
+                )
+                transient_condition_ids.add(condition_id)
+                return
+            raise
         response = check_clob_response(response)
+
+        await self._enrich_with_gamma_fee_schedules([response])
+
+        # Detect transient empty token_ids on the venue (CLOB lifecycle race on
+        # newly-minted markets) and surface them to the caller before deciding
+        # whether the requested token is present.
+        if any(not t.get("token_id") for t in response["tokens"]):
+            self._log.warning(f"Market {condition_id} had an empty token")
+            if transient_condition_ids is not None:
+                transient_condition_ids.add(condition_id)
 
         for token_info in response["tokens"]:
             if token_id != token_info["token_id"]:
@@ -306,16 +372,25 @@ class PolymarketInstrumentProvider(InstrumentProvider):
         self,
         instrument_ids: list[InstrumentId],
         filters: dict | None = None,
+        *,
+        transient_condition_ids: set[str] | None = None,
     ) -> None:
         filter_is_active = filters.get("is_active", False) if filters else False
 
-        for instrument_id in instrument_ids:
-            response: dict[str, Any] | str = await asyncio.to_thread(
-                self._client.get_market,
-                condition_id=get_polymarket_condition_id(instrument_id),
-            )
-            response = check_clob_response(response)
+        responses: list[tuple[InstrumentId, dict[str, Any]]] = []
 
+        for instrument_id in instrument_ids:
+            fetched = await self._fetch_market_for_load(
+                instrument_id,
+                transient_condition_ids=transient_condition_ids,
+            )
+
+            if fetched is not None:
+                responses.append(fetched)
+
+        await self._enrich_with_gamma_fee_schedules([r for _, r in responses])
+
+        for instrument_id, response in responses:
             try:
                 active = response["active"]
                 closed = response["closed"]
@@ -332,6 +407,8 @@ class PolymarketInstrumentProvider(InstrumentProvider):
                     token_id = token_info["token_id"]
                     if not token_id:
                         self._log.warning(f"Market {condition_id} had an empty token")
+                        if transient_condition_ids is not None:
+                            transient_condition_ids.add(condition_id)
                         continue
                     outcome = token_info["outcome"]
                     self._load_instrument(response, token_id, outcome)
@@ -339,10 +416,37 @@ class PolymarketInstrumentProvider(InstrumentProvider):
             except ValueError as e:
                 self._log.error(f"Unable to parse market: {e}, {response}")
 
+    async def _fetch_market_for_load(
+        self,
+        instrument_id: InstrumentId,
+        *,
+        transient_condition_ids: set[str] | None,
+    ) -> tuple[InstrumentId, dict[str, Any]] | None:
+        # Wrap `get_market` so the 404 lifecycle race surfaces via the
+        # transient collector when one is present, and as a propagated
+        # exception otherwise (see `load_async` for the rationale).
+        condition_id = get_polymarket_condition_id(instrument_id)
+        try:
+            response: dict[str, Any] | str = await asyncio.to_thread(
+                self._client.get_market,
+                condition_id=condition_id,
+            )
+        except PolyApiException as e:
+            if e.status_code == 404 and transient_condition_ids is not None:
+                self._log.warning(
+                    f"Market {condition_id} not found on CLOB (pre-hydration); will retry",
+                )
+                transient_condition_ids.add(condition_id)
+                return None
+            raise
+        return instrument_id, check_clob_response(response)
+
     async def _load_markets(
         self,
         instrument_ids: list[InstrumentId],
         filters: dict | None = None,
+        *,
+        transient_condition_ids: set[str] | None = None,
     ) -> None:
         # Create a copy to avoid mutating the caller's filters
         filters = filters.copy() if filters is not None else {}
@@ -362,6 +466,7 @@ class PolymarketInstrumentProvider(InstrumentProvider):
 
         markets_visited = 0
         next_cursor = filters.get("next_cursor", "MA==")
+
         while next_cursor != "LTE=":
             self._log.info(f"Cursor = '{next_cursor}', markets visited = {markets_visited}")
             response: dict[str, Any] | str = await asyncio.to_thread(
@@ -370,34 +475,64 @@ class PolymarketInstrumentProvider(InstrumentProvider):
             )
             response = check_clob_response(response)
 
-            for market_info in response["data"]:
-                try:
-                    active = market_info["active"]
-                    closed = market_info["closed"]
+            page_markets = self._filter_page_markets(response["data"], condition_ids)
+            await self._enrich_with_gamma_fee_schedules(page_markets)
+            self._load_page_instruments(
+                page_markets,
+                filter_is_active,
+                transient_condition_ids=transient_condition_ids,
+            )
 
-                    if filter_is_active and (not active or closed):
-                        continue
-
-                    condition_id = market_info["condition_id"]
-                    if not condition_id:
-                        continue  # Archived
-
-                    if condition_ids and condition_id not in condition_ids:
-                        continue  # Filtering
-
-                    for token_info in market_info["tokens"]:
-                        token_id = token_info["token_id"]
-                        if not token_id:
-                            self._log.warning(f"Market {condition_id} had an empty token")
-                            continue
-
-                        outcome = token_info["outcome"]
-                        self._load_instrument(market_info, token_id, outcome)
-                except ValueError as e:
-                    self._log.error(f"Unable to parse market: {e}, {market_info}")
-                    continue
             next_cursor = response["next_cursor"]
             markets_visited += len(response["data"])
+
+    @staticmethod
+    def _filter_page_markets(
+        markets: list[dict[str, Any]],
+        condition_ids: list[str],
+    ) -> list[dict[str, Any]]:
+        page_markets: list[dict[str, Any]] = []
+
+        for market_info in markets:
+            condition_id = market_info.get("condition_id")
+            if not condition_id:
+                continue  # Archived
+            if condition_ids and condition_id not in condition_ids:
+                continue  # Filtering
+            page_markets.append(market_info)
+
+        return page_markets
+
+    def _load_page_instruments(
+        self,
+        page_markets: list[dict[str, Any]],
+        filter_is_active: bool,
+        *,
+        transient_condition_ids: set[str] | None = None,
+    ) -> None:
+        for market_info in page_markets:
+            try:
+                active = market_info["active"]
+                closed = market_info["closed"]
+
+                if filter_is_active and (not active or closed):
+                    continue
+
+                condition_id = market_info["condition_id"]
+
+                for token_info in market_info["tokens"]:
+                    token_id = token_info["token_id"]
+                    if not token_id:
+                        self._log.warning(f"Market {condition_id} had an empty token")
+                        if transient_condition_ids is not None:
+                            transient_condition_ids.add(condition_id)
+                        continue
+
+                    outcome = token_info["outcome"]
+                    self._load_instrument(market_info, token_id, outcome)
+            except ValueError as e:
+                self._log.error(f"Unable to parse market: {e}, {market_info}")
+                continue
 
     def _load_instrument(
         self,
@@ -425,4 +560,61 @@ class PolymarketInstrumentProvider(InstrumentProvider):
             self._log.warning(
                 f"Filters {unsupported} are ignored by CLOB API; "
                 "set use_gamma_markets=True to enable server-side filtering",
+            )
+
+    async def _enrich_with_gamma_fee_schedules(
+        self,
+        market_infos: list[dict[str, Any]],
+    ) -> None:
+        """
+        Attach Gamma `feeSchedule` entries onto CLOB market payloads in place.
+
+        The CLOB API omits `feeSchedule` (the effective fee rate source), so on
+        the CLOB load path we bulk-query Gamma for the schedules and stitch them
+        back onto each market. This keeps taker commissions accurate in the
+        default configuration; failures are logged and leave fees at zero.
+
+        References
+        ----------
+        https://docs.polymarket.com/trading/fees
+
+        """
+        if not market_infos:
+            return
+
+        condition_ids = [m["condition_id"] for m in market_infos if m.get("condition_id")]
+        if not condition_ids:
+            return
+
+        try:
+            fee_schedules = await fetch_fee_schedules(
+                http_client=self._http_client,
+                condition_ids=condition_ids,
+            )
+        except Exception as e:
+            self._log.warning(
+                f"Failed to fetch Gamma feeSchedule for {len(condition_ids)} markets; "
+                f"taker commissions will default to zero: {e}",
+            )
+            return
+
+        missing_condition_ids: list[str] = []
+
+        for market_info in market_infos:
+            condition_id = market_info.get("condition_id")
+            if not condition_id:
+                continue
+            fee_schedule = fee_schedules.get(condition_id)
+            if fee_schedule is not None:
+                market_info["feeSchedule"] = fee_schedule
+            else:
+                missing_condition_ids.append(condition_id)
+
+        if missing_condition_ids and self._log_warnings:
+            sample = ", ".join(missing_condition_ids[:5])
+            suffix = "..." if len(missing_condition_ids) > 5 else ""
+            self._log.warning(
+                f"Gamma feeSchedule missing for {len(missing_condition_ids)} "
+                f"of {len(condition_ids)} markets ({sample}{suffix}); "
+                "taker commissions will default to zero for those markets",
             )

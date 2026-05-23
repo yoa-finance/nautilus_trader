@@ -26,11 +26,11 @@ use nautilus_model::{
         option_chain::OptionGreeks,
     },
     enums::{
-        AccountType, AggressorSide, BookAction, LiquiditySide, OrderSide, OrderStatus,
-        PositionSideSpecified, RecordFlag, TimeInForce, TriggerType,
+        AccountType, AggressorSide, BookAction, GreeksConvention, LiquiditySide, OrderSide,
+        OrderStatus, PositionSideSpecified, RecordFlag, TimeInForce, TriggerType,
     },
     events::account::state::AccountState,
-    identifiers::{AccountId, ClientOrderId, InstrumentId, Symbol, TradeId, VenueOrderId},
+    identifiers::{AccountId, ClientOrderId, InstrumentId, PositionId, TradeId, VenueOrderId},
     instruments::{Instrument, any::InstrumentAny},
     reports::{FillReport, OrderStatusReport, PositionStatusReport},
     types::{AccountBalance, MarginBalance, Money, Price, Quantity},
@@ -40,18 +40,18 @@ use rust_decimal::Decimal;
 use super::{
     enums::{BybitWsOperation, BybitWsPrivateChannel, BybitWsPublicChannel},
     messages::{
-        BybitWsAccountExecution, BybitWsAccountOrder, BybitWsAccountPosition, BybitWsAccountWallet,
-        BybitWsAuthResponse, BybitWsFrame, BybitWsKline, BybitWsOrderResponse,
-        BybitWsOrderbookDepthMsg, BybitWsResponse, BybitWsSubscriptionMsg, BybitWsTickerLinear,
-        BybitWsTickerLinearMsg, BybitWsTickerOptionMsg, BybitWsTrade,
+        BybitWsAccountExecution, BybitWsAccountExecutionFast, BybitWsAccountOrder,
+        BybitWsAccountPosition, BybitWsAccountWallet, BybitWsAuthResponse, BybitWsFrame,
+        BybitWsKline, BybitWsOrderResponse, BybitWsOrderbookDepthMsg, BybitWsResponse,
+        BybitWsSubscriptionMsg, BybitWsTickerLinear, BybitWsTickerLinearMsg,
+        BybitWsTickerOptionMsg, BybitWsTrade,
     },
 };
 use crate::common::{
-    consts::BYBIT_VENUE,
     enums::{BybitOrderStatus, BybitPositionSide, BybitTimeInForce},
     parse::{
-        get_currency, parse_book_level, parse_bybit_order_type, parse_millis_timestamp,
-        parse_price_with_precision, parse_quantity_with_precision,
+        get_currency, make_hedge_venue_position_id, parse_book_level, parse_bybit_order_type,
+        parse_millis_timestamp, parse_price_with_precision, parse_quantity_with_precision,
     },
 };
 
@@ -138,6 +138,13 @@ pub fn parse_bybit_ws_frame(value: serde_json::Value) -> BybitWsFrame {
         if topic.starts_with(BybitWsPrivateChannel::Order.as_ref()) {
             return serde_json::from_value(value.clone())
                 .map_or_else(|_| BybitWsFrame::Unknown(value), BybitWsFrame::AccountOrder);
+        }
+
+        if topic.starts_with(BybitWsPrivateChannel::ExecutionFast.as_ref()) {
+            return serde_json::from_value(value.clone()).map_or_else(
+                |_| BybitWsFrame::Unknown(value),
+                BybitWsFrame::AccountExecutionFast,
+            );
         }
 
         if topic.starts_with(BybitWsPrivateChannel::Execution.as_ref()) {
@@ -293,6 +300,7 @@ pub fn parse_orderbook_deltas(
     for level in &depth.b {
         push_level(level, OrderSide::Buy)?;
     }
+
     for level in &depth.a {
         push_level(level, OrderSide::Sell)?;
     }
@@ -454,10 +462,18 @@ pub fn parse_ticker_linear_funding(
         .as_ref()
         .context("Bybit ticker missing funding_rate")?;
 
+    if funding_rate_str.is_empty() {
+        anyhow::bail!(
+            "empty funding_rate for {instrument_id} (dated futures do not have funding rates)"
+        );
+    }
+
     let funding_rate = funding_rate_str
         .as_str()
         .parse::<Decimal>()
-        .context("invalid funding_rate value")?;
+        .with_context(|| {
+            format!("invalid funding_rate value '{funding_rate_str}' for {instrument_id}")
+        })?;
 
     let funding_interval = if let Some(funding_interval_hour) = &data.funding_interval_hour {
         let funding_interval_hour = funding_interval_hour
@@ -636,6 +652,7 @@ pub fn parse_ticker_option_greeks(
 
     Ok(OptionGreeks {
         instrument_id: instrument.id(),
+        convention: GreeksConvention::BlackScholes,
         greeks: OptionGreekValues {
             delta,
             gamma,
@@ -821,6 +838,11 @@ pub fn parse_ws_order_status_report(
         report = report.with_trigger_type(trigger_type);
     }
 
+    if let Some(venue_position_id) = make_hedge_venue_position_id(instrument_id, order.position_idx)
+    {
+        report = report.with_venue_position_id(venue_position_id);
+    }
+
     if order.reduce_only {
         report = report.with_reduce_only(true);
     }
@@ -901,10 +923,83 @@ pub fn parse_ws_fill_report(
         commission,
         liquidity_side,
         client_order_id,
-        None, // venue_position_id
+        None, // venue_position_id: execution data lacks position_idx
         ts_event,
         ts_init,
         None, // report_id
+    ))
+}
+
+/// Parses a fast-stream WebSocket execution payload into a [`FillReport`].
+///
+/// The `execution.fast` channel omits fee and exec-type fields, so the resulting
+/// report carries zero commission. Liquidity side is derived from the payload's
+/// `isMaker` flag. Pair with the standard `execution` channel if exact fee data
+/// is required.
+///
+/// `venue_position_id` should be supplied for tracked hedge-mode orders so the
+/// emitted report carries the long/short position identity that the standard
+/// channel preserves via `OrderFilled`.
+///
+/// # Errors
+///
+/// Returns an error if price or quantity fields cannot be parsed or timestamps are invalid.
+pub fn parse_ws_fill_report_fast(
+    execution: &BybitWsAccountExecutionFast,
+    account_id: AccountId,
+    instrument: &InstrumentAny,
+    venue_position_id: Option<PositionId>,
+    ts_init: UnixNanos,
+) -> anyhow::Result<FillReport> {
+    let instrument_id = instrument.id();
+    let venue_order_id = VenueOrderId::new(execution.order_id.as_str());
+    let trade_id = TradeId::new_checked(execution.exec_id.as_str())
+        .context("invalid execId in Bybit WebSocket fast-execution payload")?;
+
+    let order_side: OrderSide = execution.side.into();
+    let last_qty = parse_quantity_with_precision(
+        &execution.exec_qty,
+        instrument.size_precision(),
+        "execution.execQty",
+    )?;
+    let last_px = parse_price_with_precision(
+        &execution.exec_price,
+        instrument.price_precision(),
+        "execution.execPrice",
+    )?;
+
+    let liquidity_side = if execution.is_maker {
+        LiquiditySide::Maker
+    } else {
+        LiquiditySide::Taker
+    };
+
+    let commission_currency = instrument.quote_currency();
+    let commission = Money::from_decimal(Decimal::ZERO, commission_currency)
+        .with_context(|| format!("Failed to create zero commission for {commission_currency}"))?;
+    let ts_event = parse_millis_timestamp(&execution.exec_time, "execution.execTime")?;
+
+    let client_order_id = if execution.order_link_id.is_empty() {
+        None
+    } else {
+        Some(ClientOrderId::new(execution.order_link_id.as_str()))
+    };
+
+    Ok(FillReport::new(
+        account_id,
+        instrument_id,
+        venue_order_id,
+        trade_id,
+        order_side,
+        last_qty,
+        last_px,
+        commission,
+        liquidity_side,
+        client_order_id,
+        venue_position_id,
+        ts_event,
+        ts_init,
+        None,
     ))
 }
 
@@ -934,7 +1029,21 @@ pub fn parse_ws_position_status_report(
         BybitPositionSide::Flat => PositionSideSpecified::Flat,
     };
 
+    // Bybit ranks open positions 1-5 by ADL priority (5 = next to be deleveraged);
+    // 0 means the account has no open position or is flat. Warn when approaching the
+    // top tier so operators can react before the venue force-closes.
+    if position.adl_rank_indicator >= 4 {
+        log::warn!(
+            "Elevated ADL risk: {} position size={} adl_rank={}",
+            instrument_id,
+            position.size,
+            position.adl_rank_indicator,
+        );
+    }
+
     let ts_last = parse_millis_timestamp(&position.updated_time, "position.updatedTime")?;
+
+    let venue_position_id = make_hedge_venue_position_id(instrument_id, position.position_idx);
 
     Ok(PositionStatusReport::new(
         account_id,
@@ -943,8 +1052,8 @@ pub fn parse_ws_position_status_report(
         quantity,
         ts_last,
         ts_init,
-        None,                 // report_id
-        None,                 // venue_position_id
+        None, // report_id
+        venue_position_id,
         position.entry_price, // avg_px_open
     ))
 }
@@ -968,32 +1077,23 @@ pub fn parse_ws_account_state(
         let total_dec = coin_data.wallet_balance - coin_data.spot_borrow;
         let locked_dec = coin_data.total_order_im + coin_data.total_position_im;
 
-        let total = Money::from_decimal(total_dec, currency)?;
-        let locked_raw = Money::from_decimal(locked_dec, currency)?.raw;
+        balances.push(AccountBalance::from_total_and_locked(
+            total_dec, locked_dec, currency,
+        )?);
 
-        // Clamp locked between 0 and total so free stays non-negative
-        // when total itself is non-negative, and locked stays zero when
-        // total is negative (spot borrow deficit).
-        let clamped_locked = Money::from_raw(locked_raw.clamp(0, total.raw.max(0)), currency);
-        let free = Money::from_raw(total.raw - clamped_locked.raw, currency);
-
-        balances.push(AccountBalance::new(total, clamped_locked, free));
-
-        let initial_margin_dec = coin_data.total_position_im;
+        // Sum position IM (reserved by open positions) and order IM (reserved by
+        // pending orders) so the reported initial margin reflects either source.
+        let initial_margin_dec = coin_data.total_position_im + coin_data.total_order_im;
         let maintenance_margin_dec = match &coin_data.total_position_mm {
             Some(mm) if !mm.is_empty() => mm.parse::<Decimal>()?,
             _ => Decimal::ZERO,
         };
 
         if !initial_margin_dec.is_zero() || !maintenance_margin_dec.is_zero() {
-            let margin_instrument_id = InstrumentId::new(
-                Symbol::from_str_unchecked(format!("ACCOUNT-{}", coin_data.coin)),
-                *BYBIT_VENUE,
-            );
             margins.push(MarginBalance::new(
                 Money::from_decimal(initial_margin_dec, currency)?,
                 Money::from_decimal(maintenance_margin_dec, currency)?,
-                margin_instrument_id,
+                None,
             ));
         }
     }
@@ -1018,6 +1118,7 @@ mod tests {
         enums::{
             AggregationSource, BarAggregation, OrderType, PositionSide, PriceType, TriggerType,
         },
+        identifiers::PositionId,
     };
     use rstest::rstest;
     use rust_decimal_macros::dec;
@@ -1025,13 +1126,14 @@ mod tests {
     use super::*;
     use crate::{
         common::{
+            enums::{BybitExecType, BybitOrderSide, BybitProductType},
             parse::{parse_linear_instrument, parse_option_instrument},
             testing::load_test_json,
         },
         http::models::{BybitInstrumentLinearResponse, BybitInstrumentOptionResponse},
         websocket::messages::{
-            BybitWsOrderbookDepthMsg, BybitWsTickerLinearMsg, BybitWsTickerOptionMsg,
-            BybitWsTradeMsg,
+            BybitWsAccountExecutionMsg, BybitWsOrderbookDepthMsg, BybitWsTickerLinearMsg,
+            BybitWsTickerOptionMsg, BybitWsTradeMsg,
         },
     };
 
@@ -1325,6 +1427,174 @@ mod tests {
     }
 
     #[rstest]
+    fn parse_ws_adl_execution_into_fill_report() {
+        let instrument = linear_instrument();
+        let json = load_test_json("ws_account_execution_adl.json");
+        let msg: crate::websocket::messages::BybitWsAccountExecutionMsg =
+            serde_json::from_str(&json).unwrap();
+        let execution = &msg.data[0];
+        let account_id = AccountId::new("BYBIT-001");
+
+        assert_eq!(execution.exec_type, BybitExecType::AdlTrade);
+        assert!(execution.exec_type.is_exchange_generated());
+        assert!(execution.order_link_id.is_empty());
+
+        let report = parse_ws_fill_report(execution, account_id, &instrument, TS).unwrap();
+
+        // ADL fills carry an empty orderLinkId; client_order_id is None so the engine
+        // creates the order as external from the accompanying order status report.
+        assert_eq!(report.client_order_id, None);
+        assert_eq!(
+            report.venue_order_id.to_string(),
+            "9aac161b-8ed6-450d-9cab-c5cc67c21785"
+        );
+        assert_eq!(report.order_side, OrderSide::Sell);
+        assert_eq!(report.last_qty, instrument.make_qty(0.5, None));
+        assert_eq!(report.last_px, instrument.make_price(95850.0));
+        assert_eq!(report.commission.as_f64(), 0.0);
+    }
+
+    #[rstest]
+    fn parse_ws_fill_report_venue_position_id_is_none() {
+        let instrument = linear_instrument();
+        let json = load_test_json("ws_account_execution.json");
+        let msg: crate::websocket::messages::BybitWsAccountExecutionMsg =
+            serde_json::from_str(&json).unwrap();
+        let execution = &msg.data[0];
+        let account_id = AccountId::new("BYBIT-001");
+
+        let report = parse_ws_fill_report(execution, account_id, &instrument, TS).unwrap();
+
+        assert_eq!(report.venue_position_id, None);
+    }
+
+    fn fast_execution(is_maker: bool, order_link_id: &str) -> BybitWsAccountExecutionFast {
+        BybitWsAccountExecutionFast {
+            category: BybitProductType::Linear,
+            symbol: Ustr::from("BTCUSDT"),
+            exec_id: "abc-123".to_string(),
+            exec_price: "50000.0".to_string(),
+            exec_qty: "0.5".to_string(),
+            order_id: Ustr::from("ord-1"),
+            order_link_id: Ustr::from(order_link_id),
+            side: BybitOrderSide::Buy,
+            exec_time: "1716800399334".to_string(),
+            is_maker,
+            seq: 42,
+        }
+    }
+
+    #[rstest]
+    // Maker fast fill: docs say orderLinkId is always empty -> client_order_id is None.
+    #[case(true, "", LiquiditySide::Maker, None)]
+    // Taker fast fill: orderLinkId is populated -> client_order_id is set.
+    #[case(false, "link-1", LiquiditySide::Taker, Some("link-1"))]
+    fn parse_ws_fill_report_fast_maps_is_maker_and_link_id(
+        #[case] is_maker: bool,
+        #[case] order_link_id: &str,
+        #[case] expected_liquidity: LiquiditySide,
+        #[case] expected_cid: Option<&str>,
+    ) {
+        let instrument = linear_instrument();
+        let exec = fast_execution(is_maker, order_link_id);
+        let account_id = AccountId::new("BYBIT-001");
+
+        let report = parse_ws_fill_report_fast(&exec, account_id, &instrument, None, TS).unwrap();
+
+        assert_eq!(report.account_id, account_id);
+        assert_eq!(report.instrument_id, instrument.id());
+        assert_eq!(report.venue_order_id.to_string(), "ord-1");
+        assert_eq!(report.trade_id.to_string(), "abc-123");
+        assert_eq!(report.order_side, OrderSide::Buy);
+        assert_eq!(report.last_qty, instrument.make_qty(0.5, None));
+        assert_eq!(report.last_px, instrument.make_price(50000.0));
+        assert_eq!(report.commission.as_f64(), 0.0);
+        assert_eq!(report.liquidity_side, expected_liquidity);
+        assert_eq!(
+            report.client_order_id.map(|c| c.to_string()),
+            expected_cid.map(str::to_string),
+        );
+        assert_eq!(report.venue_position_id, None);
+        assert_eq!(report.ts_event, UnixNanos::new(1_716_800_399_334_000_000));
+    }
+
+    #[rstest]
+    fn parse_ws_fill_report_fast_preserves_venue_position_id() {
+        let instrument = linear_instrument();
+        let exec = fast_execution(false, "link-hedge");
+        let account_id = AccountId::new("BYBIT-001");
+        let venue_pid = PositionId::from("BTCUSDT-LINEAR.BYBIT-LONG");
+
+        let report =
+            parse_ws_fill_report_fast(&exec, account_id, &instrument, Some(venue_pid), TS).unwrap();
+
+        assert_eq!(report.venue_position_id, Some(venue_pid));
+    }
+
+    #[rstest]
+    fn parse_bybit_ws_frame_routes_execution_fast_topic() {
+        // The fixture topic is `execution.fast` (matches the venue-doc sample),
+        // which the prefix check at parse_bybit_ws_frame routes to the fast frame.
+        let value: serde_json::Value =
+            serde_json::from_str(&load_test_json("ws_account_execution_fast.json")).unwrap();
+        let frame = parse_bybit_ws_frame(value);
+        assert!(
+            matches!(frame, BybitWsFrame::AccountExecutionFast(_)),
+            "expected AccountExecutionFast, found {frame:?}",
+        );
+    }
+
+    #[rstest]
+    fn parse_bybit_ws_frame_routes_standard_execution_topic() {
+        // Sanity: with the fast prefix checked first, a plain `execution.<cat>` topic
+        // must still route to the standard variant (not the fast one).
+        let envelope = BybitWsAccountExecutionMsg {
+            topic: Ustr::from("execution.linear"),
+            id: "std-1".to_string(),
+            creation_time: 1_716_800_399_338,
+            data: vec![],
+        };
+        let value = serde_json::to_value(envelope).unwrap();
+        let frame = parse_bybit_ws_frame(value);
+        assert!(
+            matches!(frame, BybitWsFrame::AccountExecution(_)),
+            "expected AccountExecution, found {frame:?}",
+        );
+    }
+
+    #[rstest]
+    fn parse_ws_order_status_report_venue_position_id_is_none_for_tp() {
+        let instrument = linear_instrument();
+        let json = load_test_json("ws_account_order_take_profit.json");
+        let msg: crate::websocket::messages::BybitWsAccountOrderMsg =
+            serde_json::from_str(&json).unwrap();
+        let order = &msg.data[0]; // positionIdx=0
+        let account_id = AccountId::new("BYBIT-001");
+
+        let report = parse_ws_order_status_report(order, &instrument, account_id, TS).unwrap();
+
+        assert_eq!(report.venue_position_id, None);
+    }
+
+    #[rstest]
+    fn parse_ws_order_status_report_venue_position_id_for_hedge() {
+        let instrument = linear_instrument();
+        let json = load_test_json("ws_account_order_take_profit.json");
+        let msg: crate::websocket::messages::BybitWsAccountOrderMsg =
+            serde_json::from_str(&json).unwrap();
+        let mut order = msg.data[0].clone();
+        order.position_idx = 1;
+        let account_id = AccountId::new("BYBIT-001");
+
+        let report = parse_ws_order_status_report(&order, &instrument, account_id, TS).unwrap();
+
+        assert_eq!(
+            report.venue_position_id,
+            Some(PositionId::from("BTCUSDT-LINEAR.BYBIT-LONG"))
+        );
+    }
+
+    #[rstest]
     fn parse_ws_position_into_position_status_report() {
         let instrument = linear_instrument();
         let json = load_test_json("ws_account_position.json");
@@ -1346,6 +1616,25 @@ mod tests {
         );
         assert_eq!(report.ts_last, UnixNanos::new(1_762_199_125_472_000_000));
         assert_eq!(report.ts_init, TS);
+    }
+
+    #[rstest]
+    fn parse_ws_position_status_report_venue_position_id_for_hedge() {
+        let instrument = linear_instrument();
+        let json = load_test_json("ws_account_position.json");
+        let msg: crate::websocket::messages::BybitWsAccountPositionMsg =
+            serde_json::from_str(&json).unwrap();
+        let mut position = msg.data[0].clone();
+        position.position_idx = 2;
+        let account_id = AccountId::new("BYBIT-001");
+
+        let report =
+            parse_ws_position_status_report(&position, account_id, &instrument, TS).unwrap();
+
+        assert_eq!(
+            report.venue_position_id,
+            Some(PositionId::from("BTCUSDT-LINEAR.BYBIT-SHORT"))
+        );
     }
 
     #[rstest]
@@ -1415,11 +1704,23 @@ mod tests {
         assert!((usdt_balance.free.as_f64() - 9519.89806037).abs() < 1e-6);
         assert!((usdt_balance.locked.as_f64() - 127.8573161).abs() < 1e-6);
 
-        // BTC has zero position margins, USDT has non-zero
-        assert_eq!(state.margins.len(), 1);
-        let usdt_margin = &state.margins[0];
-        assert_eq!(usdt_margin.instrument_id.symbol.as_str(), "ACCOUNT-USDT");
-        assert_eq!(usdt_margin.instrument_id.venue.as_str(), "BYBIT");
+        // BTC has order IM only (no position), USDT has position IM+MM (no orders).
+        assert_eq!(state.margins.len(), 2);
+        assert!(state.margins.iter().all(|m| m.instrument_id.is_none()));
+
+        let btc_margin = state
+            .margins
+            .iter()
+            .find(|m| m.currency.code.as_str() == "BTC")
+            .expect("BTC margin missing");
+        assert!((btc_margin.initial.as_f64() - 0.0001).abs() < 1e-8);
+        assert!(btc_margin.maintenance.as_f64().abs() < 1e-9);
+
+        let usdt_margin = state
+            .margins
+            .iter()
+            .find(|m| m.currency.code.as_str() == "USDT")
+            .expect("USDT margin missing");
         assert!((usdt_margin.initial.as_f64() - 127.8573161).abs() < 1e-6);
         assert!((usdt_margin.maintenance.as_f64() - 12.78573161).abs() < 1e-6);
 
@@ -1460,8 +1761,14 @@ mod tests {
         // The bug would have calculated: locked = total - availableToWithdraw = 51,333.82 - 0 = 51,333.82 (all locked!)
         // This test verifies that we now correctly use totalOrderIM instead of deriving from availableToWithdraw
 
-        // No position margins in this fixture
-        assert_eq!(state.margins.len(), 0);
+        // The small order reserves 50.028 USDT of initial margin via `totalOrderIM`,
+        // so the account-wide USDT margin must be populated even with no open position.
+        assert_eq!(state.margins.len(), 1);
+        let usdt_margin = &state.margins[0];
+        assert!(usdt_margin.instrument_id.is_none());
+        assert_eq!(usdt_margin.currency.code.as_str(), "USDT");
+        assert!((usdt_margin.initial.as_f64() - 50.028).abs() < 1e-6);
+        assert!(usdt_margin.maintenance.as_f64().abs() < 1e-9);
     }
 
     #[rstest]

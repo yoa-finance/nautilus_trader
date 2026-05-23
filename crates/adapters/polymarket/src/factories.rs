@@ -18,9 +18,10 @@
 use std::{any::Any, cell::RefCell, rc::Rc, sync::Arc};
 
 use nautilus_common::{
-    cache::Cache,
+    cache::CacheView,
     clients::{DataClient, ExecutionClient},
     clock::Clock,
+    factories::{ClientConfig, DataClientFactory, ExecutionClientFactory},
 };
 use nautilus_live::ExecutionClientCore;
 use nautilus_model::{
@@ -28,10 +29,9 @@ use nautilus_model::{
     identifiers::ClientId,
 };
 use nautilus_network::retry::RetryConfig;
-use nautilus_system::factories::{ClientConfig, DataClientFactory, ExecutionClientFactory};
 
 use crate::{
-    common::consts::POLYMARKET_VENUE,
+    common::consts::{POLYMARKET, POLYMARKET_VENUE},
     config::{PolymarketDataClientConfig, PolymarketExecClientConfig},
     data::PolymarketDataClient,
     execution::PolymarketExecutionClient,
@@ -64,7 +64,7 @@ impl DataClientFactory for PolymarketDataClientFactory {
         &self,
         name: &str,
         config: &dyn ClientConfig,
-        _cache: Rc<RefCell<Cache>>,
+        _cache: CacheView,
         _clock: Rc<RefCell<dyn Clock>>,
     ) -> anyhow::Result<Box<dyn DataClient>> {
         let polymarket_config = config
@@ -107,6 +107,7 @@ impl DataClientFactory for PolymarketDataClientFactory {
         let ws_client = PolymarketWebSocketClient::new_market(
             polymarket_config.base_url_ws.clone(),
             polymarket_config.subscribe_new_markets,
+            polymarket_config.transport_backend,
         );
 
         let mut client = PolymarketDataClient::new(
@@ -126,7 +127,7 @@ impl DataClientFactory for PolymarketDataClientFactory {
     }
 
     fn name(&self) -> &'static str {
-        "POLYMARKET"
+        POLYMARKET
     }
 
     fn config_type(&self) -> &'static str {
@@ -156,7 +157,7 @@ impl ExecutionClientFactory for PolymarketExecutionClientFactory {
         &self,
         name: &str,
         config: &dyn ClientConfig,
-        cache: Rc<RefCell<Cache>>,
+        cache: CacheView,
     ) -> anyhow::Result<Box<dyn ExecutionClient>> {
         let polymarket_config = config
             .as_any()
@@ -189,7 +190,7 @@ impl ExecutionClientFactory for PolymarketExecutionClientFactory {
     }
 
     fn name(&self) -> &'static str {
-        "POLYMARKET"
+        POLYMARKET
     }
 
     fn config_type(&self) -> &'static str {
@@ -201,8 +202,11 @@ impl ExecutionClientFactory for PolymarketExecutionClientFactory {
 mod tests {
     use std::{cell::RefCell, rc::Rc};
 
-    use nautilus_common::{cache::Cache, clock::TestClock};
-    use nautilus_system::factories::{ClientConfig, DataClientFactory, ExecutionClientFactory};
+    use nautilus_common::{
+        cache::Cache,
+        clock::TestClock,
+        factories::{ClientConfig, DataClientFactory, ExecutionClientFactory},
+    };
     use rstest::rstest;
 
     use super::*;
@@ -220,7 +224,7 @@ mod tests {
     #[rstest]
     fn test_polymarket_data_client_factory_creation() {
         let factory = PolymarketDataClientFactory;
-        assert_eq!(factory.name(), "POLYMARKET");
+        assert_eq!(factory.name(), POLYMARKET);
         assert_eq!(factory.config_type(), "PolymarketDataClientConfig");
     }
 
@@ -241,7 +245,7 @@ mod tests {
         let cache = Rc::new(RefCell::new(Cache::default()));
         let clock = Rc::new(RefCell::new(TestClock::new()));
 
-        let result = factory.create("POLYMARKET", &wrong_config, cache, clock);
+        let result = factory.create(POLYMARKET, &wrong_config, cache.into(), clock);
         assert!(result.is_err());
         assert!(
             result
@@ -255,7 +259,7 @@ mod tests {
     #[rstest]
     fn test_polymarket_execution_client_factory_creation() {
         let factory = PolymarketExecutionClientFactory;
-        assert_eq!(factory.name(), "POLYMARKET");
+        assert_eq!(factory.name(), POLYMARKET);
         assert_eq!(factory.config_type(), "PolymarketExecClientConfig");
     }
 
@@ -275,7 +279,7 @@ mod tests {
         let wrong_config = WrongConfig;
         let cache = Rc::new(RefCell::new(Cache::default()));
 
-        let result = factory.create("POLYMARKET", &wrong_config, cache);
+        let result = factory.create(POLYMARKET, &wrong_config, cache.into());
         assert!(result.is_err());
         assert!(
             result

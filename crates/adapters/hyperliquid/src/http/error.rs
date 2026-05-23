@@ -137,7 +137,7 @@ impl Error {
     }
 
     /// Map reqwest errors to appropriate error types
-    #[allow(clippy::needless_pass_by_value)]
+    #[expect(clippy::needless_pass_by_value)]
     pub fn from_reqwest(error: ReqwestError) -> Self {
         if error.is_timeout() {
             Self::Timeout
@@ -158,7 +158,7 @@ impl Error {
     }
 
     /// Map HTTP client errors to appropriate error types
-    #[allow(clippy::needless_pass_by_value)]
+    #[expect(clippy::needless_pass_by_value)]
     pub fn from_http_client(error: HttpClientError) -> Self {
         Self::transport(format!("HTTP client error: {error}"))
     }
@@ -180,6 +180,11 @@ impl Error {
     /// Check if error is due to authentication issues
     pub fn is_auth_error(&self) -> bool {
         matches!(self, Self::Auth(_))
+    }
+
+    /// Check if the error is a transport-layer failure with undefined venue outcome.
+    pub fn is_transport_error(&self) -> bool {
+        matches!(self, Self::Transport(_) | Self::Timeout | Self::Io(_))
     }
 }
 
@@ -226,6 +231,27 @@ mod tests {
 
         let err = Error::NonceWindow("Nonce too old".to_string());
         assert_eq!(err.to_string(), "nonce window error: Nonce too old");
+    }
+
+    #[rstest]
+    fn test_is_transport_error() {
+        assert!(Error::transport("conn dropped").is_transport_error());
+        assert!(Error::Timeout.is_transport_error());
+        assert!(
+            Error::Io(std::io::Error::new(
+                std::io::ErrorKind::ConnectionReset,
+                "x"
+            ))
+            .is_transport_error()
+        );
+
+        assert!(!Error::auth("bad signer").is_transport_error());
+        assert!(!Error::bad_request("malformed payload").is_transport_error());
+        assert!(!Error::http(503, "service unavailable").is_transport_error());
+        assert!(!Error::rate_limit("info", 1, None).is_transport_error());
+        assert!(!Error::exchange("HTTP 500").is_transport_error());
+        assert!(!Error::decode("bad json").is_transport_error());
+        assert!(!Error::nonce_window("stale").is_transport_error());
     }
 
     #[rstest]

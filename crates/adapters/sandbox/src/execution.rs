@@ -77,6 +77,90 @@ struct SandboxInner {
     event_handler: Option<Rc<dyn Fn(OrderEventAny)>>,
 }
 
+fn check_quote_or_drop(context: &str, quote: &QuoteTick, instrument: &InstrumentAny) -> bool {
+    if quote_matches_instrument_precision(quote, instrument) {
+        return true;
+    }
+
+    log::warn!(
+        "Dropping {context} for {} due to precision mismatch \
+         (bid_px={}, ask_px={}, bid_sz={}, ask_sz={}, expected_price={}, expected_size={})",
+        instrument.id(),
+        quote.bid_price.precision,
+        quote.ask_price.precision,
+        quote.bid_size.precision,
+        quote.ask_size.precision,
+        instrument.price_precision(),
+        instrument.size_precision(),
+    );
+    false
+}
+
+fn check_trade_or_drop(context: &str, trade: &TradeTick, instrument: &InstrumentAny) -> bool {
+    if trade_matches_instrument_precision(trade, instrument) {
+        return true;
+    }
+
+    log::warn!(
+        "Dropping {context} for {} due to precision mismatch \
+         (px={}, sz={}, expected_price={}, expected_size={})",
+        instrument.id(),
+        trade.price.precision,
+        trade.size.precision,
+        instrument.price_precision(),
+        instrument.size_precision(),
+    );
+    false
+}
+
+fn check_bar_or_drop(context: &str, bar: &Bar, instrument: &InstrumentAny) -> bool {
+    if bar_matches_instrument_precision(bar, instrument) {
+        return true;
+    }
+
+    log::warn!(
+        "Dropping {context} for {} due to precision mismatch \
+         (open={}, high={}, low={}, close={}, volume={}, expected_price={}, expected_size={})",
+        instrument.id(),
+        bar.open.precision,
+        bar.high.precision,
+        bar.low.precision,
+        bar.close.precision,
+        bar.volume.precision,
+        instrument.price_precision(),
+        instrument.size_precision(),
+    );
+    false
+}
+
+fn quote_matches_instrument_precision(quote: &QuoteTick, instrument: &InstrumentAny) -> bool {
+    let price_precision = instrument.price_precision();
+    let size_precision = instrument.size_precision();
+
+    quote.bid_price.precision == price_precision
+        && quote.ask_price.precision == price_precision
+        && quote.bid_size.precision == size_precision
+        && quote.ask_size.precision == size_precision
+}
+
+fn trade_matches_instrument_precision(trade: &TradeTick, instrument: &InstrumentAny) -> bool {
+    let price_precision = instrument.price_precision();
+    let size_precision = instrument.size_precision();
+
+    trade.price.precision == price_precision && trade.size.precision == size_precision
+}
+
+fn bar_matches_instrument_precision(bar: &Bar, instrument: &InstrumentAny) -> bool {
+    let price_precision = instrument.price_precision();
+    let size_precision = instrument.size_precision();
+
+    bar.open.precision == price_precision
+        && bar.high.precision == price_precision
+        && bar.low.precision == price_precision
+        && bar.close.precision == price_precision
+        && bar.volume.precision == size_precision
+}
+
 impl SandboxInner {
     /// Ensures a matching engine exists for the given instrument.
     fn ensure_matching_engine(&mut self, instrument: &InstrumentAny) {
@@ -117,6 +201,10 @@ impl SandboxInner {
         // Try to get instrument from cache, create engine if found
         let instrument = self.cache.borrow().instrument(&instrument_id).cloned();
         if let Some(instrument) = instrument {
+            if !check_quote_or_drop("quote tick", quote, &instrument) {
+                return;
+            }
+
             self.ensure_matching_engine(&instrument);
 
             if let Some(engine) = self.matching_engines.get_mut(&instrument_id) {
@@ -135,6 +223,10 @@ impl SandboxInner {
 
         let instrument = self.cache.borrow().instrument(&instrument_id).cloned();
         if let Some(instrument) = instrument {
+            if !check_trade_or_drop("trade tick", trade, &instrument) {
+                return;
+            }
+
             self.ensure_matching_engine(&instrument);
 
             if let Some(engine) = self.matching_engines.get_mut(&instrument_id) {
@@ -153,6 +245,10 @@ impl SandboxInner {
 
         let instrument = self.cache.borrow().instrument(&instrument_id).cloned();
         if let Some(instrument) = instrument {
+            if !check_bar_or_drop("bar", bar, &instrument) {
+                return;
+            }
+
             self.ensure_matching_engine(&instrument);
 
             if let Some(engine) = self.matching_engines.get_mut(&instrument_id) {
@@ -421,6 +517,10 @@ impl SandboxExecutionClient {
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("Instrument not found: {instrument_id}"))?;
 
+        if !check_quote_or_drop("quote tick", quote, &instrument) {
+            return Ok(());
+        }
+
         let mut inner = self.inner.borrow_mut();
         inner.ensure_matching_engine(&instrument);
         if let Some(engine) = inner.matching_engines.get_mut(&instrument_id) {
@@ -447,6 +547,10 @@ impl SandboxExecutionClient {
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("Instrument not found: {instrument_id}"))?;
 
+        if !check_trade_or_drop("trade tick", trade, &instrument) {
+            return Ok(());
+        }
+
         let mut inner = self.inner.borrow_mut();
         inner.ensure_matching_engine(&instrument);
         if let Some(engine) = inner.matching_engines.get_mut(&instrument_id) {
@@ -472,6 +576,10 @@ impl SandboxExecutionClient {
             .instrument(&instrument_id)
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("Instrument not found: {instrument_id}"))?;
+
+        if !check_bar_or_drop("bar", bar, &instrument) {
+            return Ok(());
+        }
 
         let mut inner = self.inner.borrow_mut();
         inner.ensure_matching_engine(&instrument);
@@ -537,7 +645,7 @@ impl SandboxExecutionClient {
         self.cache
             .borrow()
             .order(client_order_id)
-            .cloned()
+            .map(|o| o.clone())
             .ok_or_else(|| anyhow::anyhow!("Order not found in cache for {client_order_id}"))
     }
 }
@@ -564,9 +672,19 @@ impl ExecutionClient for SandboxExecutionClient {
         self.config.oms_type
     }
 
+    fn on_instrument(&mut self, instrument: InstrumentAny) {
+        let instrument_id = instrument.id();
+        let mut inner = self.inner.borrow_mut();
+        if let Some(engine) = inner.matching_engines.get_mut(&instrument_id)
+            && let Err(e) = engine.get_engine_mut().update_instrument(instrument)
+        {
+            log::error!("Failed to update instrument {instrument_id} in sandbox engine: {e}");
+        }
+    }
+
     fn get_account(&self) -> Option<AccountAny> {
         let account_id = self.core.borrow().account_id;
-        self.cache.borrow().account(&account_id).cloned()
+        self.cache.borrow().account_owned(&account_id)
     }
 
     fn generate_account_state(
@@ -665,7 +783,7 @@ impl ExecutionClient for SandboxExecutionClient {
         Ok(())
     }
 
-    fn submit_order(&self, cmd: &SubmitOrder) -> anyhow::Result<()> {
+    fn submit_order(&self, cmd: SubmitOrder) -> anyhow::Result<()> {
         let mut order = self.get_order(&cmd.client_order_id)?;
 
         if order.is_closed() {
@@ -692,12 +810,15 @@ impl ExecutionClient for SandboxExecutionClient {
         let cache = self.cache.borrow();
 
         if let Some(engine) = inner.matching_engines.get_mut(&instrument_id) {
-            if let Some(quote) = cache.quote(&instrument_id) {
+            if let Some(quote) = cache.quote(&instrument_id)
+                && check_quote_or_drop("cached quote tick", quote, &instrument)
+            {
                 engine.get_engine_mut().process_quote_tick(quote);
             }
 
             if self.config.trade_execution
                 && let Some(trade) = cache.trade(&instrument_id)
+                && check_trade_or_drop("cached trade tick", trade, &instrument)
             {
                 engine.get_engine_mut().process_trade_tick(trade);
             }
@@ -715,13 +836,13 @@ impl ExecutionClient for SandboxExecutionClient {
         Ok(())
     }
 
-    fn submit_order_list(&self, cmd: &SubmitOrderList) -> anyhow::Result<()> {
+    fn submit_order_list(&self, cmd: SubmitOrderList) -> anyhow::Result<()> {
         let ts_init = self.clock.borrow().timestamp_ns();
 
         let orders: Vec<OrderAny> = self
             .cache
             .borrow()
-            .orders_for_ids(&cmd.order_list.client_order_ids, cmd);
+            .orders_for_ids(&cmd.order_list.client_order_ids, &cmd);
 
         for order in &orders {
             if order.is_closed() {
@@ -734,6 +855,7 @@ impl ExecutionClient for SandboxExecutionClient {
         }
 
         let account_id = self.core.borrow().account_id;
+
         for order in &orders {
             if order.is_closed() {
                 continue;
@@ -750,12 +872,15 @@ impl ExecutionClient for SandboxExecutionClient {
                 let cache = self.cache.borrow();
 
                 if let Some(engine) = inner.matching_engines.get_mut(&instrument_id) {
-                    if let Some(quote) = cache.quote(&instrument_id) {
+                    if let Some(quote) = cache.quote(&instrument_id)
+                        && check_quote_or_drop("cached quote tick", quote, &instrument)
+                    {
                         engine.get_engine_mut().process_quote_tick(quote);
                     }
 
                     if self.config.trade_execution
                         && let Some(trade) = cache.trade(&instrument_id)
+                        && check_trade_or_drop("cached trade tick", trade, &instrument)
                     {
                         engine.get_engine_mut().process_trade_tick(trade);
                     }
@@ -774,40 +899,40 @@ impl ExecutionClient for SandboxExecutionClient {
         Ok(())
     }
 
-    fn modify_order(&self, cmd: &ModifyOrder) -> anyhow::Result<()> {
+    fn modify_order(&self, cmd: ModifyOrder) -> anyhow::Result<()> {
         let instrument_id = cmd.instrument_id;
         let account_id = self.core.borrow().account_id;
 
         let mut inner = self.inner.borrow_mut();
         if let Some(engine) = inner.matching_engines.get_mut(&instrument_id) {
-            engine.get_engine_mut().process_modify(cmd, account_id);
+            engine.get_engine_mut().process_modify(&cmd, account_id);
         }
         Ok(())
     }
 
-    fn cancel_order(&self, cmd: &CancelOrder) -> anyhow::Result<()> {
+    fn cancel_order(&self, cmd: CancelOrder) -> anyhow::Result<()> {
         let instrument_id = cmd.instrument_id;
         let account_id = self.core.borrow().account_id;
 
         let mut inner = self.inner.borrow_mut();
         if let Some(engine) = inner.matching_engines.get_mut(&instrument_id) {
-            engine.get_engine_mut().process_cancel(cmd, account_id);
+            engine.get_engine_mut().process_cancel(&cmd, account_id);
         }
         Ok(())
     }
 
-    fn cancel_all_orders(&self, cmd: &CancelAllOrders) -> anyhow::Result<()> {
+    fn cancel_all_orders(&self, cmd: CancelAllOrders) -> anyhow::Result<()> {
         let instrument_id = cmd.instrument_id;
         let account_id = self.core.borrow().account_id;
 
         let mut inner = self.inner.borrow_mut();
         if let Some(engine) = inner.matching_engines.get_mut(&instrument_id) {
-            engine.get_engine_mut().process_cancel_all(cmd, account_id);
+            engine.get_engine_mut().process_cancel_all(&cmd, account_id);
         }
         Ok(())
     }
 
-    fn batch_cancel_orders(&self, cmd: &BatchCancelOrders) -> anyhow::Result<()> {
+    fn batch_cancel_orders(&self, cmd: BatchCancelOrders) -> anyhow::Result<()> {
         let instrument_id = cmd.instrument_id;
         let account_id = self.core.borrow().account_id;
 
@@ -815,19 +940,19 @@ impl ExecutionClient for SandboxExecutionClient {
         if let Some(engine) = inner.matching_engines.get_mut(&instrument_id) {
             engine
                 .get_engine_mut()
-                .process_batch_cancel(cmd, account_id);
+                .process_batch_cancel(&cmd, account_id);
         }
         Ok(())
     }
 
-    fn query_account(&self, _cmd: &QueryAccount) -> anyhow::Result<()> {
+    fn query_account(&self, _cmd: QueryAccount) -> anyhow::Result<()> {
         let balances = self.get_current_account_balances();
         let ts_event = self.clock.borrow().timestamp_ns();
         self.generate_account_state(balances, vec![], false, ts_event)?;
         Ok(())
     }
 
-    fn query_order(&self, _cmd: &QueryOrder) -> anyhow::Result<()> {
+    fn query_order(&self, _cmd: QueryOrder) -> anyhow::Result<()> {
         // Orders are tracked in the cache, no external query needed for sandbox
         Ok(())
     }

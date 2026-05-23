@@ -15,11 +15,6 @@
 
 //! Python bindings from `pyo3`.
 
-#![allow(
-    clippy::missing_errors_doc,
-    reason = "errors documented on underlying Rust methods"
-)]
-
 pub mod config;
 pub mod enums;
 pub mod factories;
@@ -29,18 +24,23 @@ pub mod types;
 pub mod urls;
 pub mod websocket;
 
+use nautilus_common::factories::{ClientConfig, DataClientFactory, ExecutionClientFactory};
 use nautilus_core::python::{to_pyruntime_err, to_pyvalue_err};
-use nautilus_model::enums::BarAggregation;
-use nautilus_system::{
-    factories::{ClientConfig, DataClientFactory, ExecutionClientFactory},
-    get_global_pyo3_registry,
+use nautilus_model::{
+    enums::{BarAggregation, OrderSide},
+    identifiers::{InstrumentId, PositionId},
 };
+use nautilus_system::get_global_pyo3_registry;
 use pyo3::prelude::*;
 
 use crate::{
     common::{
-        consts::BYBIT_NAUTILUS_BROKER_ID,
-        parse::{bar_spec_to_bybit_interval, extract_raw_symbol},
+        consts::{BYBIT, BYBIT_NAUTILUS_BROKER_ID},
+        enums::{BybitOrderSide, BybitPositionIdx, BybitPositionMode},
+        parse::{
+            bar_spec_to_bybit_interval, extract_raw_symbol, make_hedge_venue_position_id,
+            resolve_position_idx,
+        },
         symbol::BybitSymbol,
     },
     config::{BybitDataClientConfig, BybitExecClientConfig},
@@ -96,7 +96,43 @@ fn py_bybit_product_type_from_symbol(
     Ok(bybit_symbol.product_type())
 }
 
-#[allow(clippy::needless_pass_by_value)]
+/// Resolves the Bybit `positionIdx` for an outgoing order.
+///
+/// Returns `None` when no position mode is configured. Otherwise returns the
+/// hedge-mode index for the position being affected (long or short), accounting
+/// for `is_reduce_only`. A `manual_override` always wins.
+#[pyfunction]
+#[pyo3_stub_gen::derive::gen_stub_pyfunction(module = "nautilus_trader.bybit")]
+#[pyo3(name = "bybit_resolve_position_idx")]
+#[pyo3(signature = (position_mode, order_side, is_reduce_only, manual_override=None))]
+fn py_bybit_resolve_position_idx(
+    position_mode: Option<BybitPositionMode>,
+    order_side: OrderSide,
+    is_reduce_only: bool,
+    manual_override: Option<BybitPositionIdx>,
+) -> PyResult<Option<BybitPositionIdx>> {
+    let bybit_side = BybitOrderSide::try_from(order_side).map_err(to_pyvalue_err)?;
+    Ok(resolve_position_idx(
+        position_mode,
+        bybit_side,
+        is_reduce_only,
+        manual_override,
+    ))
+}
+
+/// Constructs a venue position ID only for hedge-mode Bybit position indexes.
+#[pyfunction]
+#[pyo3_stub_gen::derive::gen_stub_pyfunction(module = "nautilus_trader.bybit")]
+#[pyo3(name = "bybit_make_hedge_venue_position_id")]
+#[pyo3(signature = (instrument_id, position_idx=None))]
+fn py_bybit_make_hedge_venue_position_id(
+    instrument_id: InstrumentId,
+    position_idx: Option<BybitPositionIdx>,
+) -> Option<PositionId> {
+    position_idx.and_then(|idx| make_hedge_venue_position_id(instrument_id, idx as i32))
+}
+
+#[expect(clippy::needless_pass_by_value)]
 fn extract_bybit_data_factory(
     py: Python<'_>,
     factory: Py<PyAny>,
@@ -109,7 +145,7 @@ fn extract_bybit_data_factory(
     }
 }
 
-#[allow(clippy::needless_pass_by_value)]
+#[expect(clippy::needless_pass_by_value)]
 fn extract_bybit_exec_factory(
     py: Python<'_>,
     factory: Py<PyAny>,
@@ -122,7 +158,7 @@ fn extract_bybit_exec_factory(
     }
 }
 
-#[allow(clippy::needless_pass_by_value)]
+#[expect(clippy::needless_pass_by_value)]
 fn extract_bybit_data_config(py: Python<'_>, config: Py<PyAny>) -> PyResult<Box<dyn ClientConfig>> {
     match config.extract::<BybitDataClientConfig>(py) {
         Ok(c) => Ok(Box::new(c)),
@@ -132,7 +168,7 @@ fn extract_bybit_data_config(py: Python<'_>, config: Py<PyAny>) -> PyResult<Box<
     }
 }
 
-#[allow(clippy::needless_pass_by_value)]
+#[expect(clippy::needless_pass_by_value)]
 fn extract_bybit_exec_config(py: Python<'_>, config: Py<PyAny>) -> PyResult<Box<dyn ClientConfig>> {
     match config.extract::<BybitExecClientConfig>(py) {
         Ok(c) => Ok(Box::new(c)),
@@ -161,6 +197,7 @@ pub fn bybit(_: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<crate::common::enums::BybitOrderSide>()?;
     m.add_class::<crate::common::enums::BybitOrderStatus>()?;
     m.add_class::<crate::common::enums::BybitOrderType>()?;
+    m.add_class::<crate::common::enums::BybitPositionIdx>()?;
     m.add_class::<crate::common::enums::BybitPositionMode>()?;
     m.add_class::<crate::common::enums::BybitProductType>()?;
     m.add_class::<crate::common::enums::BybitStopOrderType>()?;
@@ -194,11 +231,13 @@ pub fn bybit(_: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_bybit_extract_raw_symbol, m)?)?;
     m.add_function(wrap_pyfunction!(py_bybit_bar_spec_to_interval, m)?)?;
     m.add_function(wrap_pyfunction!(py_bybit_product_type_from_symbol, m)?)?;
+    m.add_function(wrap_pyfunction!(py_bybit_resolve_position_idx, m)?)?;
+    m.add_function(wrap_pyfunction!(py_bybit_make_hedge_venue_position_id, m)?)?;
 
     let registry = get_global_pyo3_registry();
 
     if let Err(e) =
-        registry.register_factory_extractor("BYBIT".to_string(), extract_bybit_data_factory)
+        registry.register_factory_extractor(BYBIT.to_string(), extract_bybit_data_factory)
     {
         return Err(to_pyruntime_err(format!(
             "Failed to register Bybit data factory extractor: {e}"
@@ -206,7 +245,7 @@ pub fn bybit(_: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     }
 
     if let Err(e) = registry
-        .register_exec_factory_extractor("BYBIT".to_string(), extract_bybit_exec_factory)
+        .register_exec_factory_extractor(BYBIT.to_string(), extract_bybit_exec_factory)
     {
         return Err(to_pyruntime_err(format!(
             "Failed to register Bybit exec factory extractor: {e}"

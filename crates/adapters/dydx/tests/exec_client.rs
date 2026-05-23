@@ -15,18 +15,24 @@
 
 //! Integration tests for dYdX execution client.
 
-use std::{collections::HashMap, net::SocketAddr, path::PathBuf, time::Duration};
+use std::{collections::HashMap, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
-use axum::{Router, http::StatusCode, response::IntoResponse, routing::get};
+use axum::{
+    Router,
+    extract::{Query, State},
+    http::StatusCode,
+    response::IntoResponse,
+    routing::get,
+};
 use nautilus_common::testing::wait_until_async;
 use nautilus_core::UnixNanos;
 use nautilus_dydx::{
     common::enums::{
-        DydxFillType, DydxLiquidity, DydxMarketStatus, DydxOrderStatus, DydxOrderType,
+        DydxFillType, DydxLiquidity, DydxMarketStatus, DydxNetwork, DydxOrderStatus, DydxOrderType,
         DydxTickerType, DydxTimeInForce,
     },
     http::{
-        client::DydxRawHttpClient,
+        client::{DydxHttpClient, DydxRawHttpClient},
         models::{Fill, Order, PerpetualMarket},
         parse::{parse_fill_report, parse_instrument_any, parse_order_status_report},
     },
@@ -60,6 +66,12 @@ fn load_json_result_fixture(filename: &str) -> Value {
 
 #[derive(Clone, Default)]
 struct TestServerState {}
+
+#[derive(Clone, Default)]
+struct QueryCaptureState {
+    orders_params: Arc<tokio::sync::Mutex<Option<HashMap<String, String>>>>,
+    fills_params: Arc<tokio::sync::Mutex<Option<HashMap<String, String>>>>,
+}
 
 async fn wait_for_server(addr: SocketAddr, path: &str) {
     let health_url = format!("http://{addr}{path}");
@@ -121,6 +133,38 @@ async fn start_test_server()
 
     wait_for_server(addr, "/v4/perpetualMarkets").await;
     Ok((addr, state))
+}
+
+async fn handle_get_orders_capture(
+    State(state): State<QueryCaptureState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    *state.orders_params.lock().await = Some(params);
+    axum::response::Json(load_test_orders())
+}
+
+async fn handle_get_fills_capture(
+    State(state): State<QueryCaptureState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    *state.fills_params.lock().await = Some(params);
+    axum::response::Json(load_test_fills())
+}
+
+async fn start_report_capture_server() -> (SocketAddr, QueryCaptureState) {
+    let state = QueryCaptureState::default();
+    let router = Router::new()
+        .route("/v4/orders", get(handle_get_orders_capture))
+        .route("/v4/fills", get(handle_get_fills_capture))
+        .with_state(state.clone());
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    wait_for_server(addr, "/v4/orders").await;
+    (addr, state)
 }
 
 fn create_test_instrument() -> InstrumentAny {
@@ -368,7 +412,8 @@ async fn test_get_orders_returns_parsed_data() {
     let (addr, _state) = start_test_server().await.unwrap();
     let base_url = format!("http://{addr}");
 
-    let client = DydxRawHttpClient::new(Some(base_url), 30, None, false, None).unwrap();
+    let client =
+        DydxRawHttpClient::new(Some(base_url), 30, None, DydxNetwork::Mainnet, None).unwrap();
     let orders = client.get_orders("dydx1test", 0, None, None).await.unwrap();
 
     assert_eq!(orders.len(), 3);
@@ -386,7 +431,8 @@ async fn test_get_fills_returns_parsed_data() {
     let (addr, _state) = start_test_server().await.unwrap();
     let base_url = format!("http://{addr}");
 
-    let client = DydxRawHttpClient::new(Some(base_url), 30, None, false, None).unwrap();
+    let client =
+        DydxRawHttpClient::new(Some(base_url), 30, None, DydxNetwork::Mainnet, None).unwrap();
     let result = client
         .get_fills("dydx1test", 0, Some("BTC-USD"), None)
         .await
@@ -404,7 +450,8 @@ async fn test_orders_to_reports_roundtrip() {
     let (addr, _state) = start_test_server().await.unwrap();
     let base_url = format!("http://{addr}");
 
-    let client = DydxRawHttpClient::new(Some(base_url), 30, None, false, None).unwrap();
+    let client =
+        DydxRawHttpClient::new(Some(base_url), 30, None, DydxNetwork::Mainnet, None).unwrap();
     let orders = client.get_orders("dydx1test", 0, None, None).await.unwrap();
 
     let instrument = create_test_instrument();
@@ -434,7 +481,8 @@ async fn test_fills_to_reports_roundtrip() {
     let (addr, _state) = start_test_server().await.unwrap();
     let base_url = format!("http://{addr}");
 
-    let client = DydxRawHttpClient::new(Some(base_url), 30, None, false, None).unwrap();
+    let client =
+        DydxRawHttpClient::new(Some(base_url), 30, None, DydxNetwork::Mainnet, None).unwrap();
     let result = client.get_fills("dydx1test", 0, None, None).await.unwrap();
 
     let instrument = create_test_instrument();
@@ -456,6 +504,46 @@ async fn test_fills_to_reports_roundtrip() {
     assert_eq!(
         reports[1].trade_id.to_string(),
         "ef7ad6fb-ed77-50c7-b592-73ab5b32d42a"
+    );
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_request_order_status_reports_uses_indexer_report_limit() {
+    let (addr, state) = start_report_capture_server().await;
+    let base_url = format!("http://{addr}");
+    let client = DydxHttpClient::new(Some(base_url), 30, None, DydxNetwork::Mainnet, None).unwrap();
+    client.cache_instrument(create_test_instrument());
+
+    let _reports = client
+        .request_order_status_reports("dydx1test", 0, AccountId::new("DYDX-001"), None)
+        .await
+        .unwrap();
+
+    let params = state.orders_params.lock().await;
+    assert_eq!(
+        params.as_ref().and_then(|params| params.get("limit")),
+        Some(&"1000".to_string())
+    );
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_request_fill_reports_uses_indexer_report_limit() {
+    let (addr, state) = start_report_capture_server().await;
+    let base_url = format!("http://{addr}");
+    let client = DydxHttpClient::new(Some(base_url), 30, None, DydxNetwork::Mainnet, None).unwrap();
+    client.cache_instrument(create_test_instrument());
+
+    let _reports = client
+        .request_fill_reports("dydx1test", 0, AccountId::new("DYDX-001"), None)
+        .await
+        .unwrap();
+
+    let params = state.fills_params.lock().await;
+    assert_eq!(
+        params.as_ref().and_then(|params| params.get("limit")),
+        Some(&"1000".to_string())
     );
 }
 
@@ -483,7 +571,8 @@ async fn test_http_error_handling_500() {
     wait_for_server(addr, "/v4/orders").await;
 
     let base_url = format!("http://{addr}");
-    let client = DydxRawHttpClient::new(Some(base_url), 5, None, false, None).unwrap();
+    let client =
+        DydxRawHttpClient::new(Some(base_url), 5, None, DydxNetwork::Mainnet, None).unwrap();
 
     let result = client.get_orders("dydx1test", 0, None, None).await;
     assert!(result.is_err());
@@ -508,7 +597,8 @@ async fn test_empty_orders_response() {
     wait_for_server(addr, "/v4/orders").await;
 
     let base_url = format!("http://{addr}");
-    let client = DydxRawHttpClient::new(Some(base_url), 5, None, false, None).unwrap();
+    let client =
+        DydxRawHttpClient::new(Some(base_url), 5, None, DydxNetwork::Mainnet, None).unwrap();
 
     let orders = client.get_orders("dydx1test", 0, None, None).await.unwrap();
     assert!(orders.is_empty());
@@ -533,7 +623,8 @@ async fn test_empty_fills_response() {
     wait_for_server(addr, "/v4/fills").await;
 
     let base_url = format!("http://{addr}");
-    let client = DydxRawHttpClient::new(Some(base_url), 5, None, false, None).unwrap();
+    let client =
+        DydxRawHttpClient::new(Some(base_url), 5, None, DydxNetwork::Mainnet, None).unwrap();
 
     let result = client.get_fills("dydx1test", 0, None, None).await.unwrap();
     assert!(result.fills.is_empty());
@@ -628,6 +719,7 @@ async fn test_block_height_concurrent_access() {
 
     for i in 1..=10 {
         let bh = Arc::clone(&block_height);
+
         let handle = task::spawn(async move {
             let new_height = 1000 + i * 100;
             bh.store(new_height, Ordering::Relaxed);

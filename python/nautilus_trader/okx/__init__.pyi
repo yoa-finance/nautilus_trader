@@ -12,8 +12,10 @@ __all__ = [
     "OKXDataClientConfig",
     "OKXDataClientFactory",
     "OKXEndpointType",
+    "OKXEnvironment",
     "OKXExecClientConfig",
     "OKXExecutionClientFactory",
+    "OKXGreeksType",
     "OKXHttpClient",
     "OKXInstrumentType",
     "OKXMarginMode",
@@ -45,14 +47,14 @@ class OKXDataClientConfig:
     def __init__(
         self,
         instrument_types: typing.Sequence[OKXInstrumentType] | None = None,
-        is_demo: bool | None = None,
+        environment: OKXEnvironment | None = None,
         api_key: str | None = None,
         api_secret: str | None = None,
         api_passphrase: str | None = None,
         base_url_http: str | None = None,
         base_url_ws_public: str | None = None,
         base_url_ws_business: str | None = None,
-        http_proxy_url: str | None = None,
+        proxy_url: str | None = None,
         http_timeout_secs: int | None = None,
         max_retries: int | None = None,
         retry_delay_initial_ms: int | None = None,
@@ -73,14 +75,14 @@ class OKXExecClientConfig:
         trader_id: model.TraderId,
         account_id: model.AccountId,
         instrument_types: typing.Sequence[OKXInstrumentType] | None = None,
-        is_demo: bool | None = None,
+        environment: OKXEnvironment | None = None,
         api_key: str | None = None,
         api_secret: str | None = None,
         api_passphrase: str | None = None,
         base_url_http: str | None = None,
         base_url_ws_private: str | None = None,
         base_url_ws_business: str | None = None,
-        http_proxy_url: str | None = None,
+        proxy_url: str | None = None,
         http_timeout_secs: int | None = None,
         max_retries: int | None = None,
         retry_delay_initial_ms: int | None = None,
@@ -105,7 +107,7 @@ class OKXHttpClient:
         max_retries: int = 3,
         retry_delay_ms: int = 1000,
         retry_delay_max_ms: int = 10000,
-        is_demo: bool = False,
+        environment: OKXEnvironment = ...,
         proxy_url: str | None = None,
     ) -> None: ...
     @staticmethod
@@ -123,58 +125,78 @@ class OKXHttpClient:
     def cache_instrument(self, instrument: typing.Any) -> None: ...
     def set_position_mode(self, position_mode: OKXPositionMode) -> typing.Any: ...
     def request_instruments(
-        self, instrument_type: OKXInstrumentType, instrument_family: str | None = ...
+        self, instrument_type: OKXInstrumentType, instrument_family: str | None = None
     ) -> typing.Any: ...
     def request_instrument(self, instrument_id: model.InstrumentId) -> typing.Any: ...
+    def request_event_contract_series(self, series_id: str | None = None) -> typing.Any: ...
+    def request_event_contract_events(
+        self,
+        series_id: str,
+        event_id: str | None = None,
+        state: str | None = None,
+        limit: str | None = None,
+        before: str | None = None,
+        after: str | None = None,
+    ) -> typing.Any: ...
+    def request_event_contract_markets(
+        self,
+        series_id: str,
+        event_id: str | None = None,
+        inst_id: str | None = None,
+        state: str | None = None,
+        limit: str | None = None,
+        before: str | None = None,
+        after: str | None = None,
+    ) -> typing.Any: ...
     def request_account_state(self, account_id: model.AccountId) -> typing.Any: ...
     def request_trades(
         self,
         instrument_id: model.InstrumentId,
-        start: datetime.datetime | None = ...,
-        end: datetime.datetime | None = ...,
-        limit: int | None = ...,
+        start: datetime.datetime | None = None,
+        end: datetime.datetime | None = None,
+        limit: int | None = None,
     ) -> typing.Any: ...
     def request_bars(
         self,
         bar_type: model.BarType,
-        start: datetime.datetime | None = ...,
-        end: datetime.datetime | None = ...,
-        limit: int | None = ...,
+        start: datetime.datetime | None = None,
+        end: datetime.datetime | None = None,
+        limit: int | None = None,
     ) -> typing.Any: ...
     def request_orderbook_snapshot(
-        self, instrument_id: model.InstrumentId, depth: int | None = ...
+        self, instrument_id: model.InstrumentId, depth: int | None = None
     ) -> typing.Any: ...
     def request_funding_rates(
         self,
         instrument_id: model.InstrumentId,
-        start: datetime.datetime | None = ...,
-        end: datetime.datetime | None = ...,
-        limit: int | None = ...,
+        start: datetime.datetime | None = None,
+        end: datetime.datetime | None = None,
+        limit: int | None = None,
     ) -> typing.Any: ...
     def request_forward_prices(
-        self, underlying: str, instrument_id: model.InstrumentId | None = ...
+        self, underlying: str, instrument_id: model.InstrumentId | None = None
     ) -> typing.Any: ...
     def request_mark_price(self, instrument_id: model.InstrumentId) -> typing.Any: ...
     def request_index_price(self, instrument_id: model.InstrumentId) -> typing.Any: ...
     def request_order_status_reports(
         self,
         account_id: model.AccountId,
-        instrument_type: OKXInstrumentType | None,
-        instrument_id: model.InstrumentId | None,
-        start: datetime.datetime | None,
-        end: datetime.datetime | None,
-        open_only: bool,
-        limit: int | None = ...,
+        instrument_type: OKXInstrumentType | None = None,
+        instrument_id: model.InstrumentId | None = None,
+        start: datetime.datetime | None = None,
+        end: datetime.datetime | None = None,
+        open_only: bool = False,
+        limit: int | None = None,
     ) -> typing.Any: ...
     def request_algo_order_status_reports(
         self,
         account_id: model.AccountId,
-        instrument_type: OKXInstrumentType | None = ...,
-        instrument_id: model.InstrumentId | None = ...,
-        algo_id: str | None = ...,
-        algo_client_order_id: model.ClientOrderId | None = ...,
-        state: OKXOrderStatus | None = ...,
-        limit: int | None = ...,
+        instrument_type: OKXInstrumentType | None = None,
+        instrument_id: model.InstrumentId | None = None,
+        algo_id: str | None = None,
+        algo_client_order_id: model.ClientOrderId | None = None,
+        state: OKXOrderStatus | None = None,
+        limit: int | None = None,
     ) -> typing.Any: ...
     def request_algo_order_status_report(
         self,
@@ -185,17 +207,17 @@ class OKXHttpClient:
     def request_fill_reports(
         self,
         account_id: model.AccountId,
-        instrument_type: OKXInstrumentType | None = ...,
-        instrument_id: model.InstrumentId | None = ...,
-        start: datetime.datetime | None = ...,
-        end: datetime.datetime | None = ...,
-        limit: int | None = ...,
+        instrument_type: OKXInstrumentType | None = None,
+        instrument_id: model.InstrumentId | None = None,
+        start: datetime.datetime | None = None,
+        end: datetime.datetime | None = None,
+        limit: int | None = None,
     ) -> typing.Any: ...
     def request_position_status_reports(
         self,
         account_id: model.AccountId,
-        instrument_type: OKXInstrumentType | None = ...,
-        instrument_id: model.InstrumentId | None = ...,
+        instrument_type: OKXInstrumentType | None = None,
+        instrument_id: model.InstrumentId | None = None,
     ) -> typing.Any: ...
     def place_order(
         self,
@@ -207,15 +229,18 @@ class OKXHttpClient:
         order_side: model.OrderSide,
         order_type: model.OrderType,
         quantity: model.Quantity,
-        time_in_force: model.TimeInForce | None = ...,
-        price: model.Price | None = ...,
-        post_only: bool | None = ...,
-        reduce_only: bool | None = ...,
-        quote_quantity: bool | None = ...,
-        position_side: model.PositionSide | None = ...,
-        attach_algo_ords: typing.Sequence[dict] | None = ...,
-        px_usd: str | None = ...,
-        px_vol: str | None = ...,
+        time_in_force: model.TimeInForce | None = None,
+        price: model.Price | None = None,
+        post_only: bool | None = None,
+        reduce_only: bool | None = None,
+        quote_quantity: bool | None = None,
+        position_side: model.PositionSide | None = None,
+        attach_algo_ords: typing.Sequence[dict] | None = None,
+        px_usd: str | None = None,
+        px_vol: str | None = None,
+        speed_bump: str | None = None,
+        outcome: str | None = None,
+        slippage_pct: str | None = None,
     ) -> typing.Any: ...
     def place_algo_order(
         self,
@@ -227,26 +252,26 @@ class OKXHttpClient:
         order_side: model.OrderSide,
         order_type: model.OrderType,
         quantity: model.Quantity,
-        trigger_price: model.Price | None = ...,
-        trigger_type: model.TriggerType | None = ...,
-        limit_price: model.Price | None = ...,
-        reduce_only: bool | None = ...,
-        close_fraction: str | None = ...,
-        callback_ratio: str | None = ...,
-        callback_spread: str | None = ...,
-        activation_price: model.Price | None = ...,
+        trigger_price: model.Price | None = None,
+        trigger_type: model.TriggerType | None = None,
+        limit_price: model.Price | None = None,
+        reduce_only: bool | None = None,
+        close_fraction: str | None = None,
+        callback_ratio: str | None = None,
+        callback_spread: str | None = None,
+        activation_price: model.Price | None = None,
     ) -> typing.Any: ...
     def cancel_algo_order(self, instrument_id: model.InstrumentId, algo_id: str) -> typing.Any: ...
     def amend_algo_order(
         self,
         instrument_id: model.InstrumentId,
         algo_id: str,
-        new_trigger_price: model.Price | None = ...,
-        new_limit_price: model.Price | None = ...,
-        new_quantity: model.Quantity | None = ...,
-        new_callback_ratio: str | None = ...,
-        new_callback_spread: str | None = ...,
-        new_activation_price: model.Price | None = ...,
+        new_trigger_price: model.Price | None = None,
+        new_limit_price: model.Price | None = None,
+        new_quantity: model.Quantity | None = None,
+        new_callback_ratio: str | None = None,
+        new_callback_spread: str | None = None,
+        new_activation_price: model.Price | None = None,
     ) -> typing.Any: ...
     def cancel_algo_orders(
         self, orders: typing.Sequence[tuple[model.InstrumentId, str]]
@@ -268,6 +293,7 @@ class OKXWebSocketClient:
         account_id: model.AccountId | None = None,
         heartbeat: int | None = None,
         auth_timeout_secs: int | None = None,
+        proxy_url: str | None = None,
     ) -> None: ...
     @staticmethod
     def with_credentials(
@@ -278,6 +304,7 @@ class OKXWebSocketClient:
         account_id: model.AccountId | None = None,
         heartbeat: int | None = None,
         auth_timeout_secs: int | None = None,
+        proxy_url: str | None = None,
     ) -> OKXWebSocketClient: ...
     @staticmethod
     def from_env() -> OKXWebSocketClient: ...
@@ -329,11 +356,16 @@ class OKXWebSocketClient:
     def subscribe_index_prices(self, instrument_id: model.InstrumentId) -> typing.Any: ...
     def unsubscribe_index_prices(self, instrument_id: model.InstrumentId) -> typing.Any: ...
     def add_option_greeks_sub(self, instrument_id: model.InstrumentId) -> None: ...
+    def add_option_greeks_sub_with_conventions(
+        self, instrument_id: model.InstrumentId, conventions: typing.Sequence[OKXGreeksType]
+    ) -> None: ...
     def remove_option_greeks_sub(self, instrument_id: model.InstrumentId) -> None: ...
     def subscribe_option_summary(self, inst_family: str) -> typing.Any: ...
     def unsubscribe_option_summary(self, inst_family: str) -> typing.Any: ...
     def subscribe_funding_rates(self, instrument_id: model.InstrumentId) -> typing.Any: ...
     def unsubscribe_funding_rates(self, instrument_id: model.InstrumentId) -> typing.Any: ...
+    def subscribe_event_contract_markets(self) -> typing.Any: ...
+    def unsubscribe_event_contract_markets(self) -> typing.Any: ...
     def subscribe_orders(self, instrument_type: OKXInstrumentType) -> typing.Any: ...
     def unsubscribe_orders(self, instrument_type: OKXInstrumentType) -> typing.Any: ...
     def subscribe_orders_algo(self, instrument_type: OKXInstrumentType) -> typing.Any: ...
@@ -354,36 +386,40 @@ class OKXWebSocketClient:
         order_side: model.OrderSide,
         order_type: model.OrderType,
         quantity: model.Quantity,
-        time_in_force: model.TimeInForce | None = ...,
-        price: model.Price | None = ...,
-        trigger_price: model.Price | None = ...,
-        post_only: bool | None = ...,
-        reduce_only: bool | None = ...,
-        quote_quantity: bool | None = ...,
-        position_side: model.PositionSide | None = ...,
-        attach_algo_ords: typing.Sequence[dict] | None = ...,
-        px_usd: str | None = ...,
-        px_vol: str | None = ...,
+        time_in_force: model.TimeInForce | None = None,
+        price: model.Price | None = None,
+        trigger_price: model.Price | None = None,
+        post_only: bool | None = None,
+        reduce_only: bool | None = None,
+        quote_quantity: bool | None = None,
+        position_side: model.PositionSide | None = None,
+        attach_algo_ords: typing.Sequence[dict] | None = None,
+        px_usd: str | None = None,
+        px_vol: str | None = None,
+        speed_bump: str | None = None,
+        outcome: str | None = None,
+        slippage_pct: str | None = None,
     ) -> typing.Any: ...
     def cancel_order(
         self,
         trader_id: model.TraderId,
         strategy_id: model.StrategyId,
         instrument_id: model.InstrumentId,
-        client_order_id: model.ClientOrderId | None = ...,
-        venue_order_id: model.VenueOrderId | None = ...,
+        client_order_id: model.ClientOrderId | None = None,
+        venue_order_id: model.VenueOrderId | None = None,
     ) -> typing.Any: ...
     def modify_order(
         self,
         trader_id: model.TraderId,
         strategy_id: model.StrategyId,
         instrument_id: model.InstrumentId,
-        client_order_id: model.ClientOrderId | None = ...,
-        venue_order_id: model.VenueOrderId | None = ...,
-        price: model.Price | None = ...,
-        quantity: model.Quantity | None = ...,
-        new_px_usd: str | None = ...,
-        new_px_vol: str | None = ...,
+        client_order_id: model.ClientOrderId | None = None,
+        venue_order_id: model.VenueOrderId | None = None,
+        price: model.Price | None = None,
+        quantity: model.Quantity | None = None,
+        new_px_usd: str | None = None,
+        new_px_vol: str | None = None,
+        speed_bump: str | None = None,
     ) -> typing.Any: ...
     def batch_submit_orders(self, orders: typing.Sequence[typing.Any]) -> typing.Any: ...
     def batch_cancel_orders(self, cancels: typing.Sequence[typing.Any]) -> typing.Any: ...
@@ -420,6 +456,27 @@ class OKXEndpointType(enum.Enum):
     Business = ...
 
 @typing.final
+class OKXEnvironment(enum.Enum):
+    LIVE = ...
+    DEMO = ...
+
+    def __init__(self, value: typing.Any) -> None: ...
+    def __hash__(self) -> int: ...
+    @property
+    def name(self) -> str: ...
+    @property
+    def value(self) -> int: ...
+    @classmethod
+    def variants(cls) -> list[str]: ...
+    @classmethod
+    def from_str(cls, data: typing.Any) -> OKXEnvironment: ...
+
+@typing.final
+class OKXGreeksType(enum.Enum):
+    BS = ...
+    PA = ...
+
+@typing.final
 class OKXInstrumentType(enum.Enum):
     ANY = ...
     SPOT = ...
@@ -427,6 +484,7 @@ class OKXInstrumentType(enum.Enum):
     SWAP = ...
     FUTURES = ...
     OPTION = ...
+    EVENTS = ...
 
     def __init__(self, value: typing.Any) -> None: ...
     def __hash__(self) -> int: ...
@@ -537,7 +595,7 @@ class OKXVipLevel(enum.Enum):
 
 def derive_okx_ws_url(base_url: str, channel: str) -> str: ...
 def get_okx_http_base_url() -> str: ...
-def get_okx_ws_url_business(is_demo: bool) -> str: ...
-def get_okx_ws_url_private(is_demo: bool) -> str: ...
-def get_okx_ws_url_public(is_demo: bool) -> str: ...
+def get_okx_ws_url_business(environment: OKXEnvironment) -> str: ...
+def get_okx_ws_url_private(environment: OKXEnvironment) -> str: ...
+def get_okx_ws_url_public(environment: OKXEnvironment) -> str: ...
 def okx_requires_authentication(endpoint_type: OKXEndpointType) -> bool: ...

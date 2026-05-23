@@ -496,13 +496,13 @@ where
     component_ref
 }
 
-/// Safely calls start() on a component in the global registry.
+/// Safely calls `start()` on a component in the global registry.
 ///
 /// # Errors
 ///
 /// - Returns an error if the component is not found.
 /// - Returns an error if the component is already borrowed.
-/// - Returns an error if start() fails.
+/// - Returns an error if `start()` fails.
 pub fn start_component(id: &Ustr) -> anyhow::Result<()> {
     let registry = get_component_registry();
     let component_ref = registry
@@ -525,13 +525,13 @@ pub fn start_component(id: &Ustr) -> anyhow::Result<()> {
     }
 }
 
-/// Safely calls stop() on a component in the global registry.
+/// Safely calls `stop()` on a component in the global registry.
 ///
 /// # Errors
 ///
 /// - Returns an error if the component is not found.
 /// - Returns an error if the component is already borrowed.
-/// - Returns an error if stop() fails.
+/// - Returns an error if `stop()` fails.
 pub fn stop_component(id: &Ustr) -> anyhow::Result<()> {
     let registry = get_component_registry();
     let component_ref = registry
@@ -554,13 +554,13 @@ pub fn stop_component(id: &Ustr) -> anyhow::Result<()> {
     }
 }
 
-/// Safely calls reset() on a component in the global registry.
+/// Safely calls `reset()` on a component in the global registry.
 ///
 /// # Errors
 ///
 /// - Returns an error if the component is not found.
 /// - Returns an error if the component is already borrowed.
-/// - Returns an error if reset() fails.
+/// - Returns an error if `reset()` fails.
 pub fn reset_component(id: &Ustr) -> anyhow::Result<()> {
     let registry = get_component_registry();
     let component_ref = registry
@@ -583,13 +583,13 @@ pub fn reset_component(id: &Ustr) -> anyhow::Result<()> {
     }
 }
 
-/// Safely calls dispose() on a component in the global registry.
+/// Safely calls `dispose()` on a component in the global registry.
 ///
 /// # Errors
 ///
 /// - Returns an error if the component is not found.
 /// - Returns an error if the component is already borrowed.
-/// - Returns an error if dispose() fails.
+/// - Returns an error if `dispose()` fails.
 pub fn dispose_component(id: &Ustr) -> anyhow::Result<()> {
     let registry = get_component_registry();
     let component_ref = registry
@@ -672,7 +672,7 @@ mod tests {
             Ok(())
         }
 
-        #[allow(clippy::panic_in_result_fn)] // Intentional panic for testing
+        #[expect(clippy::panic_in_result_fn)] // Intentional panic for testing
         fn on_start(&mut self) -> anyhow::Result<()> {
             assert!(
                 !self.should_panic.load(Ordering::SeqCst),

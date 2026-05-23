@@ -65,6 +65,7 @@ from nautilus_trader.model.identifiers import PositionId
 from nautilus_trader.model.identifiers import StrategyId
 from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.identifiers import VenueOrderId
+from nautilus_trader.model.objects import MarginBalance
 from nautilus_trader.model.objects import Money
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
@@ -2732,6 +2733,94 @@ class TestSimulatedExchangeMarginAccount:
         assert fill_event3.commission == Money(90, JPY)
         assert Money(999995.00, USD) == self.exchange.get_account().balance_total(USD)
 
+    def test_closing_position_updates_balance_with_realized_price_pnl(self) -> None:
+        # Arrange
+        self.exchange.add_instrument(_AUDUSD_SIM)
+        open_quote = TestDataStubs.quote_tick(
+            instrument=_AUDUSD_SIM,
+            bid_price=1.00000,
+            ask_price=1.00001,
+        )
+        self.data_engine.process(open_quote)
+        self.exchange.process_quote_tick(open_quote)
+
+        order_open = self.strategy.order_factory.market(
+            _AUDUSD_SIM.id,
+            OrderSide.BUY,
+            Quantity.from_int(100_000),
+        )
+        self.strategy.submit_order(order_open)
+        self.exchange.process(0)
+
+        position_id = self.cache.positions_open()[0].id
+
+        close_quote = TestDataStubs.quote_tick(
+            instrument=_AUDUSD_SIM,
+            bid_price=1.00011,
+            ask_price=1.00012,
+        )
+        self.data_engine.process(close_quote)
+        self.exchange.process_quote_tick(close_quote)
+
+        order_close = self.strategy.order_factory.market(
+            _AUDUSD_SIM.id,
+            OrderSide.SELL,
+            Quantity.from_int(100_000),
+        )
+
+        # Act
+        self.strategy.submit_order(order_close, position_id=position_id)
+        self.exchange.process(0)
+
+        # Assert
+        assert self.cache.positions_open() == []
+        assert self.exchange.get_account().balance_total(USD) == Money(1_000_006.00, USD)
+
+    def test_reversing_position_updates_balance_with_realized_price_pnl(self) -> None:
+        # Arrange
+        self.exchange.add_instrument(_AUDUSD_SIM)
+        open_quote = TestDataStubs.quote_tick(
+            instrument=_AUDUSD_SIM,
+            bid_price=1.00000,
+            ask_price=1.00001,
+        )
+        self.data_engine.process(open_quote)
+        self.exchange.process_quote_tick(open_quote)
+
+        order_open = self.strategy.order_factory.market(
+            _AUDUSD_SIM.id,
+            OrderSide.BUY,
+            Quantity.from_int(100_000),
+        )
+        self.strategy.submit_order(order_open)
+        self.exchange.process(0)
+
+        position_id = self.cache.positions_open()[0].id
+
+        reverse_quote = TestDataStubs.quote_tick(
+            instrument=_AUDUSD_SIM,
+            bid_price=1.00011,
+            ask_price=1.00012,
+        )
+        self.data_engine.process(reverse_quote)
+        self.exchange.process_quote_tick(reverse_quote)
+
+        order_reverse = self.strategy.order_factory.market(
+            _AUDUSD_SIM.id,
+            OrderSide.SELL,
+            Quantity.from_int(150_000),
+        )
+
+        # Act
+        self.strategy.submit_order(order_reverse, position_id=position_id)
+        self.exchange.process(0)
+
+        # Assert
+        position_open = self.cache.positions_open()[0]
+        assert position_open.side == PositionSide.SHORT
+        assert position_open.quantity == Quantity.from_int(50_000)
+        assert self.exchange.get_account().balance_total(USD) == Money(1_000_005.00, USD)
+
     def test_expire_order(self) -> None:
         # Arrange: Prepare market
         tick1 = TestDataStubs.quote_tick(
@@ -3211,6 +3300,26 @@ class TestSimulatedExchangeMarginAccount:
         prior_event = account.events[events_before - 1]
         prior_balance = prior_event.balances[0]
         assert prior_balance.total == initial_balance
+
+    def test_adjust_account_preserves_account_wide_margins(self) -> None:
+        # Arrange: stage an account-wide (cross margin) entry for the collateral currency.
+        account = self.exchange.exec_client.get_account()
+        account.update_margin(MarginBalance(Money(500, USD), Money(250, USD), None))
+        events_before = len(account.events)
+
+        # Act
+        self.exchange.adjust_account(Money(1000, USD))
+
+        # Assert: the generated AccountState carries the account-wide margin through.
+        emitted_event = account.events[events_before]
+        account_wide = [m for m in emitted_event.margins if m.instrument_id is None]
+        assert len(account_wide) == 1
+        assert account_wide[0].currency == USD
+        assert account_wide[0].initial == Money(500, USD)
+        assert account_wide[0].maintenance == Money(250, USD)
+        # And the account's live view still exposes it for strategies.
+        assert account.margin_init_for_currency(USD) == Money(500, USD)
+        assert account.margin_maint_for_currency(USD) == Money(250, USD)
 
     def test_adjust_account_when_account_frozen_does_not_change_balance(self) -> None:
         # Arrange

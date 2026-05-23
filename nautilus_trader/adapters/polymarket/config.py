@@ -17,6 +17,7 @@ from nautilus_trader.adapters.polymarket.common.constants import POLYMARKET_VENU
 from nautilus_trader.adapters.polymarket.providers import PolymarketInstrumentProviderConfig
 from nautilus_trader.config import LiveDataClientConfig
 from nautilus_trader.config import LiveExecClientConfig
+from nautilus_trader.config import NonNegativeInt
 from nautilus_trader.config import PositiveFloat
 from nautilus_trader.config import PositiveInt
 from nautilus_trader.model.identifiers import Venue
@@ -41,7 +42,8 @@ class PolymarketDataClientConfig(LiveDataClientConfig, frozen=True):
         - 1: Email/Magic Wallet Proxy
         - 2: Browser Wallet Proxy
     funder : str, optional
-        The wallet address (public key) on the **Polygon** network used for funding USDC.
+        The wallet address (public key) on the **Polygon** network used for funding
+        Polymarket collateral.
         If ``None`` then will source the `POLYMARKET_FUNDER` environment variable.
     api_key : str, optional
         The Polymarket API key.
@@ -56,6 +58,8 @@ class PolymarketDataClientConfig(LiveDataClientConfig, frozen=True):
         The HTTP client custom endpoint override.
     base_url_ws : str, optional
         The WebSocket client custom endpoint override.
+    proxy_url : str, optional
+        The proxy URL for HTTP and WebSocket transports.
     ws_connection_initial_delay_secs: PositiveFloat, default 5
         The delay (seconds) prior to the first websocket connection to allow initial subscriptions to arrive.
     ws_connection_delay_secs : PositiveFloat, default 0.1
@@ -70,6 +74,20 @@ class PolymarketDataClientConfig(LiveDataClientConfig, frozen=True):
     drop_quotes_missing_side : bool, default True
         If True, drops QuoteTick messages when bid or ask prices are missing (can occur near market resolution).
         If False, uses boundary prices (0.001/0.999) with zero volume for missing sides.
+    auto_load_missing_instruments : bool, default True
+        If True, subscribe and request commands that reference an instrument not already
+        in the cache will trigger an ad-hoc load via the instrument provider before
+        proceeding. Concurrent misses within `auto_load_debounce_ms` are coalesced into
+        a single batched `load_ids_async` call.
+    auto_load_debounce_ms : PositiveInt, default 100
+        The window (milliseconds) over which concurrent auto-load requests are batched.
+    auto_load_max_retries : NonNegativeInt, default 12
+        The maximum number of retry attempts on transient auto-load failures.
+        Set to 0 to disable retry.
+    auto_load_retry_delay_initial_secs : PositiveFloat, default 5.0
+        The initial delay (seconds) between transient auto-load retries.
+    auto_load_retry_delay_max_secs : PositiveFloat, default 15.0
+        The maximum delay (seconds) between transient auto-load retries.
 
     """
 
@@ -83,12 +101,18 @@ class PolymarketDataClientConfig(LiveDataClientConfig, frozen=True):
     passphrase: str | None = None
     base_url_http: str | None = None
     base_url_ws: str | None = None
+    proxy_url: str | None = None
     ws_connection_initial_delay_secs: PositiveFloat = 5
     ws_connection_delay_secs: PositiveFloat = 0.1
     ws_max_subscriptions_per_connection: PositiveInt = 200
     update_instruments_interval_mins: PositiveInt | None = 60
     compute_effective_deltas: bool = False
     drop_quotes_missing_side: bool = True
+    auto_load_missing_instruments: bool = True
+    auto_load_debounce_ms: PositiveInt = 100
+    auto_load_max_retries: NonNegativeInt = 12
+    auto_load_retry_delay_initial_secs: PositiveFloat = 5.0
+    auto_load_retry_delay_max_secs: PositiveFloat = 15.0
 
 
 class PolymarketExecClientConfig(LiveExecClientConfig, frozen=True):
@@ -110,7 +134,8 @@ class PolymarketExecClientConfig(LiveExecClientConfig, frozen=True):
         - 1: Email/Magic Wallet Proxy
         - 2: Browser Wallet Proxy
     funder : str, optional
-        The wallet address (public key) on the **Polygon** network used for funding USDC.
+        The wallet address (public key) on the **Polygon** network used for funding
+        Polymarket collateral.
         If ``None`` then will source the `POLYMARKET_FUNDER` environment variable.
     api_key : str, optional
         The Polymarket API key.
@@ -127,6 +152,8 @@ class PolymarketExecClientConfig(LiveExecClientConfig, frozen=True):
         The WebSocket client custom endpoint override.
     base_url_data_api : str, optional
         The Data API custom endpoint override (default https://data-api.polymarket.com).
+    proxy_url : str, optional
+        The proxy URL for HTTP and WebSocket transports.
     ws_max_subscriptions_per_connection : PositiveInt, default 200
         The maximum number of subscriptions per WebSocket connection (Polymarket limit is 500).
     max_retries : PositiveInt, optional
@@ -158,6 +185,7 @@ class PolymarketExecClientConfig(LiveExecClientConfig, frozen=True):
     base_url_http: str | None = None
     base_url_ws: str | None = None
     base_url_data_api: str | None = None
+    proxy_url: str | None = None
     ws_max_subscriptions_per_connection: PositiveInt = 200
     max_retries: PositiveInt | None = None
     retry_delay_initial_ms: PositiveInt | None = None

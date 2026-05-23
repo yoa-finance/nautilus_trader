@@ -11,6 +11,7 @@ __all__ = [
     "BITMEX_WS_URL",
     "BitmexDataClientConfig",
     "BitmexDataClientFactory",
+    "BitmexEnvironment",
     "BitmexExecClientConfig",
     "BitmexExecFactoryConfig",
     "BitmexExecutionClientFactory",
@@ -28,6 +29,23 @@ BITMEX_HTTP_URL: str
 BITMEX_WS_URL: str
 
 @typing.final
+class BitmexEnvironment(enum.Enum):
+    MAINNET = ...
+    TESTNET = ...
+
+    def __init__(self, value: typing.Any) -> None: ...
+    def __hash__(self) -> int: ...
+    @property
+    def name(self) -> str: ...
+    @property
+    def value(self) -> int: ...
+    @staticmethod
+    @classmethod
+    def variants() -> list[str]: ...
+    @classmethod
+    def from_str(cls, data: typing.Any) -> BitmexEnvironment: ...
+
+@typing.final
 class BitmexDataClientConfig:
     def __init__(
         self,
@@ -35,7 +53,7 @@ class BitmexDataClientConfig:
         api_secret: str | None = None,
         base_url_http: str | None = None,
         base_url_ws: str | None = None,
-        http_proxy_url: str | None = None,
+        proxy_url: str | None = None,
         http_timeout_secs: int | None = None,
         max_retries: int | None = None,
         retry_delay_initial_ms: int | None = None,
@@ -62,7 +80,7 @@ class BitmexExecClientConfig:
         api_secret: str | None = None,
         base_url_http: str | None = None,
         base_url_ws: str | None = None,
-        http_proxy_url: str | None = None,
+        proxy_url: str | None = None,
         http_timeout_secs: int | None = None,
         max_retries: int | None = None,
         retry_delay_initial_ms: int | None = None,
@@ -99,7 +117,7 @@ class BitmexHttpClient:
         api_key: str | None = None,
         api_secret: str | None = None,
         base_url: str | None = None,
-        testnet: bool = False,
+        environment: BitmexEnvironment = BitmexEnvironment.MAINNET,
         timeout_secs: int | None = None,
         max_retries: int | None = None,
         retry_delay_ms: int | None = None,
@@ -123,29 +141,32 @@ class BitmexHttpClient:
     def request_trades(
         self,
         instrument_id: model.InstrumentId,
-        start: datetime.datetime | None = ...,
-        end: datetime.datetime | None = ...,
-        limit: int | None = ...,
+        start: datetime.datetime | None = None,
+        end: datetime.datetime | None = None,
+        limit: int | None = None,
     ) -> typing.Any: ...
     def request_bars(
         self,
         bar_type: model.BarType,
-        start: datetime.datetime | None,
-        end: datetime.datetime | None,
-        limit: int | None,
-        partial: bool,
+        start: datetime.datetime | None = None,
+        end: datetime.datetime | None = None,
+        limit: int | None = None,
+        partial: bool = False,
     ) -> typing.Any: ...
     def query_order(
         self,
         instrument_id: model.InstrumentId,
-        client_order_id: model.ClientOrderId | None = ...,
-        venue_order_id: model.VenueOrderId | None = ...,
+        client_order_id: model.ClientOrderId | None = None,
+        venue_order_id: model.VenueOrderId | None = None,
     ) -> typing.Any: ...
     def request_order_status_reports(
-        self, instrument_id: model.InstrumentId | None, open_only: bool, limit: int | None = ...
+        self,
+        instrument_id: model.InstrumentId | None = None,
+        open_only: bool = False,
+        limit: int | None = None,
     ) -> typing.Any: ...
     def request_fill_reports(
-        self, instrument_id: model.InstrumentId | None = ..., limit: int | None = ...
+        self, instrument_id: model.InstrumentId | None = None, limit: int | None = None
     ) -> typing.Any: ...
     def request_position_status_reports(self) -> typing.Any: ...
     def submit_order(
@@ -156,30 +177,30 @@ class BitmexHttpClient:
         order_type: model.OrderType,
         quantity: model.Quantity,
         time_in_force: model.TimeInForce,
-        price: model.Price | None,
-        trigger_price: model.Price | None,
-        trigger_type: model.TriggerType | None,
-        trailing_offset: float | None,
-        trailing_offset_type: model.TrailingOffsetType | None,
-        display_qty: model.Quantity | None,
-        post_only: bool,
-        reduce_only: bool,
-        order_list_id: model.OrderListId | None = ...,
-        contingency_type: model.ContingencyType | None = ...,
-        peg_price_type: str | None = ...,
-        peg_offset_value: float | None = ...,
+        price: model.Price | None = None,
+        trigger_price: model.Price | None = None,
+        trigger_type: model.TriggerType | None = None,
+        trailing_offset: float | None = None,
+        trailing_offset_type: model.TrailingOffsetType | None = None,
+        display_qty: model.Quantity | None = None,
+        post_only: bool = False,
+        reduce_only: bool = False,
+        order_list_id: model.OrderListId | None = None,
+        contingency_type: model.ContingencyType | None = None,
+        peg_price_type: str | None = None,
+        peg_offset_value: float | None = None,
     ) -> typing.Any: ...
     def cancel_order(
         self,
         instrument_id: model.InstrumentId,
-        client_order_id: model.ClientOrderId | None = ...,
-        venue_order_id: model.VenueOrderId | None = ...,
+        client_order_id: model.ClientOrderId | None = None,
+        venue_order_id: model.VenueOrderId | None = None,
     ) -> typing.Any: ...
     def cancel_orders(
         self,
         instrument_id: model.InstrumentId,
-        client_order_ids: typing.Sequence[model.ClientOrderId] | None = ...,
-        venue_order_ids: typing.Sequence[model.VenueOrderId] | None = ...,
+        client_order_ids: typing.Sequence[model.ClientOrderId] | None = None,
+        venue_order_ids: typing.Sequence[model.VenueOrderId] | None = None,
     ) -> typing.Any: ...
     def cancel_all_orders(
         self, instrument_id: model.InstrumentId, order_side: model.OrderSide | None = ...
@@ -187,11 +208,11 @@ class BitmexHttpClient:
     def modify_order(
         self,
         instrument_id: model.InstrumentId,
-        client_order_id: model.ClientOrderId | None = ...,
-        venue_order_id: model.VenueOrderId | None = ...,
-        quantity: model.Quantity | None = ...,
-        price: model.Price | None = ...,
-        trigger_price: model.Price | None = ...,
+        client_order_id: model.ClientOrderId | None = None,
+        venue_order_id: model.VenueOrderId | None = None,
+        quantity: model.Quantity | None = None,
+        price: model.Price | None = None,
+        trigger_price: model.Price | None = None,
     ) -> typing.Any: ...
     def cache_instrument(self, instrument: typing.Any) -> None: ...
     def cancel_all_requests(self) -> None: ...
@@ -211,7 +232,7 @@ class CancelBroadcaster:
         api_key: str | None = None,
         api_secret: str | None = None,
         base_url: str | None = None,
-        testnet: bool = False,
+        environment: BitmexEnvironment = BitmexEnvironment.MAINNET,
         timeout_secs: int | None = None,
         max_retries: int | None = None,
         retry_delay_ms: int | None = None,
@@ -255,7 +276,8 @@ class BitmexWebSocketClient:
         api_secret: str | None = None,
         account_id: model.AccountId | None = None,
         heartbeat: int | None = None,
-        testnet: bool = False,
+        environment: BitmexEnvironment = BitmexEnvironment.MAINNET,
+        proxy_url: str | None = None,
     ) -> None: ...
     @staticmethod
     def from_env() -> BitmexWebSocketClient: ...
@@ -284,7 +306,7 @@ class BitmexWebSocketClient:
         loop_: typing.Any,
         instruments: typing.Sequence[typing.Any],
         callback: typing.Any,
-        trader_id: model.TraderId | None = ...,
+        trader_id: model.TraderId | None = None,
     ) -> typing.Any: ...
     def wait_until_active(self, timeout_secs: float) -> typing.Any: ...
     def close(self) -> typing.Any: ...
@@ -329,7 +351,7 @@ class SubmitBroadcaster:
         api_key: str | None = None,
         api_secret: str | None = None,
         base_url: str | None = None,
-        testnet: bool = False,
+        environment: BitmexEnvironment = BitmexEnvironment.MAINNET,
         timeout_secs: int | None = None,
         max_retries: int | None = None,
         retry_delay_ms: int | None = None,
@@ -340,6 +362,7 @@ class SubmitBroadcaster:
         health_check_interval_secs: int = 30,
         health_check_timeout_secs: int = 5,
         expected_reject_patterns: typing.Sequence[str] | None = None,
+        proxy_urls: typing.Sequence[str | None] | None = None,
     ) -> None: ...
     def start(self) -> typing.Any: ...
     def stop(self) -> typing.Any: ...
@@ -351,19 +374,19 @@ class SubmitBroadcaster:
         order_type: model.OrderType,
         quantity: model.Quantity,
         time_in_force: model.TimeInForce,
-        price: model.Price | None,
-        trigger_price: model.Price | None,
-        trigger_type: model.TriggerType | None,
-        trailing_offset: float | None,
-        trailing_offset_type: model.TrailingOffsetType | None,
-        display_qty: model.Quantity | None,
-        post_only: bool,
-        reduce_only: bool,
-        order_list_id: model.OrderListId | None = ...,
-        contingency_type: model.ContingencyType | None = ...,
-        submit_tries: int | None = ...,
-        peg_price_type: str | None = ...,
-        peg_offset_value: float | None = ...,
+        price: model.Price | None = None,
+        trigger_price: model.Price | None = None,
+        trigger_type: model.TriggerType | None = None,
+        trailing_offset: float | None = None,
+        trailing_offset_type: model.TrailingOffsetType | None = None,
+        display_qty: model.Quantity | None = None,
+        post_only: bool = False,
+        reduce_only: bool = False,
+        order_list_id: model.OrderListId | None = None,
+        contingency_type: model.ContingencyType | None = None,
+        submit_tries: int | None = None,
+        peg_price_type: str | None = None,
+        peg_offset_value: float | None = None,
     ) -> typing.Any: ...
     def get_metrics(self) -> typing.Any: ...
     def get_client_stats(self) -> typing.Any: ...
@@ -392,5 +415,5 @@ class BitmexSymbolStatus(enum.Enum):
     @classmethod
     def from_str(cls, data: typing.Any) -> BitmexSymbolStatus: ...
 
-def get_bitmex_http_base_url(testnet: bool) -> str: ...
-def get_bitmex_ws_url(testnet: bool) -> str: ...
+def get_bitmex_http_base_url(environment: BitmexEnvironment) -> str: ...
+def get_bitmex_ws_url(environment: BitmexEnvironment) -> str: ...

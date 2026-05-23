@@ -17,22 +17,34 @@
 
 use std::{collections::HashMap, time::Duration};
 
-use nautilus_common::{enums::Environment, logging::logger::LoggerConfig};
+use nautilus_common::{
+    cache::CacheConfig,
+    enums::Environment,
+    factories::{
+        ClientConfig, DataClientFactory, ExecutionClientFactory, SimulatedExecutionClientFactory,
+    },
+    logging::logger::LoggerConfig,
+    msgbus::database::MessageBusConfig,
+};
 use nautilus_core::UUID4;
 use nautilus_data::client::DataClientAdapter;
 use nautilus_execution::engine::ExecutionEngine;
 use nautilus_model::identifiers::TraderId;
-use nautilus_system::{
-    factories::{ClientConfig, DataClientFactory, ExecutionClientFactory},
-    kernel::NautilusKernel,
-};
+use nautilus_portfolio::config::PortfolioConfig;
+use nautilus_system::{config::StreamingConfig, kernel::NautilusKernel};
 
 use crate::{
-    config::LiveNodeConfig,
+    config::{LiveDataEngineConfig, LiveExecEngineConfig, LiveNodeConfig, LiveRiskEngineConfig},
     manager::{ExecutionManager, ExecutionManagerConfig},
     node::LiveNode,
     runner::AsyncRunner,
 };
+
+#[derive(Debug)]
+enum ExecutionClientFactoryEntry {
+    Adapter(Box<dyn ExecutionClientFactory>),
+    Simulated(Box<dyn SimulatedExecutionClientFactory>),
+}
 
 /// Builder for constructing a [`LiveNode`] with a fluent API.
 ///
@@ -47,7 +59,7 @@ pub struct LiveNodeBuilder {
     name: String,
     config: LiveNodeConfig,
     data_client_factories: HashMap<String, Box<dyn DataClientFactory>>,
-    exec_client_factories: HashMap<String, Box<dyn ExecutionClientFactory>>,
+    exec_client_factories: HashMap<String, ExecutionClientFactoryEntry>,
     data_client_configs: HashMap<String, Box<dyn ClientConfig>>,
     exec_client_configs: HashMap<String, Box<dyn ClientConfig>>,
 }
@@ -71,6 +83,29 @@ impl LiveNodeBuilder {
             trader_id,
             ..Default::default()
         };
+
+        Ok(Self {
+            name: "LiveNode".to_string(),
+            config,
+            data_client_factories: HashMap::new(),
+            exec_client_factories: HashMap::new(),
+            data_client_configs: HashMap::new(),
+            exec_client_configs: HashMap::new(),
+        })
+    }
+
+    /// Creates a new [`LiveNodeBuilder`] from an existing [`LiveNodeConfig`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the config's environment is invalid (BACKTEST).
+    pub fn from_config(config: LiveNodeConfig) -> anyhow::Result<Self> {
+        match config.environment {
+            Environment::Sandbox | Environment::Live => {}
+            Environment::Backtest => {
+                anyhow::bail!("LiveNode cannot be used with Backtest environment");
+            }
+        }
 
         Ok(Self {
             name: "LiveNode".to_string(),
@@ -172,6 +207,70 @@ impl LiveNodeBuilder {
         self
     }
 
+    /// Set the cache configuration.
+    #[must_use]
+    pub fn with_cache_config(mut self, config: CacheConfig) -> Self {
+        self.config.cache = Some(config);
+        self
+    }
+
+    /// Set the message bus configuration.
+    ///
+    /// The Rust live runtime does not support this setting yet.
+    /// `build()` returns an error when it is set.
+    #[must_use]
+    pub fn with_msgbus_config(mut self, config: MessageBusConfig) -> Self {
+        self.config.msgbus = Some(config);
+        self
+    }
+
+    /// Set the portfolio configuration.
+    #[must_use]
+    pub fn with_portfolio_config(mut self, config: PortfolioConfig) -> Self {
+        self.config.portfolio = Some(config);
+        self
+    }
+
+    /// Set the streaming configuration.
+    ///
+    /// The Rust live runtime does not support this setting yet.
+    /// `build()` returns an error when it is set.
+    #[must_use]
+    pub fn with_streaming_config(mut self, config: StreamingConfig) -> Self {
+        self.config.streaming = Some(config);
+        self
+    }
+
+    /// Set the data engine configuration.
+    ///
+    /// The Rust live runtime currently supports only the default `qsize`.
+    /// `build()` returns an error for other values.
+    #[must_use]
+    pub fn with_data_engine_config(mut self, config: LiveDataEngineConfig) -> Self {
+        self.config.data_engine = config;
+        self
+    }
+
+    /// Set the risk engine configuration.
+    ///
+    /// The Rust live runtime currently supports only the default `qsize`.
+    /// `build()` returns an error for other values.
+    #[must_use]
+    pub fn with_risk_engine_config(mut self, config: LiveRiskEngineConfig) -> Self {
+        self.config.risk_engine = config;
+        self
+    }
+
+    /// Set the execution engine configuration.
+    ///
+    /// The Rust live runtime currently supports only the default `qsize`.
+    /// `build()` returns an error for other values.
+    #[must_use]
+    pub fn with_exec_engine_config(mut self, config: LiveExecEngineConfig) -> Self {
+        self.config.exec_engine = config;
+        self
+    }
+
     /// Set the logging configuration.
     #[must_use]
     pub fn with_logging(mut self, logging: LoggerConfig) -> Self {
@@ -218,7 +317,36 @@ impl LiveNodeBuilder {
             anyhow::bail!("Execution client '{name}' is already registered");
         }
 
-        self.exec_client_factories.insert(name.clone(), factory);
+        self.exec_client_factories
+            .insert(name.clone(), ExecutionClientFactoryEntry::Adapter(factory));
+        self.exec_client_configs.insert(name, config);
+        Ok(self)
+    }
+
+    /// Add a simulated execution client factory.
+    ///
+    /// This path is for sync-core clients such as the sandbox matching engine, which owns cache
+    /// mutation. Live venue adapters should use [`Self::add_exec_client`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a client with the same name is already registered.
+    pub fn add_simulated_exec_client(
+        mut self,
+        name: Option<String>,
+        factory: Box<dyn SimulatedExecutionClientFactory>,
+        config: Box<dyn ClientConfig>,
+    ) -> anyhow::Result<Self> {
+        let name = name.unwrap_or_else(|| factory.name().to_string());
+
+        if self.exec_client_factories.contains_key(&name) {
+            anyhow::bail!("Execution client '{name}' is already registered");
+        }
+
+        self.exec_client_factories.insert(
+            name.clone(),
+            ExecutionClientFactoryEntry::Simulated(factory),
+        );
         self.exec_client_configs.insert(name, config);
         Ok(self)
     }
@@ -240,6 +368,8 @@ impl LiveNodeBuilder {
             self.exec_client_factories.len()
         );
 
+        self.config.validate_runtime_support()?;
+
         let runner = AsyncRunner::new();
         runner.bind_senders();
 
@@ -249,8 +379,12 @@ impl LiveNodeBuilder {
             if let Some(config) = self.data_client_configs.remove(&name) {
                 log::debug!("Creating data client {name}");
 
-                let client =
-                    factory.create(&name, config.as_ref(), kernel.cache(), kernel.clock())?;
+                let client = factory.create(
+                    &name,
+                    config.as_ref(),
+                    kernel.cache().into(),
+                    kernel.clock(),
+                )?;
                 let client_id = client.client_id();
                 let venue = client.venue();
 
@@ -275,7 +409,14 @@ impl LiveNodeBuilder {
             if let Some(config) = self.exec_client_configs.remove(&name) {
                 log::debug!("Creating execution client {name}");
 
-                let client = factory.create(&name, config.as_ref(), kernel.cache())?;
+                let client = match factory {
+                    ExecutionClientFactoryEntry::Adapter(factory) => {
+                        factory.create(&name, config.as_ref(), kernel.cache().into())?
+                    }
+                    ExecutionClientFactoryEntry::Simulated(factory) => {
+                        factory.create(&name, config.as_ref(), kernel.cache())?
+                    }
+                };
                 let client_id = client.client_id();
                 let venue = client.venue();
 

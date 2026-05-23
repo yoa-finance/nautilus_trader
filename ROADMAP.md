@@ -70,8 +70,11 @@ we set clear expectations, focus community efforts, and support a sustainable op
 
 ## Community-contributed integrations
 
-New integrations are a major undertaking for the project. They involve more than just the initial code — documentation, tutorials, maintenance, and ongoing user support are all required to make them viable and sustainable.
-Since contributors are not obligated to complete or maintain an integration, we must carefully weigh the long-term impact and commitment before accepting one into the main project.
+New integrations are a major undertaking for the project. They involve more than just the initial code:
+documentation, tutorials, maintenance, and ongoing user support are all required to make them viable
+and sustainable.
+Since contributors are not obligated to complete or maintain an integration, we must carefully weigh
+the long-term impact and commitment before accepting one into the main project.
 
 At present, the project has limited bandwidth to support new official integrations.
 
@@ -93,6 +96,10 @@ Only after agreement at this stage should a PR be considered.
 If the RFC is approved, a contributor may proceed with a PR.
 Integrations must adhere closely to existing Rust-based adapter implementation patterns to ensure consistency and maintainability.
 Even then, inclusion in the official distribution depends on long-term sustainability and available resources.
+
+For adapter classification, community listings, and support boundaries, see
+[ADAPTERS.md](ADAPTERS.md). For naming rules and disclaimer requirements for
+independent projects, see [TRADEMARK.md](TRADEMARK.md).
 
 ## Long-term commitment
 

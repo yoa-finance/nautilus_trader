@@ -28,7 +28,7 @@ use ustr::Ustr;
 ///
 /// This enum distinguishes between two types of pool identifiers:
 /// - **Address**: Used by V2/V3 protocols where pool identifier equals pool contract address (42 chars: "0x" + 40 hex)
-/// - **PoolId**: Used by V4 protocols where pool identifier is a bytes32 hash (66 chars: "0x" + 64 hex)
+/// - **`PoolId`**: Used by V4 protocols where pool identifier is a bytes32 hash (66 chars: "0x" + 64 hex)
 ///
 /// The type implements case-insensitive equality and hashing for address comparison,
 /// while preserving the original case for display purposes.
@@ -45,7 +45,7 @@ impl PoolIdentifier {
     ///
     /// Automatically detects variant based on string length:
     /// - 42 characters (0x + 40 hex): Address variant
-    /// - 66 characters (0x + 64 hex): PoolId variant
+    /// - 66 characters (0x + 64 hex): `PoolId` variant
     ///
     /// # Errors
     ///
@@ -106,7 +106,7 @@ impl PoolIdentifier {
         Self::Address(Ustr::from(address.to_checksum(None).as_str()))
     }
 
-    /// Creates a PoolId variant from raw bytes (32 bytes).
+    /// Creates a `PoolId` variant from raw bytes (32 bytes).
     ///
     /// # Errors
     ///
@@ -121,7 +121,7 @@ impl PoolIdentifier {
         Ok(Self::PoolId(Ustr::from(&hex::encode_prefixed(bytes))))
     }
 
-    /// Creates a PoolId variant from a hex string (with or without 0x prefix).
+    /// Creates a `PoolId` variant from a hex string (with or without 0x prefix).
     ///
     /// # Errors
     ///
@@ -166,7 +166,7 @@ impl PoolIdentifier {
         matches!(self, Self::Address(_))
     }
 
-    /// Returns true if this is a PoolId variant (V4 pools).
+    /// Returns true if this is a `PoolId` variant (V4 pools).
     #[must_use]
     pub fn is_pool_id(&self) -> bool {
         matches!(self, Self::PoolId(_))
@@ -178,7 +178,7 @@ impl PoolIdentifier {
     ///
     /// # Errors
     ///
-    /// Returns error if this is a PoolId variant or if parsing fails.
+    /// Returns error if this is a `PoolId` variant or if parsing fails.
     pub fn to_address(&self) -> anyhow::Result<Address> {
         match self {
             Self::Address(s) => Address::parse_checksummed(s.as_str(), None)
@@ -280,8 +280,8 @@ impl<'de> Deserialize<'de> for PoolIdentifier {
     where
         D: Deserializer<'de>,
     {
-        let value_str: &str = Deserialize::deserialize(deserializer)?;
-        Self::new_checked(value_str).map_err(serde::de::Error::custom)
+        let value_str: std::borrow::Cow<'de, str> = Deserialize::deserialize(deserializer)?;
+        Self::new_checked(value_str.as_ref()).map_err(serde::de::Error::custom)
     }
 }
 
@@ -405,6 +405,18 @@ mod tests {
         let deserialized: PoolIdentifier = serde_json::from_str(&json).unwrap();
 
         assert_eq!(original, deserialized);
+    }
+
+    #[rstest]
+    fn test_deserialize_from_owned_value() {
+        let value =
+            serde_json::Value::String("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2".to_string());
+
+        let deserialized: PoolIdentifier = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            deserialized,
+            PoolIdentifier::new("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2")
+        );
     }
 
     #[rstest]

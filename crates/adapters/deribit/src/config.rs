@@ -16,17 +16,21 @@
 //! Configuration structures for the Deribit adapter.
 
 use nautilus_model::identifiers::{AccountId, TraderId};
+use nautilus_network::websocket::TransportBackend;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     common::{
         credential::credential_env_vars,
+        enums::DeribitEnvironment,
         urls::{get_http_base_url, get_ws_url},
     },
     http::models::DeribitProductType,
 };
 
 /// Configuration for the Deribit data client.
-#[derive(Clone, Debug, bon::Builder)]
+#[derive(Debug, Clone, Serialize, Deserialize, bon::Builder)]
+#[serde(default, deny_unknown_fields)]
 #[cfg_attr(
     feature = "python",
     pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.deribit", from_py_object)
@@ -47,9 +51,11 @@ pub struct DeribitDataClientConfig {
     pub base_url_http: Option<String>,
     /// Optional override for the WebSocket URL.
     pub base_url_ws: Option<String>,
-    /// When true the client will use Deribit testnet endpoints.
+    /// Optional proxy URL for HTTP and WebSocket transports.
+    pub proxy_url: Option<String>,
+    /// The Deribit environment (mainnet or testnet).
     #[builder(default)]
-    pub use_testnet: bool,
+    pub environment: DeribitEnvironment,
     /// HTTP timeout in seconds.
     #[builder(default = 60)]
     pub http_timeout_secs: u64,
@@ -68,6 +74,12 @@ pub struct DeribitDataClientConfig {
     /// Interval for refreshing instruments (in minutes).
     #[builder(default = 60)]
     pub update_instruments_interval_mins: u64,
+    /// If `true`, subscribes for uncached instruments lazy-load via HTTP; otherwise fail fast.
+    #[builder(default = false)]
+    pub auto_load_missing_instruments: bool,
+    /// WebSocket transport backend (defaults to `Tungstenite`).
+    #[builder(default)]
+    pub transport_backend: TransportBackend,
 }
 
 impl Default for DeribitDataClientConfig {
@@ -86,7 +98,7 @@ impl DeribitDataClientConfig {
     /// Returns `true` when API credentials are available (in config or env vars).
     #[must_use]
     pub fn has_api_credentials(&self) -> bool {
-        let (key_env, secret_env) = credential_env_vars(self.use_testnet);
+        let (key_env, secret_env) = credential_env_vars(self.environment);
         let has_key = self.api_key.is_some() || std::env::var(key_env).is_ok();
         let has_secret = self.api_secret.is_some() || std::env::var(secret_env).is_ok();
         has_key && has_secret
@@ -97,20 +109,21 @@ impl DeribitDataClientConfig {
     pub fn http_base_url(&self) -> String {
         self.base_url_http
             .clone()
-            .unwrap_or_else(|| get_http_base_url(self.use_testnet).to_string())
+            .unwrap_or_else(|| get_http_base_url(self.environment).to_string())
     }
 
-    /// Returns the WebSocket URL, respecting the testnet flag and overrides.
+    /// Returns the WebSocket URL, respecting the environment and overrides.
     #[must_use]
     pub fn ws_url(&self) -> String {
         self.base_url_ws
             .clone()
-            .unwrap_or_else(|| get_ws_url(self.use_testnet).to_string())
+            .unwrap_or_else(|| get_ws_url(self.environment).to_string())
     }
 }
 
 /// Configuration for the Deribit execution client.
-#[derive(Clone, Debug, bon::Builder)]
+#[derive(Debug, Clone, Serialize, Deserialize, bon::Builder)]
+#[serde(default, deny_unknown_fields)]
 #[cfg_attr(
     feature = "python",
     pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.deribit", from_py_object)
@@ -137,9 +150,11 @@ pub struct DeribitExecClientConfig {
     pub base_url_http: Option<String>,
     /// Optional override for the WebSocket URL.
     pub base_url_ws: Option<String>,
-    /// When true the client will use Deribit testnet endpoints.
+    /// Optional proxy URL for HTTP and WebSocket transports.
+    pub proxy_url: Option<String>,
+    /// The Deribit environment (mainnet or testnet).
     #[builder(default)]
-    pub use_testnet: bool,
+    pub environment: DeribitEnvironment,
     /// HTTP timeout in seconds.
     #[builder(default = 60)]
     pub http_timeout_secs: u64,
@@ -152,6 +167,9 @@ pub struct DeribitExecClientConfig {
     /// Maximum retry delay in milliseconds.
     #[builder(default = 10_000)]
     pub retry_delay_max_ms: u64,
+    /// WebSocket transport backend (defaults to `Tungstenite`).
+    #[builder(default)]
+    pub transport_backend: TransportBackend,
 }
 
 impl Default for DeribitExecClientConfig {
@@ -161,20 +179,10 @@ impl Default for DeribitExecClientConfig {
 }
 
 impl DeribitExecClientConfig {
-    /// Creates a new configuration with default settings.
-    #[must_use]
-    pub fn new(trader_id: TraderId, account_id: AccountId) -> Self {
-        Self {
-            trader_id,
-            account_id,
-            ..Default::default()
-        }
-    }
-
     /// Returns `true` when API credentials are available (in config or env vars).
     #[must_use]
     pub fn has_api_credentials(&self) -> bool {
-        let (key_env, secret_env) = credential_env_vars(self.use_testnet);
+        let (key_env, secret_env) = credential_env_vars(self.environment);
         let has_key = self.api_key.is_some() || std::env::var(key_env).is_ok();
         let has_secret = self.api_secret.is_some() || std::env::var(secret_env).is_ok();
         has_key && has_secret
@@ -185,15 +193,15 @@ impl DeribitExecClientConfig {
     pub fn http_base_url(&self) -> String {
         self.base_url_http
             .clone()
-            .unwrap_or_else(|| get_http_base_url(self.use_testnet).to_string())
+            .unwrap_or_else(|| get_http_base_url(self.environment).to_string())
     }
 
-    /// Returns the WebSocket URL, respecting the testnet flag and overrides.
+    /// Returns the WebSocket URL, respecting the environment and overrides.
     #[must_use]
     pub fn ws_url(&self) -> String {
         self.base_url_ws
             .clone()
-            .unwrap_or_else(|| get_ws_url(self.use_testnet).to_string())
+            .unwrap_or_else(|| get_ws_url(self.environment).to_string())
     }
 }
 
@@ -206,7 +214,7 @@ mod tests {
     #[rstest]
     fn test_default_config() {
         let config = DeribitDataClientConfig::default();
-        assert!(!config.use_testnet);
+        assert_eq!(config.environment, DeribitEnvironment::Mainnet);
         assert_eq!(config.product_types.len(), 1);
         assert_eq!(config.http_timeout_secs, 60);
     }
@@ -220,7 +228,7 @@ mod tests {
     #[rstest]
     fn test_http_base_url_testnet() {
         let config = DeribitDataClientConfig {
-            use_testnet: true,
+            environment: DeribitEnvironment::Testnet,
             ..Default::default()
         };
         assert_eq!(config.http_base_url(), "https://test.deribit.com");
@@ -235,7 +243,7 @@ mod tests {
     #[rstest]
     fn test_ws_url_testnet() {
         let config = DeribitDataClientConfig {
-            use_testnet: true,
+            environment: DeribitEnvironment::Testnet,
             ..Default::default()
         };
         assert_eq!(config.ws_url(), "wss://test.deribit.com/ws/api/v2");
@@ -249,5 +257,40 @@ mod tests {
             ..Default::default()
         };
         assert!(config.has_api_credentials());
+    }
+
+    #[rstest]
+    fn test_data_config_toml_minimal() {
+        let config: DeribitDataClientConfig = toml::from_str(
+            r#"
+environment = "testnet"
+product_types = ["future", "option"]
+heartbeat_interval_secs = 15
+auto_load_missing_instruments = true
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.environment, DeribitEnvironment::Testnet);
+        assert_eq!(
+            config.product_types,
+            vec![DeribitProductType::Future, DeribitProductType::Option]
+        );
+        assert_eq!(config.heartbeat_interval_secs, 15);
+        assert!(config.auto_load_missing_instruments);
+    }
+
+    #[rstest]
+    fn test_exec_config_toml_empty_uses_defaults() {
+        let config: DeribitExecClientConfig = toml::from_str("").unwrap();
+        let expected = DeribitExecClientConfig::default();
+
+        assert_eq!(config.trader_id, expected.trader_id);
+        assert_eq!(config.account_id, expected.account_id);
+        assert_eq!(config.environment, expected.environment);
+        assert_eq!(config.product_types, expected.product_types);
+        assert_eq!(config.http_timeout_secs, expected.http_timeout_secs);
+        assert_eq!(config.max_retries, expected.max_retries);
+        assert_eq!(config.transport_backend, expected.transport_backend);
     }
 }

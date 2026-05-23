@@ -13,8 +13,6 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-#![allow(clippy::needless_return)]
-
 //! Build script for the `nautilus-core` crate.
 //!
 //! This script is executed by Cargo during compilation and is responsible for the ancillary
@@ -38,7 +36,14 @@
 
 use std::{env, path::PathBuf};
 
-#[allow(clippy::expect_used)]
+#[allow(
+    clippy::expect_used,
+    reason = ".expect() calls are behind #[cfg(feature = \"ffi\")]"
+)]
+#[allow(
+    clippy::needless_return,
+    reason = "return is needed when ffi feature is enabled"
+)]
 fn main() {
     // Ensure the build script runs on changes
     println!("cargo:rerun-if-env-changed=HIGH_PRECISION");
@@ -49,12 +54,12 @@ fn main() {
     println!("cargo:rerun-if-changed=Cargo.toml");
     println!("cargo:rerun-if-changed=../Cargo.toml");
 
-    let nautilus_version = "1.225.0+stratneo.5"; // Hardcode to avoid including pyproject.toml in package
+    let nautilus_version = "1.227.0"; // Hardcode to avoid including pyproject.toml in package
 
     // Verify the hardcoded version matches the version from the top-level pyproject.toml
     if let Some(pyproject_version) = try_read_pyproject_version() {
         assert!(
-            pyproject_version == nautilus_version,
+            pyproject_version.starts_with(nautilus_version),
             "Version mismatch: pyproject.toml={pyproject_version}, hardcoded={nautilus_version}",
         );
     }

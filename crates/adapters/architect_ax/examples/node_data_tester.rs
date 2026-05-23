@@ -15,19 +15,23 @@
 
 //! Example demonstrating live data testing with the AX Exchange adapter.
 //!
-//! Run with: `cargo run --example ax-data-tester --package nautilus-architect-ax`
+//! Run with: `cargo run --example ax-data-tester --package nautilus-architect-ax --features examples`
 //!
 //! Environment variables:
 //! - `AX_API_KEY`: Your API key
 //! - `AX_API_SECRET`: Your API secret
 //! - `AX_IS_SANDBOX`: Set to "true" for sandbox (default), "false" for production
 
-use nautilus_architect_ax::{config::AxDataClientConfig, factories::AxDataClientFactory};
+use nautilus_architect_ax::{
+    common::{consts::AX_CLIENT_ID, enums::AxEnvironment},
+    config::AxDataClientConfig,
+    factories::AxDataClientFactory,
+};
 use nautilus_common::enums::Environment;
 use nautilus_live::node::LiveNode;
 use nautilus_model::{
     data::BarType,
-    identifiers::{ClientId, InstrumentId, TraderId},
+    identifiers::{InstrumentId, TraderId},
     stubs::TestDefault,
 };
 use nautilus_testkit::testers::{DataTester, DataTesterConfig};
@@ -47,20 +51,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // InstrumentId::from("BTCUSD-PERP.AX"),
     ];
 
-    let is_sandbox = std::env::var("AX_IS_SANDBOX")
+    let ax_environment = if std::env::var("AX_IS_SANDBOX")
         .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(true);
+        .and_then(|v| v.parse::<bool>().ok())
+        .unwrap_or(true)
+    {
+        AxEnvironment::Sandbox
+    } else {
+        AxEnvironment::Production
+    };
 
     let ax_config = AxDataClientConfig {
         api_key: std::env::var("AX_API_KEY").ok(),
         api_secret: std::env::var("AX_API_SECRET").ok(),
-        is_sandbox,
+        environment: ax_environment,
         ..Default::default()
     };
 
     let client_factory = AxDataClientFactory::new();
-    let client_id = ClientId::new("AX");
+    let client_id = *AX_CLIENT_ID;
 
     let mut node = LiveNode::builder(trader_id, environment)?
         .with_name(node_name)

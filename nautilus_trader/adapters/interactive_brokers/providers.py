@@ -163,6 +163,7 @@ class InteractiveBrokersInstrumentProvider(InstrumentProvider):
             # First, load all individual leg instruments and collect their details
             leg_contract_details = []
             leg_tuples = []
+
             for combo_leg in bag_contract.comboLegs:
                 # Create a more complete leg contract using information from the combo leg
                 leg_contract = IBContract(
@@ -241,7 +242,7 @@ class InteractiveBrokersInstrumentProvider(InstrumentProvider):
     def get_price_magnifier(self, instrument_id: InstrumentId) -> int:
         contract_details = self.contract_details.get(instrument_id)
         if contract_details:
-            return contract_details.priceMagnifier
+            return contract_details.priceMagnifier or 1
 
         return 1
 
@@ -277,6 +278,7 @@ class InteractiveBrokersInstrumentProvider(InstrumentProvider):
         loaded instruments.
         """
         loaded_instrument_ids = []
+
         for instrument_id in instrument_ids:
             loaded_ids = await self.load_with_return_async(
                 instrument_id,
@@ -413,6 +415,7 @@ class InteractiveBrokersInstrumentProvider(InstrumentProvider):
 
             # First, load all individual leg instruments to get their contract details
             leg_contract_details = []
+
             for leg_instrument_id, ratio in leg_tuples:
                 self._log.info(f"Loading leg instrument: {leg_instrument_id} (ratio: {ratio})")
 
@@ -461,6 +464,7 @@ class InteractiveBrokersInstrumentProvider(InstrumentProvider):
         # Create BAG contract from leg details
         if bag_contract is None:
             combo_legs = []
+
             for leg_details, ratio in leg_contract_details:
                 action = "BUY" if ratio > 0 else "SELL"
                 abs_ratio = abs(ratio)
@@ -638,6 +642,7 @@ class InteractiveBrokersInstrumentProvider(InstrumentProvider):
             expirations = sorted(
                 exp for exp in chain[1] if (min_expiry <= pd.Timestamp(exp, tz="UTC") <= max_expiry)
             )
+
             for expiration in expirations:
                 option_contracts_detail = await self.get_option_chain_details_by_expiry(
                     underlying=underlying,
@@ -730,6 +735,7 @@ class InteractiveBrokersInstrumentProvider(InstrumentProvider):
 
         """
         processed_instrument_ids = []
+
         for details in copy.deepcopy(contract_details):
             if not isinstance(details, IBContractDetails):
                 details = IBContractDetails.from_contract_details(details)
@@ -837,6 +843,9 @@ class InteractiveBrokersInstrumentProvider(InstrumentProvider):
         contract: IBContract,
         contract_details: IBContractDetails | None = None,
     ) -> str:
+        if contract.secType == "STK":
+            return self._resolve_stock_exchange_from_contract(contract)
+
         if (
             contract.exchange == "SMART"
             and contract.primaryExchange
@@ -847,14 +856,49 @@ class InteractiveBrokersInstrumentProvider(InstrumentProvider):
         if contract.exchange != "SMART":
             return contract.exchange
 
-        valid_exchanges = self._resolve_valid_exchanges(contract, contract_details)
-        if valid_exchanges:
-            parts = [part.strip() for part in valid_exchanges.split(",") if part.strip()]
-            chosen = next((part for part in parts if part != "SMART"), parts[0] if parts else None)
-            if chosen:
-                return chosen
+        if contract.secType == "OPT":
+            valid_exchanges = self._resolve_valid_exchanges(contract, contract_details)
+            if valid_exchanges:
+                parts = [part.strip() for part in valid_exchanges.split(",") if part.strip()]
+                chosen = next(
+                    (part for part in parts if part != "SMART"),
+                    parts[0] if parts else None,
+                )
+
+                if chosen:
+                    return chosen
 
         return contract.exchange
+
+    def _resolve_stock_exchange_from_contract(self, contract: IBContract) -> str:
+        venue = self._resolve_cached_symbol_venue(contract)
+        if venue and self._is_compatible_cached_stock_venue(venue, contract.primaryExchange):
+            return venue
+
+        if contract.primaryExchange and contract.primaryExchange != "SMART":
+            return contract.primaryExchange
+
+        if contract.exchange == "SMART" and venue:
+            return venue
+
+        return contract.exchange
+
+    def _is_compatible_cached_stock_venue(self, venue: str, primary_exchange: str) -> bool:
+        if not primary_exchange or primary_exchange == "SMART":
+            return True
+
+        return venue in (primary_exchange, exchange_to_mic_venue(primary_exchange))
+
+    def _resolve_cached_symbol_venue(self, contract: IBContract) -> str | None:
+        for instrument in self.get_all().values():
+            if instrument.id.symbol.value == contract.symbol:
+                return instrument.id.venue.value
+
+        for instrument in self._client._cache.instruments():
+            if instrument.id.symbol.value == contract.symbol:
+                return instrument.id.venue.value
+
+        return None
 
     def _resolve_valid_exchanges(
         self,

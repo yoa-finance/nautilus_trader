@@ -15,16 +15,21 @@
 
 //! Example demonstrating live data testing with the OKX adapter.
 //!
-//! Run with: `cargo run --example okx-data-tester --package nautilus-okx`
+//! Run with: `cargo run --example okx-data-tester --package nautilus-okx --features examples`
 
 use nautilus_common::enums::Environment;
 use nautilus_live::node::LiveNode;
 use nautilus_model::{
-    identifiers::{ClientId, InstrumentId, TraderId},
+    identifiers::{InstrumentId, TraderId},
     stubs::TestDefault,
 };
 use nautilus_okx::{
-    common::enums::OKXInstrumentType, config::OKXDataClientConfig, factories::OKXDataClientFactory,
+    common::{
+        consts::OKX_CLIENT_ID,
+        enums::{OKXEnvironment, OKXInstrumentType},
+    },
+    config::OKXDataClientConfig,
+    factories::OKXDataClientFactory,
 };
 use nautilus_testkit::testers::{DataTester, DataTesterConfig};
 
@@ -45,12 +50,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         api_secret: None,     // Will use 'OKX_API_SECRET' env var
         api_passphrase: None, // Will use 'OKX_API_PASSPHRASE' env var
         instrument_types: vec![OKXInstrumentType::Swap],
-        is_demo: false,
+        environment: OKXEnvironment::Live,
         ..Default::default()
     };
 
     let client_factory = OKXDataClientFactory::new();
-    let client_id = ClientId::new("OKX");
+    let client_id = *OKX_CLIENT_ID;
 
     let mut node = LiveNode::builder(trader_id, environment)?
         .with_name(node_name)

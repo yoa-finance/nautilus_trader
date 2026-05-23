@@ -57,6 +57,7 @@ from nautilus_trader.config import InstrumentProviderConfig
 from nautilus_trader.config import LiveExecEngineConfig
 from nautilus_trader.config import LoggingConfig
 from nautilus_trader.config import TradingNodeConfig
+from nautilus_trader.core.nautilus_pyo3 import DydxNetwork
 from nautilus_trader.live.config import LiveRiskEngineConfig
 from nautilus_trader.live.node import TradingNode
 from nautilus_trader.model.enums import TimeInForce
@@ -102,27 +103,20 @@ config_node = TradingNodeConfig(
     portfolio=PortfolioConfig(min_account_state_logging_interval_ms=1_000),
     data_clients={
         DYDX: DydxDataClientConfig(
-            wallet_address=None,  # 'DYDX_WALLET_ADDRESS' or 'DYDX_TESTNET_WALLET_ADDRESS' env var
+            environment=DydxNetwork.TESTNET if is_testnet else DydxNetwork.MAINNET,
             instrument_provider=InstrumentProviderConfig(
                 load_all=False,
                 load_ids=frozenset(reconciliation_instrument_ids),
             ),
-            is_testnet=is_testnet,
         ),
     },
     exec_clients={
         DYDX: DydxExecClientConfig(
-            wallet_address=None,  # 'DYDX_WALLET_ADDRESS' or 'DYDX_TESTNET_WALLET_ADDRESS' env var
-            private_key=None,  # 'DYDX_PRIVATE_KEY' or 'DYDX_TESTNET_PRIVATE_KEY' env var
-            subaccount=0,  # Default subaccount (created after first deposit/trade)
-            base_url_http=None,  # Override with custom endpoint
-            base_url_ws=None,  # Override with custom endpoint
-            base_url_grpc=None,  # Override with custom gRPC endpoint
+            environment=DydxNetwork.TESTNET if is_testnet else DydxNetwork.MAINNET,
             instrument_provider=InstrumentProviderConfig(
                 load_all=False,
                 load_ids=frozenset(reconciliation_instrument_ids),
             ),
-            is_testnet=is_testnet,
         ),
     },
     timeout_connection=20.0,
@@ -137,10 +131,11 @@ node = TradingNode(config=config_node)
 
 # Configure your execution tester
 # Note: dYdX v4 does NOT support:
-#   - Batch submit/modify
+#   - Batch modify
 #   - OCO, iceberg, or bracket orders (emulated only)
 #   - Trailing stop orders
 #   - Order modification
+# Batch submit is supported for long-term LIMIT orders only.
 config_tester = ExecTesterConfig(
     instrument_id=instrument_id,
     external_order_claims=[instrument_id],

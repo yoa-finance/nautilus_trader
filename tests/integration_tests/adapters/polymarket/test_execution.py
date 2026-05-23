@@ -17,6 +17,8 @@ import asyncio
 import pkgutil
 from datetime import UTC
 from datetime import datetime
+from decimal import Decimal
+from typing import Any
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import Mock
@@ -24,16 +26,26 @@ from unittest.mock import patch
 
 import msgspec
 import pytest
-from py_clob_client.client import ClobClient
+from py_clob_client_v2.client import ClobClient
+from py_clob_client_v2.client import OrderPayload
+from py_clob_client_v2.config import get_contract_config
+from py_clob_client_v2.exceptions import PolyApiException
+from py_clob_client_v2.order_utils import ExchangeOrderBuilderV2
+from py_clob_client_v2.order_utils import OrderDataV2
+from py_clob_client_v2.order_utils import Side
+from py_clob_client_v2.order_utils import SignatureTypeV2
+from py_clob_client_v2.signer import Signer
 
 from nautilus_trader.adapters.polymarket.common.cache import get_polymarket_trades_key
 from nautilus_trader.adapters.polymarket.common.constants import POLYMARKET_CANCEL_ALREADY_DONE
+from nautilus_trader.adapters.polymarket.common.constants import POLYMARKET_NAUTILUS_BUILDER_CODE
 from nautilus_trader.adapters.polymarket.common.constants import POLYMARKET_VENUE
 from nautilus_trader.adapters.polymarket.common.credentials import PolymarketWebSocketAuth
 from nautilus_trader.adapters.polymarket.common.enums import PolymarketTradeStatus
 from nautilus_trader.adapters.polymarket.common.symbol import get_polymarket_instrument_id
 from nautilus_trader.adapters.polymarket.config import PolymarketExecClientConfig
 from nautilus_trader.adapters.polymarket.execution import PolymarketExecutionClient
+from nautilus_trader.adapters.polymarket.http.errors import should_retry
 from nautilus_trader.adapters.polymarket.providers import PolymarketInstrumentProvider
 from nautilus_trader.common.component import LiveClock
 from nautilus_trader.common.component import MessageBus
@@ -45,7 +57,7 @@ from nautilus_trader.execution.messages import SubmitOrder
 from nautilus_trader.execution.messages import SubmitOrderList
 from nautilus_trader.execution.reports import FillReport
 from nautilus_trader.model.currencies import USDC
-from nautilus_trader.model.currencies import USDC_POS
+from nautilus_trader.model.currencies import pUSD
 from nautilus_trader.model.enums import AssetClass
 from nautilus_trader.model.enums import LiquiditySide
 from nautilus_trader.model.enums import OrderSide
@@ -77,6 +89,10 @@ from nautilus_trader.trading.strategy import Strategy
 ELECTION_INSTRUMENT = TestInstrumentProvider.binary_option()
 
 
+def test_should_retry_statusless_poly_api_exception():
+    assert should_retry(PolyApiException(error_msg="Request exception!"))
+
+
 class TestPolymarketExecutionClient:
     @pytest.fixture(autouse=True)
     def setup(self, request):
@@ -104,6 +120,7 @@ class TestPolymarketExecutionClient:
         mock_creds = MagicMock()
         mock_creds.api_key = "test_api_key"
         self.http_client.creds = mock_creds
+        self.http_client.get_balance_allowance.return_value = {"balance": str(1_000_000_000)}
 
         # Mock instrument provider
         self.provider = MagicMock(spec=PolymarketInstrumentProvider)
@@ -209,9 +226,9 @@ class TestPolymarketExecutionClient:
 
         # Mock account state
         balance = AccountBalance(
-            total=Money(1000, USDC_POS),
-            locked=Money(0, USDC_POS),
-            free=Money(1000, USDC_POS),
+            total=Money(1000, pUSD),
+            locked=Money(0, pUSD),
+            free=Money(1000, pUSD),
         )
         self.exec_client.generate_account_state(
             balances=[balance],
@@ -369,6 +386,109 @@ class TestPolymarketExecutionClient:
         assert position.avg_px_open == 0.52
         assert position.entry == OrderSide.BUY
         assert position.quantity.as_double() == 5
+
+    def test_ws_taker_dust_overfill_uses_raw_qty_for_commission(self, mocker):
+        """
+        Dust scenarios on the WS taker path must compute commission from the venue-
+        reported (raw) quantity and only snap last_qty for engine acceptance.
+
+        See `docs/integrations/polymarket.md` (Fill quantity normalization).
+
+        """
+        from nautilus_trader.adapters.polymarket.schemas.user import PolymarketUserTrade
+
+        # Arrange: precision-6 instrument with non-zero taker fee
+        market = "0xdd22472e552920b8438158ea7238bfadfa4f736aa4cee91a6b86c39ead110917"
+        asset_id = "21742633143463906290569050155826241533067272736897614950488156847949938836455"
+        instrument_id = get_polymarket_instrument_id(market, asset_id)
+        instrument = BinaryOption(
+            instrument_id=instrument_id,
+            raw_symbol=Symbol(instrument_id.symbol.value),
+            outcome="Yes",
+            description="Dust precision-6 BinaryOption",
+            asset_class=AssetClass.ALTERNATIVE,
+            currency=USDC,
+            price_precision=3,
+            price_increment=Price.from_str("0.001"),
+            size_precision=6,
+            size_increment=Quantity.from_str("0.000001"),
+            activation_ns=0,
+            expiration_ns=0,
+            max_quantity=None,
+            min_quantity=Quantity.from_str("1"),
+            maker_fee=Decimal(0),
+            taker_fee=Decimal("0.03"),
+            ts_event=0,
+            ts_init=0,
+        )
+        self.cache.add_instrument(instrument)
+
+        order = self.strategy.order_factory.limit(
+            instrument_id=instrument_id,
+            order_side=OrderSide.BUY,
+            quantity=Quantity.from_str("100.000000"),
+            price=Price.from_str("0.500"),
+        )
+        order.apply(TestEventStubs.order_submitted(order))
+        venue_order_id = VenueOrderId("0xtaker-dust-overfill")
+        self.cache.add_order(order, None)
+        self.cache.add_venue_order_id(order.client_order_id, venue_order_id)
+        self.exec_client._fill_tracker.register(
+            venue_order_id=venue_order_id,
+            submitted_qty=Quantity.from_str("100.000000"),
+            order_side=OrderSide.BUY,
+            instrument_id=instrument_id,
+            size_precision=instrument.size_precision,
+            price_precision=instrument.price_precision,
+        )
+
+        # Raw venue size 100.005 is 0.005 above submitted: within the dust band.
+        decoder = msgspec.json.Decoder(PolymarketUserTrade)
+        msg = decoder.decode(
+            msgspec.json.encode(
+                {
+                    "asset_id": asset_id,
+                    "bucket_index": 0,
+                    "fee_rate_bps": "0",
+                    "id": "trade-dust-overfill",
+                    "last_update": "1700000001",
+                    "maker_address": "0xmaker",
+                    "maker_orders": [],
+                    "market": market,
+                    "match_time": "1700000000",
+                    "outcome": "Yes",
+                    "owner": self.http_client.creds.api_key,
+                    "price": "0.500",
+                    "side": "BUY",
+                    "size": "100.005000",
+                    "status": "MATCHED",
+                    "taker_order_id": venue_order_id.value,
+                    "timestamp": "1700000000000",
+                    "trade_owner": self.http_client.creds.api_key,
+                    "trader_side": "TAKER",
+                    "type": "TRADE",
+                    "event_type": "trade",
+                },
+            ),
+        )
+        spy = mocker.spy(self.exec_client, "generate_order_filled")
+
+        # Act
+        self.exec_client._handle_user_trade_in_ws_trade_msg(
+            msg,
+            TradeId(msg.id),
+            wait_for_ack=False,
+            order_id=venue_order_id.value,
+        )
+
+        # Assert
+        spy.assert_called_once()
+        call_kwargs = spy.call_args.kwargs
+        # Engine sees the snapped quantity (matches submitted_qty exactly).
+        assert call_kwargs["last_qty"] == Quantity.from_str("100.000000")
+        # Commission was computed from the raw venue size 100.005, not the snap.
+        # 100.005 * 0.03 * 0.5 * (1 - 0.5) = 0.7500375 -> round 5dp -> 0.75004
+        assert call_kwargs["commission"] == Money(Decimal("0.75004"), pUSD)
 
     @pytest.mark.asyncio
     async def test_wait_for_ack_order_success(self):
@@ -750,6 +870,98 @@ class TestPolymarketExecutionClient:
         assert len(reports) == 2
         assert len(parsed_fill_keys) == 2
 
+    def test_parse_trades_response_snaps_dust_overfill(self):
+        """
+        REST fill reports must apply the same dust snap as the WS path so the engine
+        sees a consistent quantity regardless of which path delivered the fill first.
+
+        Commission stays at venue truth.
+
+        """
+        # Arrange: precision-6 instrument with non-zero taker fee
+        market = "0xdd22472e552920b8438158ea7238bfadfa4f736aa4cee91a6b86c39ead110917"
+        asset_id = "21742633143463906290569050155826241533067272736897614950488156847949938836455"
+        instrument_id = get_polymarket_instrument_id(market, asset_id)
+        # Replace the size_precision=2 instrument from setup with a precision-6
+        # version so dust at microshare scale survives make_qty.
+        instrument = BinaryOption(
+            instrument_id=instrument_id,
+            raw_symbol=Symbol(instrument_id.symbol.value),
+            outcome="Yes",
+            description="Dust precision-6 BinaryOption",
+            asset_class=AssetClass.ALTERNATIVE,
+            currency=USDC,
+            price_precision=3,
+            price_increment=Price.from_str("0.001"),
+            size_precision=6,
+            size_increment=Quantity.from_str("0.000001"),
+            activation_ns=0,
+            expiration_ns=0,
+            max_quantity=None,
+            min_quantity=Quantity.from_str("1"),
+            maker_fee=Decimal(0),
+            taker_fee=Decimal("0.03"),
+            ts_event=0,
+            ts_init=0,
+        )
+        self.cache.add_instrument(instrument)
+
+        venue_order_id = VenueOrderId("0xrest-dust-overfill")
+        self.exec_client._fill_tracker.register(
+            venue_order_id=venue_order_id,
+            submitted_qty=Quantity.from_str("100.000000"),
+            order_side=OrderSide.BUY,
+            instrument_id=instrument_id,
+            size_precision=instrument.size_precision,
+            price_precision=instrument.price_precision,
+        )
+
+        # Raw venue size 100.005 is 0.005 above submitted: within the dust band.
+        rest_data = {
+            "id": "trade-rest-dust",
+            "taker_order_id": venue_order_id.value,
+            "trader_side": "TAKER",
+            "side": "BUY",
+            "asset_id": asset_id,
+            "market": market,
+            "outcome": "Yes",
+            "price": "0.500",
+            "size": "100.005000",
+            "match_time": "1700000000",
+            "last_update": "1700000001",
+            "fee_rate_bps": "0",
+            "status": "MATCHED",
+            "maker_address": "0xmaker",
+            "owner": self.http_client.creds.api_key,
+            "maker_orders": [],
+            "transaction_hash": "0xtx",
+            "bucket_index": 0,
+        }
+
+        command = Mock()
+        command.instrument_id = None
+        command.venue_order_id = None
+        parsed_fill_keys: set[tuple[TradeId, VenueOrderId]] = set()
+        reports: list[FillReport] = []
+
+        # Act
+        self.exec_client._parse_trades_response_object(
+            command=command,
+            json_obj=rest_data,
+            parsed_fill_keys=parsed_fill_keys,
+            reports=reports,
+        )
+
+        # Assert
+        assert len(reports) == 1
+        report = reports[0]
+        # Engine sees the snapped quantity (matches submitted_qty exactly).
+        assert report.last_qty == Quantity.from_str("100.000000")
+        # Commission was computed by parse_to_fill_report from the raw size
+        # 100.005 before the snap fired, so it tracks the venue charge.
+        # 100.005 * 0.03 * 0.5 * 0.5 = 0.7500375 -> round 5dp -> 0.75004
+        assert report.commission == Money(Decimal("0.75004"), pUSD)
+
     def test_parse_trades_response_filters_by_instrument_id(self):
         """
         Ensure instrument-scoped fill queries drop fills for other assets in the same
@@ -889,6 +1101,312 @@ class TestPolymarketExecutionClient:
 
         assert len(reports_no) == 1
         assert reports_no[0].instrument_id == instrument_no.id
+
+    @pytest.mark.asyncio
+    async def test_generate_order_status_report_recovers_filled_from_trades(self):
+        """
+        When the venue's `get_order` returns nothing for an `ACCEPTED` order, the
+        adapter must consult trade history and surface a `FILLED` report instead of
+        returning `None` (which the engine would otherwise resolve as `REJECTED`,
+        dropping fills).
+        """
+        from nautilus_trader.execution.messages import GenerateOrderStatusReport
+
+        venue_order_id_str = "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef12"
+        client_order_id, venue_order_id = self._setup_test_order_with_venue_id(
+            venue_order_id_str,
+            use_ws_instrument=True,
+            price=Price.from_str("0.500"),
+        )
+        order = self.cache.order(client_order_id)
+        order_quantity = order.quantity
+
+        market = "0xdd22472e552920b8438158ea7238bfadfa4f736aa4cee91a6b86c39ead110917"
+        asset_id = "21742633143463906290569050155826241533067272736897614950488156847949938836455"
+        trade_payload = {
+            "id": "trade-recovery-1",
+            "taker_order_id": venue_order_id_str,
+            "trader_side": "TAKER",
+            "side": "BUY",
+            "asset_id": asset_id,
+            "market": market,
+            "outcome": "Yes",
+            "price": "0.500",
+            "size": str(float(order_quantity)),
+            "match_time": "1700000000",
+            "last_update": "1700000001",
+            "fee_rate_bps": "0",
+            "status": "MATCHED",
+            "maker_address": "0xmaker",
+            "owner": self.http_client.creds.api_key,
+            "maker_orders": [],
+            "transaction_hash": "0xtx",
+            "bucket_index": 0,
+        }
+        self.http_client.get_order = MagicMock(return_value=None)
+        self.http_client.get_trades = MagicMock(return_value=[trade_payload])
+
+        command = GenerateOrderStatusReport(
+            instrument_id=order.instrument_id,
+            client_order_id=client_order_id,
+            venue_order_id=venue_order_id,
+            command_id=UUID4(),
+            ts_init=self.clock.timestamp_ns(),
+        )
+
+        report = await self.exec_client.generate_order_status_report(command)
+
+        assert report is not None
+        assert report.order_status == OrderStatus.FILLED
+        assert report.venue_order_id == venue_order_id
+        assert report.client_order_id == client_order_id
+        assert report.filled_qty == order_quantity
+        assert report.quantity == order_quantity
+        assert report.avg_px == Decimal("0.5")
+
+    @pytest.mark.asyncio
+    async def test_generate_order_status_report_recovers_canceled_when_no_trades(self):
+        """
+        When the venue has no record of the order and no trades exist for it, surface
+        `CANCELED` so the engine retires the local entry gracefully instead of dropping
+        it via the not-found-at-venue rejection path.
+        """
+        from nautilus_trader.execution.messages import GenerateOrderStatusReport
+
+        venue_order_id_str = "0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab"
+        client_order_id, venue_order_id = self._setup_test_order_with_venue_id(
+            venue_order_id_str,
+            use_ws_instrument=True,
+            price=Price.from_str("0.500"),
+        )
+
+        self.http_client.get_order = MagicMock(return_value=None)
+        # Trades exist for unrelated orders only.
+        self.http_client.get_trades = MagicMock(return_value=[])
+
+        command = GenerateOrderStatusReport(
+            instrument_id=self.cache.order(client_order_id).instrument_id,
+            client_order_id=client_order_id,
+            venue_order_id=venue_order_id,
+            command_id=UUID4(),
+            ts_init=self.clock.timestamp_ns(),
+        )
+
+        report = await self.exec_client.generate_order_status_report(command)
+
+        assert report is not None
+        assert report.order_status == OrderStatus.CANCELED
+        assert report.venue_order_id == venue_order_id
+        assert report.client_order_id == client_order_id
+        assert report.cancel_reason == "ORDER_NOT_FOUND_AT_VENUE"
+
+    def _build_recovery_trade_payload(
+        self,
+        venue_order_id_str: str,
+        size: str,
+        price: str = "0.500",
+    ) -> dict[str, Any]:
+        market = "0xdd22472e552920b8438158ea7238bfadfa4f736aa4cee91a6b86c39ead110917"
+        asset_id = "21742633143463906290569050155826241533067272736897614950488156847949938836455"
+        return {
+            "id": f"trade-recovery-{size}",
+            "taker_order_id": venue_order_id_str,
+            "trader_side": "TAKER",
+            "side": "BUY",
+            "asset_id": asset_id,
+            "market": market,
+            "outcome": "Yes",
+            "price": price,
+            "size": size,
+            "match_time": "1700000000",
+            "last_update": "1700000001",
+            "fee_rate_bps": "0",
+            "status": "MATCHED",
+            "maker_address": "0xmaker",
+            "owner": self.http_client.creds.api_key,
+            "maker_orders": [],
+            "transaction_hash": "0xtx",
+            "bucket_index": 0,
+        }
+
+    @pytest.mark.asyncio
+    async def test_generate_order_status_report_recovers_filled_with_dust_snap(self):
+        """
+        CLOB cent-tick truncation: trade size lands within `DUST_SNAP_THRESHOLD` below
+        cached quantity. Recovery must surface `FILLED` with `filled_qty` snapped up to
+        the cached quantity. Uses a precision-6 instrument so a sub-0.01 diff is
+        representable.
+        """
+        from nautilus_trader.execution.messages import GenerateOrderStatusReport
+
+        market = "0xdd22472e552920b8438158ea7238bfadfa4f736aa4cee91a6b86c39ead110917"
+        asset_id = "21742633143463906290569050155826241533067272736897614950488156847949938836455"
+        instrument_id = get_polymarket_instrument_id(market, asset_id)
+        instrument = BinaryOption(
+            instrument_id=instrument_id,
+            raw_symbol=Symbol(instrument_id.symbol.value),
+            outcome="Yes",
+            description="Dust precision-6 BinaryOption",
+            asset_class=AssetClass.ALTERNATIVE,
+            currency=USDC,
+            price_precision=3,
+            price_increment=Price.from_str("0.001"),
+            size_precision=6,
+            size_increment=Quantity.from_str("0.000001"),
+            activation_ns=0,
+            expiration_ns=0,
+            max_quantity=None,
+            min_quantity=Quantity.from_str("1"),
+            maker_fee=Decimal(0),
+            taker_fee=Decimal(0),
+            ts_event=0,
+            ts_init=0,
+        )
+        self.cache.add_instrument(instrument)
+
+        venue_order_id = VenueOrderId(
+            "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef12",
+        )
+        order = self.strategy.order_factory.limit(
+            instrument_id=instrument_id,
+            order_side=OrderSide.BUY,
+            quantity=Quantity.from_str("10.000000"),
+            price=Price.from_str("0.500"),
+        )
+        order.apply(TestEventStubs.order_submitted(order))
+        self.cache.add_order(order, None)
+        self.cache.add_venue_order_id(order.client_order_id, venue_order_id)
+
+        # Diff = 10.000000 - 9.995000 = 0.005, within the 0.01 dust band.
+        trade_payload = self._build_recovery_trade_payload(
+            venue_order_id.value,
+            "9.995000",
+        )
+        self.http_client.get_order = MagicMock(return_value=None)
+        self.http_client.get_trades = MagicMock(return_value=[trade_payload])
+
+        command = GenerateOrderStatusReport(
+            instrument_id=instrument_id,
+            client_order_id=order.client_order_id,
+            venue_order_id=venue_order_id,
+            command_id=UUID4(),
+            ts_init=self.clock.timestamp_ns(),
+        )
+
+        report = await self.exec_client.generate_order_status_report(command)
+
+        assert report is not None
+        assert report.order_status == OrderStatus.FILLED
+        assert report.filled_qty == Quantity.from_str("10.000000")
+        assert report.quantity == Quantity.from_str("10.000000")
+
+    @pytest.mark.asyncio
+    async def test_generate_order_status_report_recovers_canceled_with_partial_fill(self):
+        """
+        Recovered fills fall short of cached quantity by more than dust: surface
+        `CANCELED` with the partial `filled_qty` preserved.
+        """
+        from nautilus_trader.execution.messages import GenerateOrderStatusReport
+
+        venue_order_id_str = "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef13"
+        client_order_id, venue_order_id = self._setup_test_order_with_venue_id(
+            venue_order_id_str,
+            use_ws_instrument=True,
+            price=Price.from_str("0.500"),
+        )
+        order = self.cache.order(client_order_id)
+
+        trade_payload = self._build_recovery_trade_payload(venue_order_id_str, "2.00")
+        self.http_client.get_order = MagicMock(return_value=None)
+        self.http_client.get_trades = MagicMock(return_value=[trade_payload])
+
+        command = GenerateOrderStatusReport(
+            instrument_id=order.instrument_id,
+            client_order_id=client_order_id,
+            venue_order_id=venue_order_id,
+            command_id=UUID4(),
+            ts_init=self.clock.timestamp_ns(),
+        )
+
+        report = await self.exec_client.generate_order_status_report(command)
+
+        assert report is not None
+        assert report.order_status == OrderStatus.CANCELED
+        assert report.filled_qty == Quantity.from_str("2.00")
+        assert report.quantity == order.quantity
+        assert report.avg_px == Decimal("0.5")
+        assert report.cancel_reason is None
+
+    @pytest.mark.asyncio
+    async def test_generate_order_status_report_returns_none_without_cached_order(self):
+        """
+        Trades exist for a venue order ID with no matching cached order: don't
+        synthesize an external order from trade history alone, return ``None`` and
+        defer to the engine's not-found-at-venue path.
+        """
+        from nautilus_trader.execution.messages import GenerateOrderStatusReport
+
+        venue_order_id_str = "0xfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeedfeed"
+        venue_order_id = VenueOrderId(venue_order_id_str)
+
+        trade_payload = self._build_recovery_trade_payload(venue_order_id_str, "5.00")
+        self.http_client.get_order = MagicMock(return_value=None)
+        self.http_client.get_trades = MagicMock(return_value=[trade_payload])
+
+        instrument_id = get_polymarket_instrument_id(
+            "0xdd22472e552920b8438158ea7238bfadfa4f736aa4cee91a6b86c39ead110917",
+            "21742633143463906290569050155826241533067272736897614950488156847949938836455",
+        )
+        command = GenerateOrderStatusReport(
+            instrument_id=instrument_id,
+            client_order_id=None,
+            venue_order_id=venue_order_id,
+            command_id=UUID4(),
+            ts_init=self.clock.timestamp_ns(),
+        )
+
+        report = await self.exec_client.generate_order_status_report(command)
+
+        assert report is None
+
+    @pytest.mark.asyncio
+    async def test_generate_order_status_report_resolves_via_venue_order_id_index(self):
+        """
+        Command supplies only `venue_order_id`; recovery must look up the cached order
+        through the cache's venue->client index instead of returning ``None``.
+        """
+        from nautilus_trader.execution.messages import GenerateOrderStatusReport
+
+        venue_order_id_str = "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef14"
+        client_order_id, venue_order_id = self._setup_test_order_with_venue_id(
+            venue_order_id_str,
+            use_ws_instrument=True,
+            price=Price.from_str("0.500"),
+        )
+        order = self.cache.order(client_order_id)
+
+        trade_payload = self._build_recovery_trade_payload(
+            venue_order_id_str,
+            str(float(order.quantity)),
+        )
+        self.http_client.get_order = MagicMock(return_value=None)
+        self.http_client.get_trades = MagicMock(return_value=[trade_payload])
+
+        command = GenerateOrderStatusReport(
+            instrument_id=order.instrument_id,
+            client_order_id=None,
+            venue_order_id=venue_order_id,
+            command_id=UUID4(),
+            ts_init=self.clock.timestamp_ns(),
+        )
+
+        report = await self.exec_client.generate_order_status_report(command)
+
+        assert report is not None
+        assert report.order_status == OrderStatus.FILLED
+        assert report.client_order_id == client_order_id
+        assert report.quantity == order.quantity
+        assert report.filled_qty == order.quantity
 
     def test_handle_ws_message_invalid_json(self):
         """
@@ -1072,6 +1590,202 @@ class TestPolymarketExecutionClient:
         assert cached_client_order_id is None
 
     @pytest.mark.asyncio
+    async def test_submit_order_statusless_poly_api_exception_is_unknown(self, mocker):
+        """
+        Status-less PolyApiException after posting has an unknown venue outcome, so it
+        must not emit OrderRejected.
+        """
+        # Arrange
+        expected_venue_order_id = VenueOrderId("0xexpected_order_id")
+        mock_create_order = mocker.patch.object(self.http_client, "create_order")
+        mock_post_order = mocker.patch.object(self.http_client, "post_order")
+        mocker.patch.object(
+            self.exec_client,
+            "_expected_venue_order_id",
+            return_value=expected_venue_order_id,
+        )
+        rejected_spy = mocker.spy(self.exec_client, "generate_order_rejected")
+
+        mock_create_order.return_value = {"signed_order": "mock_signed"}
+        mock_post_order.side_effect = PolyApiException(error_msg="Request exception!")
+
+        order = self.strategy.order_factory.limit(
+            instrument_id=ELECTION_INSTRUMENT.id,
+            order_side=OrderSide.BUY,
+            quantity=Quantity.from_str("10"),
+            price=Price.from_str("0.50"),
+        )
+        self.cache.add_order(order, None)
+
+        submit_order = SubmitOrder(
+            trader_id=self.trader_id,
+            strategy_id=self.strategy.id,
+            position_id=None,
+            order=order,
+            command_id=UUID4(),
+            ts_init=0,
+        )
+
+        # Act
+        await self.exec_client._submit_order(submit_order)
+
+        # Assert
+        mock_create_order.assert_called_once()
+        mock_post_order.assert_called_once()
+        rejected_spy.assert_not_called()
+        assert self.cache.client_order_id(expected_venue_order_id) == order.client_order_id
+
+    @pytest.mark.asyncio
+    async def test_submit_market_order_statusless_poly_api_exception_updates_quote_quantity(
+        self,
+        mocker,
+    ):
+        """
+        Unknown market BUY submit results still need the signed quote-to-base update.
+        """
+        # Arrange
+        expected_venue_order_id = VenueOrderId("0xexpected_market_order_id")
+        mock_create_market_order = mocker.patch.object(self.http_client, "create_market_order")
+        mock_post_order = mocker.patch.object(self.http_client, "post_order")
+        mocker.patch.object(
+            self.exec_client,
+            "_expected_venue_order_id",
+            return_value=expected_venue_order_id,
+        )
+        rejected_spy = mocker.spy(self.exec_client, "generate_order_rejected")
+        send_spy = mocker.spy(self.exec_client, "_send_order_event")
+
+        mock_signed = MagicMock()
+        mock_signed.takerAmount = "20000000"
+        mock_create_market_order.return_value = mock_signed
+        mock_post_order.side_effect = PolyApiException(error_msg="Request exception!")
+
+        order = self.strategy.order_factory.market(
+            instrument_id=ELECTION_INSTRUMENT.id,
+            order_side=OrderSide.BUY,
+            quantity=Quantity.from_str("10.00"),
+            quote_quantity=True,
+            time_in_force=TimeInForce.FOK,
+        )
+        self.cache.add_order(order, None)
+
+        submit_order = SubmitOrder(
+            trader_id=self.trader_id,
+            strategy_id=self.strategy.id,
+            position_id=None,
+            order=order,
+            command_id=UUID4(),
+            ts_init=0,
+        )
+
+        # Act
+        await self.exec_client._submit_order(submit_order)
+
+        # Assert
+        mock_create_market_order.assert_called_once()
+        mock_post_order.assert_called_once()
+        rejected_spy.assert_not_called()
+        assert self.cache.client_order_id(expected_venue_order_id) == order.client_order_id
+        assert self.exec_client._fill_tracker.contains(expected_venue_order_id)
+
+        updated_calls = [
+            call
+            for call in send_spy.call_args_list
+            if type(call.args[0]).__name__ == "OrderUpdated"
+        ]
+        assert len(updated_calls) == 1
+
+        updated_event = updated_calls[0].args[0]
+        assert updated_event.venue_order_id == expected_venue_order_id
+        assert updated_event.quantity == Quantity.from_str("20.00")
+        assert not updated_event.is_quote_quantity
+
+    def test_expected_venue_order_id_derives_v2_order_hash(self):
+        """
+        Expected venue order IDs must match the py-clob-client V2 order hash.
+        """
+        # Arrange
+        private_key = f"0x{1:064x}"
+        chain_id = 137
+        signer = Signer(private_key, chain_id)
+        self.http_client.signer = signer
+
+        contract_config = get_contract_config(chain_id)
+        builder = ExchangeOrderBuilderV2(
+            contract_config.exchange_v2,
+            chain_id,
+            signer,
+            generate_salt=lambda: "123456789",
+        )
+        signed_order = builder.build_signed_order(
+            OrderDataV2(
+                maker=signer.address(),
+                signer=signer.address(),
+                tokenId="123456789",
+                makerAmount="5000000",
+                takerAmount="10000000",
+                side=Side.BUY,
+                signatureType=SignatureTypeV2.EOA,
+                timestamp="1713398400000",
+                metadata="0x" + "0" * 64,
+                builder=POLYMARKET_NAUTILUS_BUILDER_CODE,
+                expiration="0",
+            ),
+        )
+        expected_order_id = VenueOrderId(
+            builder.build_order_hash(builder.build_order_typed_data(signed_order)),
+        )
+
+        # Act
+        venue_order_id = self.exec_client._expected_venue_order_id(
+            signed_order,
+            neg_risk=False,
+        )
+
+        # Assert
+        assert venue_order_id == expected_order_id
+
+    def test_unknown_submit_cached_expected_id_recovers_ws_order(self, mocker):
+        """
+        Unknown submits must let a later WS order update resolve as local.
+        """
+        # Arrange
+        raw_message = pkgutil.get_data(
+            package="tests.integration_tests.adapters.polymarket.resources.ws_messages",
+            resource="order_placement.json",
+        )
+        msg = msgspec.json.decode(raw_message)
+        msg = self.exec_client._decoder_user_msg.decode(msgspec.json.encode(msg))
+
+        instrument_id = get_polymarket_instrument_id(msg.market, msg.asset_id)
+        order = self.strategy.order_factory.limit(
+            instrument_id=instrument_id,
+            order_side=OrderSide.BUY,
+            quantity=Quantity.from_str("5"),
+            price=Price.from_str("0.513"),
+        )
+        order.apply(TestEventStubs.order_submitted(order))
+        self.cache.add_order(order, None)
+
+        venue_order_id = msg.venue_order_id()
+        accepted_spy = mocker.spy(self.exec_client, "generate_order_accepted")
+
+        # Act
+        self.exec_client._handle_unknown_submit_result(
+            order,
+            venue_order_id,
+            "Request exception!",
+        )
+        self.exec_client._handle_ws_order_msg(msg, wait_for_ack=False)
+
+        # Assert
+        assert self.cache.client_order_id(venue_order_id) == order.client_order_id
+        accepted_spy.assert_called_once()
+        call_kwargs = accepted_spy.call_args.kwargs
+        assert call_kwargs["client_order_id"] == order.client_order_id
+        assert call_kwargs["venue_order_id"] == venue_order_id
+
+    @pytest.mark.asyncio
     async def test_submit_market_buy_without_quote_quantity_denied(self, mocker):
         """
         Market BUY orders must be quote-denominated; verify we emit OrderDenied instead
@@ -1144,6 +1858,56 @@ class TestPolymarketExecutionClient:
         assert denied_kwargs["client_order_id"] == order.client_order_id
         assert "base-denominated quantities" in denied_kwargs["reason"]
 
+    @pytest.mark.asyncio
+    async def test_submit_market_order_unsupported_time_in_force_denied(self, mocker):
+        """
+        Market orders only support IOC/FAK and FOK on Polymarket.
+        """
+        mock_create_market_order = mocker.patch.object(self.http_client, "create_market_order")
+        mock_post_order = mocker.patch.object(self.http_client, "post_order")
+
+        order = self.strategy.order_factory.market(
+            instrument_id=ELECTION_INSTRUMENT.id,
+            order_side=OrderSide.BUY,
+            quantity=Quantity.from_str("10"),
+            quote_quantity=True,
+            time_in_force=TimeInForce.GTC,
+        )
+        self.cache.add_order(order, None)
+
+        submit_order = SubmitOrder(
+            trader_id=self.trader_id,
+            strategy_id=self.strategy.id,
+            position_id=None,
+            order=order,
+            command_id=UUID4(),
+            ts_init=0,
+        )
+
+        denied_spy = mocker.spy(self.exec_client, "generate_order_denied")
+
+        await self.exec_client._submit_order(submit_order)
+
+        mock_create_market_order.assert_not_called()
+        mock_post_order.assert_not_called()
+        denied_spy.assert_called_once()
+        denied_kwargs = denied_spy.call_args.kwargs
+        assert denied_kwargs["client_order_id"] == order.client_order_id
+        assert denied_kwargs["reason"] == "UNSUPPORTED_MARKET_TIME_IN_FORCE"
+
+    def test_market_order_gtd_rejected_by_order_factory(self):
+        """
+        Market GTD orders are rejected before adapter submission.
+        """
+        with pytest.raises(ValueError, match=r"time_in_force.*GTD"):
+            self.strategy.order_factory.market(
+                instrument_id=ELECTION_INSTRUMENT.id,
+                order_side=OrderSide.BUY,
+                quantity=Quantity.from_str("10"),
+                quote_quantity=True,
+                time_in_force=TimeInForce.GTD,
+            )
+
     def test_handle_unknown_instrument_gracefully(self):
         """
         Test handling websocket messages for unknown instruments gracefully.
@@ -1194,8 +1958,9 @@ class TestPolymarketExecutionClient:
         mock_post_order = mocker.patch.object(self.http_client, "post_order")
 
         # Mock signed order with takerAmount (20.00 shares = 20000000 in fixed-point)
+        # SignedOrderV2 is a flat dataclass; takerAmount is a string of base units.
         mock_signed = MagicMock()
-        mock_signed.order = {"takerAmount": 20_000_000}
+        mock_signed.takerAmount = "20000000"
         mock_create_market_order.return_value = mock_signed
         mock_post_order.return_value = {"success": True, "orderID": "test_market_order_id"}
 
@@ -1229,12 +1994,76 @@ class TestPolymarketExecutionClient:
         assert call_args.amount == 10.0
         assert call_args.side == "BUY"
         assert call_args.price == 0  # Market order should have price 0 (calculated server-side)
-        assert call_args.order_type == "FOK"  # Market orders always use FOK
+        assert call_args.order_type == "FOK"
+        assert call_args.user_usdc_balance == 1000.0
 
         # Check that venue order ID was cached
         venue_order_id = VenueOrderId("test_market_order_id")
         cached_client_order_id = self.cache.client_order_id(venue_order_id)
         assert cached_client_order_id == market_order.client_order_id
+
+    @pytest.mark.asyncio
+    async def test_market_buy_collateral_balance_cached_until_account_state_refresh(self, mocker):
+        # Pins the contract for `_collateral_balance_pusd`: the cache is
+        # populated lazily and only refreshed by `generate_account_state`.
+        # Two market BUYs in a row (no account state in between) must use
+        # the same `user_usdc_balance` value, even if the venue balance
+        # has changed underneath; once account state runs, the next BUY
+        # picks up the new value.
+        balance_responses = [
+            {"balance": str(7_000_000)},  # 7 pUSD on first BUY
+            {"balance": str(99_000_000)},  # 99 pUSD if the cache were re-fetched (must NOT be)
+            {"balance": str(42_000_000)},  # 42 pUSD picked up by generate_account_state
+        ]
+        self.http_client.get_balance_allowance.side_effect = balance_responses
+
+        mock_create_market_order = mocker.patch.object(self.http_client, "create_market_order")
+        mock_post_order = mocker.patch.object(self.http_client, "post_order")
+        mock_signed = MagicMock()
+        mock_signed.takerAmount = "20000000"
+        mock_create_market_order.return_value = mock_signed
+        mock_post_order.return_value = {"success": True, "orderID": "x"}
+
+        async def submit_buy(client_order_id_suffix: str) -> None:
+            order = self.strategy.order_factory.market(
+                instrument_id=ELECTION_INSTRUMENT.id,
+                order_side=OrderSide.BUY,
+                quantity=Quantity.from_str("10.00"),
+                quote_quantity=True,
+                time_in_force=TimeInForce.FOK,
+            )
+            self.cache.add_order(order, None)
+            cmd = SubmitOrder(
+                trader_id=self.trader_id,
+                strategy_id=self.strategy.id,
+                position_id=None,
+                order=order,
+                command_id=UUID4(),
+                ts_init=0,
+            )
+            await self.exec_client._submit_order(cmd)
+
+        # First BUY: cache miss, fetches balance #1 (7 pUSD).
+        await submit_buy("first")
+        first_call_balance = mock_create_market_order.call_args_list[0][0][0].user_usdc_balance
+        assert first_call_balance == 7.0
+
+        # Second BUY without an account-state refresh: cache holds 7 pUSD.
+        # Even though the next get_balance_allowance() would return 99 pUSD,
+        # we must observe the cached value because the cache is not invalidated
+        # by individual submissions.
+        await submit_buy("second")
+        second_call_balance = mock_create_market_order.call_args_list[1][0][0].user_usdc_balance
+        assert second_call_balance == 7.0
+
+        # Run account state: refreshes the cache from balance #2 (99 pUSD).
+        # That consumes the second side_effect entry.
+        await self.exec_client._update_account_state()
+
+        # Third BUY now sees the refreshed cache value (99 pUSD).
+        await submit_buy("third")
+        third_call_balance = mock_create_market_order.call_args_list[2][0][0].user_usdc_balance
+        assert third_call_balance == 99.0
 
     @pytest.mark.asyncio
     async def test_submit_market_buy_quote_to_base_conversion(self, mocker):
@@ -1255,8 +2084,9 @@ class TestPolymarketExecutionClient:
         send_spy = mocker.spy(self.exec_client, "_send_order_event")
 
         # 20.00 shares * 10^6 fixed-point (matches 10 USDC / 0.50 crossing price)
+        # SignedOrderV2 is a flat dataclass; takerAmount is a string of base units.
         mock_signed = MagicMock()
-        mock_signed.order = {"takerAmount": 20_000_000}
+        mock_signed.takerAmount = "20000000"
         mock_create_market_order.return_value = mock_signed
         mock_post_order.return_value = {"success": True, "orderID": "test_qty_order_id"}
 
@@ -1335,7 +2165,51 @@ class TestPolymarketExecutionClient:
         assert call_args.amount == 5.0
         assert call_args.side == "SELL"
         assert call_args.price == 0
-        assert call_args.order_type == "FOK"  # Market orders always use FOK
+        assert call_args.order_type == "FOK"
+
+    @pytest.mark.asyncio
+    async def test_submit_market_order_with_ioc_uses_fak(self, mocker):
+        """
+        Test market order submission with IOC time in force.
+        """
+        mock_create_market_order = mocker.patch.object(self.http_client, "create_market_order")
+        mock_post_order = mocker.patch.object(self.http_client, "post_order")
+        mocker.patch.object(
+            self.exec_client,
+            "_expected_venue_order_id",
+            return_value=VenueOrderId("test_ioc_market_order_id"),
+        )
+
+        mock_signed = MagicMock()
+        mock_create_market_order.return_value = mock_signed
+        mock_post_order.return_value = {"success": True, "orderID": "test_ioc_market_order_id"}
+
+        market_order = self.strategy.order_factory.market(
+            instrument_id=ELECTION_INSTRUMENT.id,
+            order_side=OrderSide.SELL,
+            quantity=Quantity.from_str("5"),
+            time_in_force=TimeInForce.IOC,
+        )
+        self.cache.add_order(market_order, None)
+
+        submit_order = SubmitOrder(
+            trader_id=self.trader_id,
+            strategy_id=self.strategy.id,
+            position_id=None,
+            order=market_order,
+            command_id=UUID4(),
+            ts_init=0,
+        )
+
+        await self.exec_client._submit_order(submit_order)
+
+        mock_create_market_order.assert_called_once()
+        call_args = mock_create_market_order.call_args[0][0]
+        assert call_args.amount == 5.0
+        assert call_args.side == "SELL"
+        assert call_args.price == 0
+        assert call_args.order_type == "FAK"
+        assert mock_post_order.call_args[0][1] == "FAK"
 
     @pytest.mark.asyncio
     async def test_submit_limit_order_still_works(self, mocker):
@@ -1517,6 +2391,112 @@ class TestPolymarketExecutionClient:
         assert call_kwargs["client_order_id"] == client_order_id
         assert call_kwargs["venue_order_id"] == venue_order_id
         assert call_kwargs["liquidity_side"] == LiquiditySide.MAKER
+
+    def test_taker_fill_uses_instrument_taker_fee_for_commission(self, mocker):
+        """
+        Taker fills compute commission from `instrument.taker_fee` using the
+        Polymarket formula `fee = C * feeRate * p * (1 - p)`.
+
+        References
+        ----------
+        https://docs.polymarket.com/trading/fees
+
+        """
+        # Arrange
+        market = "0xdd22472e552920b8438158ea7238bfadfa4f736aa4cee91a6b86c39ead110917"
+        asset_id = "21742633143463906290569050155826241533067272736897614950488156847949938836455"
+        instrument_id = get_polymarket_instrument_id(market, asset_id)
+
+        fee_paying_instrument = BinaryOption(
+            instrument_id=instrument_id,
+            raw_symbol=Symbol(f"{instrument_id.symbol.value}"),
+            outcome="Yes",
+            description="Fee-paying test instrument",
+            asset_class=AssetClass.ALTERNATIVE,
+            currency=USDC,
+            price_precision=3,
+            price_increment=Price.from_str("0.001"),
+            size_precision=2,
+            size_increment=Quantity.from_str("0.01"),
+            activation_ns=0,
+            expiration_ns=0,
+            max_quantity=None,
+            min_quantity=Quantity.from_str("1"),
+            maker_fee=Decimal(0),
+            taker_fee=Decimal("0.03"),  # sports rate from feeSchedule.rate
+            ts_event=0,
+            ts_init=0,
+        )
+        self.cache.add_instrument(fee_paying_instrument)
+
+        order = self.strategy.order_factory.limit(
+            instrument_id=instrument_id,
+            order_side=OrderSide.BUY,
+            quantity=Quantity.from_str("100"),
+            price=Price.from_str("0.500"),
+        )
+        submitted = TestEventStubs.order_submitted(order)
+        order.apply(submitted)
+
+        venue_order_id = VenueOrderId("0xtaker_commission_test_order")
+        self.cache.add_order(order, None)
+        self.cache.add_venue_order_id(order.client_order_id, venue_order_id)
+        self.exec_client._fill_tracker.register(
+            venue_order_id=venue_order_id,
+            submitted_qty=Quantity.from_str("100"),
+            order_side=OrderSide.BUY,
+            instrument_id=instrument_id,
+            size_precision=2,
+            price_precision=3,
+        )
+
+        trade_payload = {
+            "asset_id": asset_id,
+            "bucket_index": 0,
+            "event_type": "trade",
+            "fee_rate_bps": "1000",  # Max cap on message; not used for commission
+            "id": "taker-commission-test-trade",
+            "last_update": "1725958682",
+            "maker_address": "0x1234567890123456789012345678901234567890",
+            "maker_orders": [
+                {
+                    "asset_id": asset_id,
+                    "fee_rate_bps": "0",
+                    "maker_address": "0x5678",
+                    "matched_amount": "100",
+                    "order_id": "0xmaker_order_counterparty",
+                    "outcome": "Yes",
+                    "owner": "maker-owner-id",
+                    "price": "0.50",
+                },
+            ],
+            "market": market,
+            "match_time": "1725958681",
+            "outcome": "Yes",
+            "owner": self.http_client.creds.api_key,
+            "price": "0.50",
+            "side": "BUY",
+            "size": "100",
+            "status": "MATCHED",
+            "taker_order_id": venue_order_id.value,
+            "timestamp": "1725958682125",
+            "trade_owner": self.http_client.creds.api_key,
+            "trader_side": "TAKER",
+            "transaction_hash": "0xdeadbeef",
+            "type": "TRADE",
+        }
+        msg = self.exec_client._decoder_user_msg.decode(msgspec.json.encode(trade_payload))
+        filled_spy = mocker.spy(self.exec_client, "generate_order_filled")
+
+        # Act
+        self.exec_client._handle_ws_trade_msg(msg, wait_for_ack=False)
+
+        # Assert
+        filled_spy.assert_called_once()
+        call_kwargs = filled_spy.call_args.kwargs
+        # 100 * 0.03 * 0.50 * 0.50 = 0.75 USDC
+        assert call_kwargs["commission"] == Money(0.75, pUSD)
+        assert call_kwargs["liquidity_side"] == LiquiditySide.TAKER
 
     @pytest.mark.parametrize(
         ("status", "should_update_account"),
@@ -2771,6 +3751,67 @@ class TestPolymarketBatchOrderSubmission:
         assert "Insufficient balance" in reject_call.kwargs["reason"]
 
     @pytest.mark.asyncio
+    async def test_submit_order_list_statusless_poly_api_exception_is_unknown(self, mocker):
+        """
+        Status-less PolyApiException after batch posting has an unknown venue outcome,
+        so it must not reject the whole batch.
+        """
+        # Arrange
+        expected_venue_order_id_1 = VenueOrderId("0xexpected_batch_order_1")
+        expected_venue_order_id_2 = VenueOrderId("0xexpected_batch_order_2")
+        mock_create_order = mocker.patch.object(self.http_client, "create_order")
+        mock_post_orders = mocker.patch.object(self.http_client, "post_orders")
+        mocker.patch.object(
+            self.exec_client,
+            "_expected_venue_order_id",
+            side_effect=[expected_venue_order_id_1, expected_venue_order_id_2],
+        )
+        rejected_spy = mocker.spy(self.exec_client, "generate_order_rejected")
+
+        mock_create_order.return_value = {"signed_order": "mock_signed"}
+        mock_post_orders.side_effect = PolyApiException(error_msg="Request exception!")
+
+        order1 = self.strategy.order_factory.limit(
+            instrument_id=ELECTION_INSTRUMENT.id,
+            order_side=OrderSide.BUY,
+            quantity=Quantity.from_str("10"),
+            price=Price.from_str("0.50"),
+        )
+        order2 = self.strategy.order_factory.limit(
+            instrument_id=ELECTION_INSTRUMENT.id,
+            order_side=OrderSide.SELL,
+            quantity=Quantity.from_str("5"),
+            price=Price.from_str("0.60"),
+        )
+
+        self.cache.add_order(order1, None)
+        self.cache.add_order(order2, None)
+
+        order_list = OrderList(
+            order_list_id=OrderListId("BATCH-UNKNOWN"),
+            orders=[order1, order2],
+        )
+
+        submit_order_list = SubmitOrderList(
+            trader_id=self.trader_id,
+            strategy_id=self.strategy.id,
+            order_list=order_list,
+            position_id=None,
+            command_id=UUID4(),
+            ts_init=0,
+        )
+
+        # Act
+        await self.exec_client._submit_order_list(submit_order_list)
+
+        # Assert
+        assert mock_create_order.call_count == 2
+        mock_post_orders.assert_called_once()
+        rejected_spy.assert_not_called()
+        assert self.cache.client_order_id(expected_venue_order_id_1) == order1.client_order_id
+        assert self.cache.client_order_id(expected_venue_order_id_2) == order2.client_order_id
+
+    @pytest.mark.asyncio
     async def test_submit_order_list_with_market_order_denied(self, mocker):
         """
         Test that market orders in batch are denied.
@@ -3088,6 +4129,9 @@ class TestPolymarketCancelAndPostOnly:
 
         # Assert
         mock_cancel_market.assert_called_once()
+        payload = mock_cancel_market.call_args.args[0]
+        assert payload.market is not None
+        assert payload.asset_id is not None
 
     @pytest.mark.asyncio
     async def test_cancel_market_orders_all_markets(self, mocker):
@@ -3107,8 +4151,12 @@ class TestPolymarketCancelAndPostOnly:
         # Act
         await self.exec_client._cancel_market_orders()
 
-        # Assert
-        mock_cancel_market.assert_called_once_with("", "")
+        # Assert: V2 takes a single OrderMarketCancelParams payload; both
+        # `market` and `asset_id` default to None for an all-markets cancel.
+        mock_cancel_market.assert_called_once()
+        payload = mock_cancel_market.call_args.args[0]
+        assert payload.market is None
+        assert payload.asset_id is None
 
     # -------------------------------------------------------------------------
     # Tests for post_only order support
@@ -3366,7 +4414,7 @@ class TestPolymarketCancelAndPostOnly:
         # Arrange
         mock_create_order = mocker.patch.object(self.http_client, "create_order")
         mock_post_orders = mocker.patch.object(self.http_client, "post_orders")
-        mock_cancel = mocker.patch.object(self.http_client, "cancel")
+        mock_cancel = mocker.patch.object(self.http_client, "cancel_order")
 
         mock_create_order.return_value = {"signed_order": "mock_signed"}
         mock_post_orders.return_value = [
@@ -3416,7 +4464,7 @@ class TestPolymarketCancelAndPostOnly:
         await asyncio.sleep(0.1)
 
         # Assert
-        mock_cancel.assert_called_once_with(order_id="0xbatch_deferred_cancel")
+        mock_cancel.assert_called_once_with(OrderPayload(orderID="0xbatch_deferred_cancel"))
 
 
 class TestPolymarketGenerateCancelEvent:
@@ -3563,7 +4611,7 @@ class TestPolymarketGenerateCancelEvent:
         # Arrange
         mock_create_order = mocker.patch.object(self.http_client, "create_order")
         mock_post_order = mocker.patch.object(self.http_client, "post_order")
-        mock_cancel = mocker.patch.object(self.http_client, "cancel")
+        mock_cancel = mocker.patch.object(self.http_client, "cancel_order")
 
         mock_create_order.return_value = {"signed_order": "mock_signed"}
         mock_post_order.return_value = {"success": True, "orderID": "0xdeferred_cancel_id"}
@@ -3605,7 +4653,42 @@ class TestPolymarketGenerateCancelEvent:
         await asyncio.sleep(0.1)
 
         # Assert
-        mock_cancel.assert_called_once_with(order_id="0xdeferred_cancel_id")
+        mock_cancel.assert_called_once_with(OrderPayload(orderID="0xdeferred_cancel_id"))
+
+    @pytest.mark.asyncio
+    async def test_unknown_submit_result_triggers_deferred_cancel(self, mocker):
+        """
+        Unknown submit results issue a deferred cancel once the expected order ID is
+        known.
+        """
+        # Arrange
+        expected_venue_order_id = VenueOrderId("0xunknown_deferred_cancel_id")
+        mock_cancel = mocker.patch.object(self.http_client, "cancel_order")
+        mock_cancel.return_value = {
+            "canceled": ["0xunknown_deferred_cancel_id"],
+            "not_canceled": {},
+        }
+
+        order = self.strategy.order_factory.limit(
+            instrument_id=ELECTION_INSTRUMENT.id,
+            order_side=OrderSide.BUY,
+            quantity=Quantity.from_str("5"),
+            price=Price.from_str("0.50"),
+        )
+        self.cache.add_order(order, None)
+        order.apply(TestEventStubs.order_submitted(order))
+        order.apply(TestEventStubs.order_pending_cancel(order))
+
+        # Act
+        self.exec_client._handle_unknown_submit_result(
+            order,
+            expected_venue_order_id,
+            "Request exception!",
+        )
+        await asyncio.sleep(0.1)
+
+        # Assert
+        mock_cancel.assert_called_once_with(OrderPayload(orderID="0xunknown_deferred_cancel_id"))
 
     @pytest.mark.asyncio
     async def test_deferred_cancel_handles_rejection(self, mocker):
@@ -3615,7 +4698,7 @@ class TestPolymarketGenerateCancelEvent:
         # Arrange
         mock_create_order = mocker.patch.object(self.http_client, "create_order")
         mock_post_order = mocker.patch.object(self.http_client, "post_order")
-        mock_cancel = mocker.patch.object(self.http_client, "cancel")
+        mock_cancel = mocker.patch.object(self.http_client, "cancel_order")
         cancel_event_spy = mocker.spy(self.exec_client, "_generate_cancel_event")
 
         mock_create_order.return_value = {"signed_order": "mock_signed"}
@@ -3653,7 +4736,7 @@ class TestPolymarketGenerateCancelEvent:
         await asyncio.sleep(0.1)
 
         # Assert
-        mock_cancel.assert_called_once_with(order_id="0xdeferred_reject_id")
+        mock_cancel.assert_called_once_with(OrderPayload(orderID="0xdeferred_reject_id"))
         cancel_event_spy.assert_called_once()
 
     @pytest.mark.asyncio
@@ -3663,7 +4746,7 @@ class TestPolymarketGenerateCancelEvent:
         not yet available.
         """
         # Arrange
-        mock_cancel = mocker.patch.object(self.http_client, "cancel")
+        mock_cancel = mocker.patch.object(self.http_client, "cancel_order")
 
         order = self.strategy.order_factory.limit(
             instrument_id=ELECTION_INSTRUMENT.id,
@@ -3692,3 +4775,82 @@ class TestPolymarketGenerateCancelEvent:
 
         # Assert - no HTTP cancel sent (cancel was deferred)
         mock_cancel.assert_not_called()
+
+    def test_calculate_commission_strategy_buy_fill(self):
+        # Issue #3860 strategy BUY fill:
+        # qty=15.463900, price=0.97, fee_rate=0.072
+        # Expected: 15.4639 * 0.97 * 0.072 * (1 - 0.97) = 0.03240
+        instrument = BinaryOption(
+            instrument_id=ELECTION_INSTRUMENT.id,
+            raw_symbol=ELECTION_INSTRUMENT.raw_symbol,
+            outcome="Yes",
+            description="test",
+            asset_class=AssetClass.ALTERNATIVE,
+            currency=USDC,
+            price_precision=3,
+            price_increment=Price.from_str("0.001"),
+            size_precision=6,
+            size_increment=Quantity.from_str("0.000001"),
+            activation_ns=0,
+            expiration_ns=0,
+            max_quantity=None,
+            min_quantity=None,
+            maker_fee=Decimal(0),
+            taker_fee=Decimal("0.072"),
+            ts_event=0,
+            ts_init=0,
+        )
+
+        result = self.exec_client.calculate_commission(
+            instrument,
+            Quantity.from_str("15.463900"),
+            Price.from_str("0.970"),
+            LiquiditySide.TAKER,
+        )
+
+        assert result == Money(0.03240, pUSD)
+
+    def test_calculate_commission_reconciliation_sell_fill(self):
+        # Issue #3860 reconciliation EXTERNAL SELL fill:
+        # qty=0.033400, price=0.98, fee_rate=0.072
+        # Expected: 0.0334 * 0.98 * 0.072 * (1 - 0.98) = 0.00005
+        instrument = BinaryOption(
+            instrument_id=ELECTION_INSTRUMENT.id,
+            raw_symbol=ELECTION_INSTRUMENT.raw_symbol,
+            outcome="Yes",
+            description="test",
+            asset_class=AssetClass.ALTERNATIVE,
+            currency=USDC,
+            price_precision=3,
+            price_increment=Price.from_str("0.001"),
+            size_precision=6,
+            size_increment=Quantity.from_str("0.000001"),
+            activation_ns=0,
+            expiration_ns=0,
+            max_quantity=None,
+            min_quantity=None,
+            maker_fee=Decimal(0),
+            taker_fee=Decimal("0.072"),
+            ts_event=0,
+            ts_init=0,
+        )
+
+        result = self.exec_client.calculate_commission(
+            instrument,
+            Quantity.from_str("0.033400"),
+            Price.from_str("0.980"),
+            LiquiditySide.TAKER,
+        )
+
+        # Was 0.002357 with old generic formula (qty * price * fee_rate)
+        assert result == Money(0.00005, pUSD)
+
+    def test_calculate_commission_maker_returns_zero(self):
+        result = self.exec_client.calculate_commission(
+            ELECTION_INSTRUMENT,
+            Quantity.from_str("100.00"),
+            Price.from_str("0.500"),
+            LiquiditySide.MAKER,
+        )
+
+        assert result == Money(0, pUSD)

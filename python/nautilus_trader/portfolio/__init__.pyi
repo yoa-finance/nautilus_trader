@@ -8,15 +8,6 @@ __all__ = [
 
 @typing.final
 class PortfolioConfig:
-    def __init__(
-        self,
-        use_mark_prices: bool | None = None,
-        use_mark_xrates: bool | None = None,
-        bar_updates: bool | None = None,
-        convert_to_account_base_currency: bool | None = None,
-        min_account_state_logging_interval_ms: int | None = None,
-        debug: bool | None = None,
-    ) -> None: ...
     @property
     def use_mark_prices(self) -> bool: ...
     @property
@@ -28,4 +19,16 @@ class PortfolioConfig:
     @property
     def min_account_state_logging_interval_ms(self) -> int | None: ...
     @property
+    def snapshot_interval_ms(self) -> int | None: ...
+    @property
     def debug(self) -> bool: ...
+    def __new__(
+        cls,
+        use_mark_prices: bool | None = None,
+        use_mark_xrates: bool | None = None,
+        bar_updates: bool | None = None,
+        convert_to_account_base_currency: bool | None = None,
+        min_account_state_logging_interval_ms: int | None = None,
+        debug: bool | None = None,
+        snapshot_interval_ms: int | None = None,
+    ) -> PortfolioConfig: ...

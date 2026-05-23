@@ -16,8 +16,8 @@
 //! Python bindings from [PyO3](https://pyo3.rs).
 
 #![allow(
-    clippy::missing_errors_doc,
-    reason = "errors documented on underlying Rust methods"
+    clippy::unused_self,
+    reason = "PyO3 statistic methods take &self for Python API parity even when stateless"
 )]
 
 pub mod analyzer;

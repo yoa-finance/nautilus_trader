@@ -686,7 +686,7 @@ mod tests {
 
     use proptest::prelude::*;
 
-    /// Operations that can be performed on a FifoCache
+    /// Operations that can be performed on a `FifoCache`
     #[derive(Clone, Debug)]
     enum Op {
         Add(u8),
@@ -704,6 +704,7 @@ mod tests {
     /// Apply operations and return final cache state
     fn apply_ops<const N: usize>(ops: &[Op]) -> FifoCache<u8, N> {
         let mut cache = FifoCache::<u8, N>::new();
+
         for op in ops {
             match op {
                 Op::Add(id) => cache.add(*id),

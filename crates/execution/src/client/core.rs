@@ -15,13 +15,9 @@
 
 //! Base execution client functionality.
 
-use std::{
-    cell::RefCell,
-    rc::Rc,
-    sync::atomic::{AtomicBool, Ordering},
-};
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use nautilus_common::cache::Cache;
+use nautilus_common::cache::{Cache, CacheView};
 use nautilus_model::{
     enums::{AccountType, OmsType},
     identifiers::{AccountId, ClientId, ClientOrderId, TraderId, Venue},
@@ -51,7 +47,7 @@ pub struct ExecutionClientCore {
     connected: AtomicBool,
     started: AtomicBool,
     instruments_initialized: AtomicBool,
-    cache: Rc<RefCell<Cache>>,
+    cache: CacheView,
 }
 
 impl Clone for ExecutionClientCore {
@@ -76,7 +72,7 @@ impl Clone for ExecutionClientCore {
 
 impl ExecutionClientCore {
     /// Creates a new [`ExecutionClientCore`] instance.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     #[must_use]
     pub fn new(
         trader_id: TraderId,
@@ -86,7 +82,7 @@ impl ExecutionClientCore {
         account_id: AccountId,
         account_type: AccountType,
         base_currency: Option<Currency>,
-        cache: Rc<RefCell<Cache>>,
+        cache: impl Into<CacheView>,
     ) -> Self {
         Self {
             trader_id,
@@ -99,7 +95,7 @@ impl ExecutionClientCore {
             connected: AtomicBool::new(false),
             started: AtomicBool::new(false),
             instruments_initialized: AtomicBool::new(false),
-            cache,
+            cache: cache.into(),
         }
     }
 
@@ -117,7 +113,7 @@ impl ExecutionClientCore {
         self.cache
             .borrow()
             .order(client_order_id)
-            .cloned()
+            .map(|o| o.clone())
             .ok_or_else(|| anyhow::anyhow!("Order not found in cache: {client_order_id}"))
     }
 

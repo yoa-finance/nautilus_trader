@@ -19,7 +19,7 @@ use derive_builder::Builder;
 use serde::{Deserialize, Serialize};
 use ustr::Ustr;
 
-use crate::common::enums::{KrakenOrderSide, KrakenOrderType};
+use crate::common::enums::{KrakenAssetClass, KrakenOrderSide, KrakenOrderType};
 
 /// Parameters for adding an order via `POST /0/private/AddOrder`.
 ///
@@ -86,6 +86,24 @@ pub struct KrakenSpotAddOrderParams {
     #[builder(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub broker: Option<Ustr>,
+
+    /// Asset class override for tokenized assets (xStocks).
+    #[builder(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asset_class: Option<KrakenAssetClass>,
+
+    /// Leverage ratio for spot margin orders (e.g., `"2:1"`, `"3:1"`, `"5:1"`).
+    /// Omit for cash (non-margin) orders.
+    /// Valid tiers per pair are in `AssetPairInfo.leverage_buy` / `leverage_sell`.
+    #[builder(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub leverage: Option<String>,
+
+    /// If `true`, the order will only reduce an existing margin position.
+    /// Kraken rejects the order if no open position exists for the pair.
+    #[builder(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reduce_only: Option<bool>,
 }
 
 impl KrakenSpotAddOrderParamsBuilder {
@@ -113,6 +131,102 @@ impl KrakenSpotAddOrderParamsBuilder {
         }
         Ok(())
     }
+}
+
+/// A single order payload for `POST /0/private/AddOrderBatch`.
+///
+/// This mirrors `KrakenSpotAddOrderParams` without the shared top-level `pair`
+/// and broker fields.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct KrakenSpotBatchOrderParams {
+    /// Order side: "buy" or "sell".
+    #[serde(rename = "type")]
+    pub side: KrakenOrderSide,
+
+    /// Order type: market, limit, stop-loss, etc.
+    #[serde(rename = "ordertype")]
+    pub order_type: KrakenOrderType,
+
+    /// Order quantity in base currency.
+    pub volume: String,
+
+    /// Limit price or trigger price, depending on order type.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub price: Option<String>,
+
+    /// Secondary limit price for supported conditional orders.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub price2: Option<String>,
+
+    /// Client order ID.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cl_ord_id: Option<String>,
+
+    /// Order flags (comma-separated: post, fcib, fciq, nompp, viqc).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oflags: Option<String>,
+
+    /// Time in force: GTC, IOC, GTD.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeinforce: Option<String>,
+
+    /// Expiration time for GTD orders.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expiretm: Option<String>,
+
+    /// Trigger reference for conditional orders: "last" or "index".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trigger: Option<String>,
+
+    /// Display volume for iceberg orders.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub displayvol: Option<String>,
+
+    /// Leverage ratio for spot margin orders (e.g. `"3:1"`). Omit for cash orders.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub leverage: Option<String>,
+
+    /// If `true`, the order will only reduce an existing margin position.
+    /// Kraken rejects the order if no open position exists for the pair.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reduce_only: Option<bool>,
+}
+
+impl From<KrakenSpotAddOrderParams> for KrakenSpotBatchOrderParams {
+    fn from(params: KrakenSpotAddOrderParams) -> Self {
+        Self {
+            side: params.side,
+            order_type: params.order_type,
+            volume: params.volume,
+            price: params.price,
+            price2: params.price2,
+            cl_ord_id: params.cl_ord_id,
+            oflags: params.oflags,
+            timeinforce: params.timeinforce,
+            expiretm: params.expiretm,
+            trigger: params.trigger,
+            displayvol: params.displayvol,
+            leverage: params.leverage,
+            reduce_only: params.reduce_only,
+        }
+    }
+}
+
+/// Parameters for batch adding orders via `POST /0/private/AddOrderBatch`.
+///
+/// # References
+/// - <https://docs.kraken.com/api/docs/rest-api/add-order-batch>
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct KrakenSpotAddOrderBatchParams {
+    /// Asset pair shared across all orders in the batch.
+    pub pair: Ustr,
+
+    /// List of orders to submit for that pair.
+    pub orders: Vec<KrakenSpotBatchOrderParams>,
+
+    /// Asset class override for tokenized assets (xStocks).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asset_class: Option<KrakenAssetClass>,
 }
 
 /// Parameters for cancelling an order via `POST /0/private/CancelOrder`.
@@ -220,9 +334,34 @@ pub struct KrakenSpotAmendOrderParams {
     pub trigger_price: Option<String>,
 }
 
+/// Parameters for `POST /0/private/OpenPositions`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct SpotOpenPositionsParams {
+    /// Filter to a specific position by transaction ID.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub txid: Option<String>,
+
+    /// If `true`, include profit/loss calculations (`value` and `net` fields) in response.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub docalcs: Option<bool>,
+
+    /// `"market"` to consolidate positions by market.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub consolidation: Option<String>,
+}
+
+/// Parameters for `POST /0/private/TradeBalance`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct SpotTradeBalanceParams {
+    /// Denominating asset for all figures (default `"ZUSD"`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asset: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use rstest::rstest;
+    use serde_json;
 
     use super::*;
 
@@ -395,5 +534,77 @@ mod tests {
         let encoded = serde_urlencoded::to_string(&params).unwrap();
 
         assert!(encoded.contains("oflags=viqc"));
+    }
+
+    #[rstest]
+    fn test_batch_order_params_from_preserves_leverage() {
+        let add_params = KrakenSpotAddOrderParamsBuilder::default()
+            .pair("XXBTZUSD")
+            .side(KrakenOrderSide::Buy)
+            .order_type(KrakenOrderType::Limit)
+            .volume("0.5")
+            .price("50000")
+            .leverage("3:1")
+            .build()
+            .unwrap();
+
+        let batch: KrakenSpotBatchOrderParams = add_params.into();
+
+        assert_eq!(
+            batch.leverage.as_deref(),
+            Some("3:1"),
+            "leverage must be preserved through the From conversion"
+        );
+    }
+
+    #[rstest]
+    fn test_batch_order_params_leverage_serializes_to_json() {
+        let batch = KrakenSpotBatchOrderParams {
+            side: KrakenOrderSide::Buy,
+            order_type: KrakenOrderType::Limit,
+            volume: "0.5".to_string(),
+            price: Some("50000".to_string()),
+            price2: None,
+            cl_ord_id: None,
+            oflags: None,
+            timeinforce: None,
+            expiretm: None,
+            trigger: None,
+            displayvol: None,
+            leverage: Some("3:1".to_string()),
+            reduce_only: None,
+        };
+
+        let json = serde_json::to_string(&batch).unwrap();
+        assert!(
+            json.contains(r#""leverage":"3:1""#),
+            "leverage missing from JSON: {json}"
+        );
+    }
+
+    #[rstest]
+    fn test_batch_order_params_no_leverage_omits_field() {
+        // Without leverage the field must be absent (skip_serializing_if = "Option::is_none").
+        let batch = KrakenSpotBatchOrderParams {
+            side: KrakenOrderSide::Sell,
+            order_type: KrakenOrderType::Market,
+            volume: "0.1".to_string(),
+            price: None,
+            price2: None,
+            cl_ord_id: None,
+            oflags: None,
+            timeinforce: None,
+            expiretm: None,
+            trigger: None,
+            displayvol: None,
+            leverage: None,
+            reduce_only: None,
+        };
+
+        let json = serde_json::to_string(&batch).unwrap();
+        assert!(
+            !json.contains("leverage"),
+            "leverage should be absent for cash orders: {json}"
+        );
     }
 }

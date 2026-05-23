@@ -129,6 +129,132 @@ impl PriceType {
     assert fixups["PriceType"].staticmethods == set()
 
 
+def test_signature_defaults_handle_lifetime_generic_methods(tmp_path):
+    # Arrange
+    rust_file = tmp_path / "crates" / "adapters" / "hyperliquid" / "src" / "python" / "http.rs"
+    rust_file.parent.mkdir(parents=True)
+    rust_file.write_text(
+        """
+#[pymethods]
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
+impl HyperliquidHttpClient {
+    #[pyo3(name = "load_instrument_definitions", signature = (include_spot=true, include_perps=true, include_perps_hip3=false, include_outcomes=false))]
+    fn py_load_instrument_definitions<'py>(
+        &self,
+        py: Python<'py>,
+        include_spot: bool,
+        include_perps: bool,
+        include_perps_hip3: bool,
+        include_outcomes: bool,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        todo!()
+    }
+}
+""".strip(),
+    )
+    content = """
+class HyperliquidHttpClient:
+    def load_instrument_definitions(
+        self,
+        include_spot: bool,
+        include_perps: bool,
+        include_perps_hip3: bool,
+        include_outcomes: bool,
+    ) -> typing.Any: ...
+""".strip()
+
+    # Act
+    fixups = generate_stubs.collect_rust_class_fixups(tmp_path)
+    updated = generate_stubs.apply_signature_defaults(content, fixups)
+
+    # Assert
+    assert "include_spot: bool = True" in updated
+    assert "include_perps: bool = True" in updated
+    assert "include_perps_hip3: bool = False" in updated
+    assert "include_outcomes: bool = False" in updated
+
+
+def test_collect_rust_class_fixups_reads_custom_data_stub_module(tmp_path):
+    # Arrange
+    rust_file = tmp_path / "crates" / "adapters" / "hyperliquid" / "src" / "data_types.rs"
+    rust_file.parent.mkdir(parents=True)
+    rust_file.write_text(
+        """
+#[custom_data(pyo3, no_arrow, stub_module = "nautilus_trader.hyperliquid")]
+pub struct HyperliquidAllMids {
+    #[custom_data_field(json)]
+    pub mids: HashMap<InstrumentId, Price>,
+    pub ts_event: UnixNanos,
+    pub ts_init: UnixNanos,
+}
+""".strip(),
+    )
+
+    # Act
+    fixups = generate_stubs.collect_rust_class_fixups(tmp_path)
+
+    # Assert
+    assert fixups["HyperliquidAllMids"].getters == {"mids", "ts_event", "ts_init"}
+    assert fixups["HyperliquidAllMids"].classmethods == {"from_json"}
+
+
+def test_collect_rust_class_fixups_detects_cfg_attr_wrapped_custom_data(tmp_path):
+    # Arrange: mirrors the multi-line cfg_attr form used in
+    # crates/adapters/hyperliquid/src/data_types.rs
+    rust_file = tmp_path / "crates" / "adapters" / "hyperliquid" / "src" / "data_types.rs"
+    rust_file.parent.mkdir(parents=True)
+    rust_file.write_text(
+        """
+#[cfg_attr(
+    feature = "arrow",
+    custom_data(pyo3, stub_module = "nautilus_trader.hyperliquid")
+)]
+#[cfg_attr(
+    not(feature = "arrow"),
+    custom_data(pyo3, no_arrow, stub_module = "nautilus_trader.hyperliquid")
+)]
+pub struct HyperliquidAllMids {
+    #[custom_data_field(json)]
+    pub mids: HashMap<InstrumentId, Price>,
+    pub ts_event: UnixNanos,
+    pub ts_init: UnixNanos,
+}
+""".strip(),
+    )
+
+    # Act
+    fixups = generate_stubs.collect_rust_class_fixups(tmp_path)
+
+    # Assert
+    assert fixups["HyperliquidAllMids"].getters == {"mids", "ts_event", "ts_init"}
+    assert fixups["HyperliquidAllMids"].classmethods == {"from_json"}
+
+
+def test_collect_rust_class_fixups_ignores_custom_data_without_stub_module(tmp_path):
+    # Arrange: DeribitVolatilityIndex pattern, cfg_attr-wrapped custom_data
+    # with no stub_module must not register stub fixups.
+    rust_file = tmp_path / "crates" / "adapters" / "deribit" / "src" / "data_types.rs"
+    rust_file.parent.mkdir(parents=True)
+    rust_file.write_text(
+        """
+#[cfg_attr(feature = "arrow", custom_data(pyo3))]
+#[cfg_attr(not(feature = "arrow"), custom_data(pyo3, no_arrow))]
+pub struct DeribitVolatilityIndex {
+    pub index_name: String,
+    pub volatility: f64,
+    pub ts_event: UnixNanos,
+    pub ts_init: UnixNanos,
+}
+""".strip(),
+    )
+
+    # Act
+    fixups = generate_stubs.collect_rust_class_fixups(tmp_path)
+
+    # Assert
+    assert "DeribitVolatilityIndex" not in fixups
+
+
 def test_collect_rust_class_fixups_preserves_attrs_across_doc_comments(tmp_path):
     # Arrange
     rust_file = tmp_path / "crates" / "model" / "src" / "python" / "sample.rs"
@@ -302,6 +428,27 @@ class PriceType(Enum):
     assert "    @classmethod\n    def from_str(cls, data: str) -> PriceType: ..." in updated
     assert "def variants(self)" not in updated
     assert "def from_str(self," not in updated
+
+
+def test_apply_rust_class_fixups_drops_extra_classmethod_cls_param():
+    # Arrange
+    content = """
+@typing.final
+class HyperliquidAllMids:
+    def from_json(self, _cls: type, data: typing.Any) -> typing.Any: ...
+""".strip()
+    fixups = {
+        "HyperliquidAllMids": generate_stubs.ClassMethodFixup(
+            classmethods={"from_json"},
+        ),
+    }
+
+    # Act
+    updated = generate_stubs.apply_rust_class_fixups(content, fixups)
+
+    # Assert
+    assert "    @classmethod\n    def from_json(cls, data: typing.Any)" in updated
+    assert "_cls" not in updated
 
 
 def test_apply_rust_class_fixups_renames_methods():
@@ -650,6 +797,50 @@ class Strategy:
     assert "Standard = ..." in updated
 
 
+def test_elide_forward_class_defaults_in_signatures():
+    content = """
+class Client:
+    def __init__(self, network: DydxNetwork = DydxNetwork.MAINNET) -> None: ...
+
+    @staticmethod
+    def from_env(
+        environment: HyperliquidEnvironment = HyperliquidEnvironment.MAINNET,
+        book_type: model.BookType = model.BookType.L1_MBP,
+    ) -> Client: ...
+
+class DydxNetwork(Enum):
+    MAINNET = ...
+
+class HyperliquidEnvironment(Enum):
+    MAINNET = ...
+""".strip()
+
+    updated = generate_stubs.elide_forward_class_defaults_in_signatures(content)
+
+    assert "network: DydxNetwork = ..." in updated
+    assert "environment: HyperliquidEnvironment = ..." in updated
+    assert "book_type: model.BookType = model.BookType.L1_MBP" in updated
+    assert "DydxNetwork.MAINNET" not in updated
+    assert "HyperliquidEnvironment.MAINNET" not in updated
+
+
+def test_elide_forward_class_defaults_in_signatures_keeps_earlier_local_defaults():
+    content = """
+class BitmexEnvironment(Enum):
+    MAINNET = ...
+
+class Client:
+    def __init__(
+        self,
+        environment: BitmexEnvironment = BitmexEnvironment.MAINNET,
+    ) -> None: ...
+""".strip()
+
+    updated = generate_stubs.elide_forward_class_defaults_in_signatures(content)
+
+    assert "environment: BitmexEnvironment = BitmexEnvironment.MAINNET" in updated
+
+
 WORKSPACE_ROOT = Path(__file__).resolve().parents[3]
 STUB_ROOT = WORKSPACE_ROOT / "python" / "nautilus_trader"
 
@@ -665,6 +856,7 @@ def _parse_stub_enum_variants(stub_root: Path) -> dict[str, list[str]]:
 
     for pyi in sorted(stub_root.rglob("*.pyi")):
         current_enum: str | None = None
+
         for line in pyi.read_text().splitlines():
             class_match = STUB_ENUM_CLASS_RE.match(line)
             if class_match:
@@ -683,6 +875,49 @@ def _parse_stub_enum_variants(stub_root: Path) -> dict[str, list[str]]:
 
 
 SCREAMING_SNAKE_RE = re.compile(r"^[A-Z][A-Z0-9]*(_[A-Z0-9]+)*_?$")
+
+
+def test_live_stub_exposes_native_live_node_config_signature():
+    live_stub = (STUB_ROOT / "live" / "__init__.pyi").read_text()
+
+    assert "@typing.final\nclass LiveNodeConfig:" in live_stub
+    assert re.search(
+        r"portfolio:\s+(?:portfolio\.)?PortfolioConfig \| None = None",
+        live_stub,
+    )
+    assert '"PortfolioConfig"' in live_stub
+
+
+def test_live_stub_exposes_builder_engine_config_methods():
+    live_stub = (STUB_ROOT / "live" / "__init__.pyi").read_text()
+
+    assert (
+        "def with_cache_config(self, config: common.CacheConfig) -> LiveNodeBuilder: ..."
+        in live_stub
+    )
+    assert (
+        "def with_portfolio_config(self, config: portfolio.PortfolioConfig) -> LiveNodeBuilder: ..."
+        in live_stub
+    )
+    assert (
+        "def with_data_engine_config(self, config: LiveDataEngineConfig) -> LiveNodeBuilder: ..."
+        in live_stub
+    )
+    assert (
+        "def with_risk_engine_config(self, config: LiveRiskEngineConfig) -> LiveNodeBuilder: ..."
+        in live_stub
+    )
+    assert (
+        "def with_exec_engine_config(self, config: LiveExecEngineConfig) -> LiveNodeBuilder: ..."
+        in live_stub
+    )
+
+
+def test_package_stub_exports_portfolio_module():
+    package_stub = (STUB_ROOT / "__init__.pyi").read_text()
+
+    assert "from . import portfolio" in package_stub
+    assert '"portfolio"' in package_stub
 
 
 def test_stub_enum_variants_match_screaming_snake_case():
@@ -717,6 +952,7 @@ def test_stub_enum_variants_match_runtime():
     runtime_enums = _collect_runtime_enum_variants(STUB_ROOT)
 
     mismatches: list[str] = []
+
     for name, runtime_members in sorted(runtime_enums.items()):
         expected_runtime_members = runtime_members
 

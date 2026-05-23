@@ -64,7 +64,7 @@ pub struct OptionChainManager {
     quote_handlers: Vec<TypedHandler<QuoteTick>>,
     greeks_handlers: Vec<TypedHandler<OptionGreeks>>,
     timer_name: Option<Ustr>,
-    msgbus_priority: u8,
+    msgbus_priority: u32,
     /// Whether the first ATM price has been received and the active set bootstrapped.
     bootstrapped: bool,
     /// Shared deferred command queue — the `DataEngine` drains this on each data tick.
@@ -82,13 +82,13 @@ impl OptionChainManager {
     ///
     /// Returns the manager wrapped in `Rc<RefCell<>>` (needed for `WeakCell`
     /// handler pattern).
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(crate) fn create_and_setup(
         series_id: OptionSeriesId,
         cache: &Rc<RefCell<Cache>>,
         cmd: &SubscribeOptionChain,
         clock: &Rc<RefCell<dyn Clock>>,
-        msgbus_priority: u8,
+        msgbus_priority: u32,
         client: Option<&mut DataClientAdapter>,
         initial_atm_price: Option<Price>,
         deferred_cmd_queue: DeferredCommandQueue,
@@ -189,12 +189,13 @@ impl OptionChainManager {
         manager_rc: &Rc<RefCell<Self>>,
         instrument_ids: &[InstrumentId],
         series_id: OptionSeriesId,
-        priority: u8,
+        priority: u32,
     ) -> (Vec<TypedHandler<QuoteTick>>, TypedHandler<QuoteTick>) {
         let quote_handler = TypedHandler::new(OptionChainQuoteHandler::new(manager_rc, series_id));
         // Always store prototype as first element for bootstrap cloning
         let mut handlers = Vec::with_capacity(instrument_ids.len() + 1);
         handlers.push(quote_handler.clone());
+
         for instrument_id in instrument_ids {
             let topic = switchboard::get_quotes_topic(*instrument_id);
             msgbus::subscribe_quotes(topic.into(), quote_handler.clone(), Some(priority));
@@ -211,13 +212,14 @@ impl OptionChainManager {
         manager_rc: &Rc<RefCell<Self>>,
         instrument_ids: &[InstrumentId],
         series_id: OptionSeriesId,
-        priority: u8,
+        priority: u32,
     ) -> Vec<TypedHandler<OptionGreeks>> {
         let greeks_handler =
             TypedHandler::new(OptionChainGreeksHandler::new(manager_rc, series_id));
         // Always store prototype as first element for bootstrap cloning
         let mut handlers = Vec::with_capacity(instrument_ids.len() + 1);
         handlers.push(greeks_handler.clone());
+
         for instrument_id in instrument_ids {
             let topic = switchboard::get_option_greeks_topic(*instrument_id);
             msgbus::subscribe_option_greeks(topic.into(), greeks_handler.clone(), Some(priority));
@@ -244,7 +246,7 @@ impl OptionChainManager {
         };
 
         for instrument_id in instrument_ids {
-            client.execute_subscribe(&SubscribeCommand::Quotes(SubscribeQuotes {
+            client.execute_subscribe(SubscribeCommand::Quotes(SubscribeQuotes {
                 instrument_id: *instrument_id,
                 client_id: cmd.client_id,
                 venue: Some(venue),
@@ -253,7 +255,7 @@ impl OptionChainManager {
                 correlation_id: None,
                 params: None,
             }));
-            client.execute_subscribe(&SubscribeCommand::OptionGreeks(SubscribeOptionGreeks {
+            client.execute_subscribe(SubscribeCommand::OptionGreeks(SubscribeOptionGreeks {
                 instrument_id: *instrument_id,
                 client_id: cmd.client_id,
                 venue: Some(venue),
@@ -262,7 +264,7 @@ impl OptionChainManager {
                 correlation_id: None,
                 params: None,
             }));
-            client.execute_subscribe(&SubscribeCommand::InstrumentStatus(
+            client.execute_subscribe(SubscribeCommand::InstrumentStatus(
                 SubscribeInstrumentStatus {
                     instrument_id: *instrument_id,
                     client_id: cmd.client_id,
@@ -364,6 +366,18 @@ impl OptionChainManager {
     /// Also updates the ATM tracker from the forward price if `ForwardPrice` source is active,
     /// and triggers deferred bootstrap on the first arrival.
     pub fn handle_greeks(&mut self, greeks: &OptionGreeks) {
+        if self.aggregator.is_expired(greeks.ts_event) {
+            log::warn!(
+                "Dropping greeks for {}, series {} expired",
+                greeks.instrument_id,
+                self.aggregator.series_id(),
+            );
+            self.deferred_cmd_queue
+                .borrow_mut()
+                .push_back(DeferredCommand::ExpireInstrument(greeks.instrument_id));
+            return;
+        }
+
         // Update ATM tracker from forward price (ForwardPrice source only)
         self.aggregator
             .atm_tracker_mut()
@@ -423,6 +437,18 @@ impl OptionChainManager {
     /// This handles both option instrument quotes (aggregator) and ATM source quotes
     /// (the aggregator's ATM tracker handles filtering internally).
     pub fn handle_quote(&mut self, quote: &QuoteTick) {
+        if self.aggregator.is_expired(quote.ts_event) {
+            log::warn!(
+                "Dropping quote for {}, series {} expired",
+                quote.instrument_id,
+                self.aggregator.series_id(),
+            );
+            self.deferred_cmd_queue
+                .borrow_mut()
+                .push_back(DeferredCommand::ExpireInstrument(quote.instrument_id));
+            return;
+        }
+
         self.aggregator.update_quote(quote);
         self.maybe_bootstrap();
 
@@ -612,7 +638,7 @@ impl OptionChainManager {
 
         let ts_init = clock.borrow().timestamp_ns();
 
-        client.execute_subscribe(&SubscribeCommand::Quotes(SubscribeQuotes {
+        client.execute_subscribe(SubscribeCommand::Quotes(SubscribeQuotes {
             instrument_id,
             client_id: None,
             venue: Some(venue),
@@ -621,7 +647,7 @@ impl OptionChainManager {
             correlation_id: None,
             params: None,
         }));
-        client.execute_subscribe(&SubscribeCommand::OptionGreeks(SubscribeOptionGreeks {
+        client.execute_subscribe(SubscribeCommand::OptionGreeks(SubscribeOptionGreeks {
             instrument_id,
             client_id: None,
             venue: Some(venue),
@@ -630,7 +656,7 @@ impl OptionChainManager {
             correlation_id: None,
             params: None,
         }));
-        client.execute_subscribe(&SubscribeCommand::InstrumentStatus(
+        client.execute_subscribe(SubscribeCommand::InstrumentStatus(
             SubscribeInstrumentStatus {
                 instrument_id,
                 client_id: None,
@@ -690,6 +716,7 @@ impl OptionChainManager {
         for &id in &action.add {
             self.push_subscribe_commands(id);
         }
+
         for &id in &action.remove {
             self.push_unsubscribe_commands(id);
         }
@@ -863,6 +890,7 @@ mod tests {
 
         let strikes = [45000, 47500, 50000, 52500, 55000];
         let mut instruments = HashMap::new();
+
         for s in &strikes {
             let strike = Price::from(&s.to_string());
             let call_id = InstrumentId::from(&format!("BTC-20240101-{s}-C.DERIBIT"));

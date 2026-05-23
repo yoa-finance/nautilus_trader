@@ -39,6 +39,15 @@ class PolymarketWebSocketChannel(Enum):
     USER = "user"
 
 
+# MARKET channel streams continuously; USER channel can legitimately be quiet
+# when no orders or fills exist, so give it a longer window before treating
+# silence as a zombie connection.
+def _idle_timeout_ms_for(channel: PolymarketWebSocketChannel) -> int:
+    if channel == PolymarketWebSocketChannel.USER:
+        return 300_000
+    return 60_000
+
+
 class PolymarketWebSocketClient:
     """
     Provides a Polymarket streaming WebSocket client.
@@ -81,6 +90,7 @@ class PolymarketWebSocketClient:
         loop: asyncio.AbstractEventLoop,
         auth: PolymarketWebSocketAuth | None = None,
         max_subscriptions_per_connection: int = 200,
+        proxy_url: str | None = None,
     ) -> None:
         self._clock = clock
         self._log: Logger = Logger(type(self).__name__)
@@ -93,6 +103,7 @@ class PolymarketWebSocketClient:
         self._handler: Callable[[bytes], None] = handler
         self._handler_reconnect: Callable[..., Awaitable[None]] | None = handler_reconnect
         self._loop = loop
+        self._proxy_url: str | None = proxy_url
         self._tasks: WeakSet[asyncio.Task] = WeakSet()
 
         # Multi-client tracking
@@ -100,6 +111,7 @@ class PolymarketWebSocketClient:
         self._subscription_counts: dict[str, int] = {}  # Reference counts per subscription
         self._clients: dict[int, WebSocketClient | None] = {}
         self._client_subscriptions: dict[int, list[str]] = {}
+        self._client_subscriptions_initial: dict[int, set[str]] = {}
         self._is_connecting: dict[int, bool] = {}
         self._next_client_id: int = 0
         self._lock: asyncio.Lock = asyncio.Lock()
@@ -177,6 +189,7 @@ class PolymarketWebSocketClient:
         self._next_client_id += 1
         self._clients[client_id] = None
         self._client_subscriptions[client_id] = []
+        self._client_subscriptions_initial[client_id] = set()
         self._is_connecting[client_id] = False
 
         return client_id
@@ -261,8 +274,8 @@ class PolymarketWebSocketClient:
             await self._connect_client(client_id)
             return
 
-        # Subscription was included in the initial connection message
-        if waited_for_connection:
+        initial_subs = self._client_subscriptions_initial.get(client_id)
+        if waited_for_connection and initial_subs is not None and subscription in initial_subs:
             self._log.debug(f"ws-client {client_id}: {subscription} included in initial connection")
             return
 
@@ -352,6 +365,7 @@ class PolymarketWebSocketClient:
             return
 
         self._log.debug(f"ws-client {client_id}: Connecting to {self._ws_url}...")
+        self._client_subscriptions_initial[client_id] = set()
         self._is_connecting[client_id] = True
 
         try:
@@ -359,6 +373,8 @@ class PolymarketWebSocketClient:
                 url=self._ws_url,
                 headers=[],
                 heartbeat=10,
+                idle_timeout_ms=_idle_timeout_ms_for(self._channel),
+                proxy_url=self._proxy_url,
             )
 
             self._clients[client_id] = await WebSocketClient.connect(
@@ -380,7 +396,9 @@ class PolymarketWebSocketClient:
             self._is_connecting[client_id] = False
 
     async def _subscribe_all(self, client_id: int) -> None:
-        subs = self._client_subscriptions.get(client_id, [])
+        subs = list(self._client_subscriptions.get(client_id, []))
+        self._client_subscriptions_initial[client_id] = set(subs)
+
         if self._channel == PolymarketWebSocketChannel.USER:
             msg = self._create_subscribe_user_channel_msg(markets=subs)
         else:  # MARKET

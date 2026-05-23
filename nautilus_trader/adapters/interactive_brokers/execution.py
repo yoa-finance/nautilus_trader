@@ -15,10 +15,13 @@
 
 import asyncio
 import json
+import math
+from collections import deque
 from datetime import timedelta
 from decimal import Decimal
 from typing import Any
 
+import msgspec
 import pandas as pd
 from ibapi.commission_and_fees_report import CommissionAndFeesReport
 from ibapi.const import UNSET_DECIMAL
@@ -239,8 +242,18 @@ class InteractiveBrokersExecutionClient(LiveExecutionClient):
         # Track processed fill IDs
         self._spread_fill_tracking: dict[ClientOrderId, set[str]] = {}
 
+        # Queue spread combo fills until orderStatus provides the matching avg fill price chunk.
+        self._pending_combo_fills: dict[
+            ClientOrderId,
+            deque[
+                tuple[Order, Execution, IBContract, CommissionAndFeesReport, Decimal, VenueOrderId]
+            ],
+        ] = {}
+        self._pending_combo_fill_avgs: dict[ClientOrderId, deque[tuple[Decimal, Price]]] = {}
+
         # Track average fill prices for orders
         self._order_avg_prices: dict[ClientOrderId, Price] = {}
+        self._order_fill_progress: dict[ClientOrderId, tuple[Decimal, Decimal]] = {}
 
         # Track filled quantities from orderStatus callbacks (keyed by VenueOrderId)
         # This is needed because IB's openOrder callback doesn't include accurate filledQuantity
@@ -333,6 +346,7 @@ class InteractiveBrokersExecutionClient(LiveExecutionClient):
 
             # Collect unique spread instrument IDs not yet in the provider
             spread_ids: set[InstrumentId] = set()
+
             for order in cached_orders:
                 instrument_id = order.instrument_id
 
@@ -412,12 +426,8 @@ class InteractiveBrokersExecutionClient(LiveExecutionClient):
 
         if report is None:
             self._log.warning(
-                f"Order {command.client_order_id=}, {command.venue_order_id} not found, canceling",
-            )
-            self._on_order_status(
-                order_ref=command.client_order_id.value,
-                order_status="Cancelled",
-                reason="Not found in query",
+                f"Order {command.client_order_id=}, {command.venue_order_id} not found in "
+                "`get_open_orders`; leaving order state unchanged",
             )
 
         return report
@@ -971,7 +981,10 @@ class InteractiveBrokersExecutionClient(LiveExecutionClient):
         PyCondition.type(command, SubmitOrder, "command")
 
         try:
-            ib_order: IBOrder = self._transform_order_to_ib_order(command.order)
+            ib_order: IBOrder = self._transform_order_to_ib_order(
+                command.order,
+                command.params,
+            )
             ib_order.orderId = self._client.next_order_id()
             self._client.place_order(ib_order)
             self._handle_order_event(status=OrderStatus.SUBMITTED, order=command.order)
@@ -995,7 +1008,7 @@ class InteractiveBrokersExecutionClient(LiveExecutionClient):
             client_id_to_orders[order.client_order_id.value] = order
 
             try:
-                ib_order = self._transform_order_to_ib_order(order)
+                ib_order = self._transform_order_to_ib_order(order, command.params)
                 ib_order.transmit = False
                 ib_order.orderId = order_id_map[order.client_order_id.value]
                 ib_orders.append(ib_order)
@@ -1043,7 +1056,10 @@ class InteractiveBrokersExecutionClient(LiveExecutionClient):
         self._log.info(f"Nautilus order status is {nautilus_order.status_string()}")
 
         try:
-            ib_order: IBOrder = self._transform_order_to_ib_order(nautilus_order)
+            ib_order: IBOrder = self._transform_order_to_ib_order(
+                nautilus_order,
+                command.params,
+            )
         except ValueError as e:
             self._handle_order_event(
                 status=OrderStatus.REJECTED,
@@ -1057,9 +1073,13 @@ class InteractiveBrokersExecutionClient(LiveExecutionClient):
         if ib_order.parentId:
             parent_nautilus_order = self._cache.order(ClientOrderId(ib_order.parentId))
 
-            if parent_nautilus_order:
+            if parent_nautilus_order and parent_nautilus_order.venue_order_id is not None:
                 ib_order.parentId = int(parent_nautilus_order.venue_order_id.value)
             else:
+                self._log.warning(
+                    f"Parent order {ib_order.parentId!r} has no venue order ID yet; "
+                    "modifying child order without parentId",
+                )
                 ib_order.parentId = 0
 
         if command.quantity and command.quantity != ib_order.totalQuantity:
@@ -1085,7 +1105,11 @@ class InteractiveBrokersExecutionClient(LiveExecutionClient):
         self._log.info(f"Placing {ib_order!r}")
         self._client.place_order(ib_order)
 
-    def _transform_order_to_ib_order(self, order: Order) -> IBOrder:  # noqa: C901
+    def _transform_order_to_ib_order(  # noqa: C901
+        self,
+        order: Order,
+        params: dict[str, Any] | None = None,
+    ) -> IBOrder:
         if order.is_post_only:
             raise ValueError("`post_only` not supported by Interactive Brokers")
 
@@ -1150,6 +1174,12 @@ class InteractiveBrokersExecutionClient(LiveExecutionClient):
         else:
             details = self.instrument_provider.contract_details[order.instrument_id]
             ib_order.contract = details.contract
+
+        if routing_exchange := self._routing_exchange_from_params(params):
+            ib_order.contract = self._contract_with_routing_exchange(
+                ib_order.contract,
+                routing_exchange,
+            )
 
         ib_order.account = self.account_id.get_id()
         ib_order.clearingAccount = self.account_id.get_id()
@@ -1220,6 +1250,29 @@ class InteractiveBrokersExecutionClient(LiveExecutionClient):
             )
 
         return ib_order
+
+    def _routing_exchange_from_params(self, params: dict[str, Any] | None) -> str | None:
+        if not params:
+            return None
+
+        if "exchange" not in params:
+            return None
+
+        value = params["exchange"]
+        if not isinstance(value, str):
+            raise ValueError("`exchange` order param must be a string")
+
+        return value or None
+
+    def _contract_with_routing_exchange(
+        self,
+        contract: IBContract | None,
+        routing_exchange: str,
+    ) -> IBContract:
+        if contract is None:
+            raise ValueError("Cannot override routing exchange without an IB contract")
+
+        return msgspec.structs.replace(contract, exchange=routing_exchange)
 
     def _create_ib_conditions(
         self,
@@ -1449,6 +1502,7 @@ class InteractiveBrokersExecutionClient(LiveExecutionClient):
         order: Order,
         ib_order: IBOrder | None = None,
         reason: str = "",
+        venue_order_id: VenueOrderId | None = None,
     ) -> None:
         if status == OrderStatus.SUBMITTED:
             self.generate_order_submitted(
@@ -1484,11 +1538,16 @@ class InteractiveBrokersExecutionClient(LiveExecutionClient):
             self._log.warning(f"Order {order.client_order_id} is {status.name}")
         elif status == OrderStatus.CANCELED:
             if order.status != OrderStatus.CANCELED:
+                # Fall back to the venue_order_id from the orderStatus callback when the
+                # cached order has none yet (openOrder may not have fired before the cancel,
+                # in which case order.venue_order_id is still None and propagating that None
+                # through OrderCanceled would lose the mapping for subsequent FillReports).
+                resolved_venue_order_id = order.venue_order_id or venue_order_id
                 self.generate_order_canceled(
                     strategy_id=order.strategy_id,
                     instrument_id=order.instrument_id,
                     client_order_id=order.client_order_id,
-                    venue_order_id=order.venue_order_id,
+                    venue_order_id=resolved_venue_order_id,
                     ts_event=self._clock.timestamp_ns(),
                 )
         elif status == OrderStatus.REJECTED:
@@ -1655,6 +1714,8 @@ class InteractiveBrokersExecutionClient(LiveExecutionClient):
         if filled_decimal > 0 and venue_order_id is not None:
             self._order_filled_qty[venue_order_id] = filled_decimal
 
+        ignore_order_event = False
+
         if order_status in ["ApiCancelled", "Cancelled"]:
             status = OrderStatus.CANCELED
         elif order_status == "PendingCancel":
@@ -1674,10 +1735,8 @@ class InteractiveBrokersExecutionClient(LiveExecutionClient):
             if not reason:
                 reason = "Order inactive (IB)"
         elif order_status in ["PendingSubmit", "PreSubmitted", "Submitted"]:
-            self._log.debug(
-                f"Ignoring `_on_order_status` event for {order_status=} is handled in `_on_open_order`",
-            )
-            return
+            ignore_order_event = True
+            status = OrderStatus.ACCEPTED
         else:
             self._log.warning(
                 f"Unknown {order_status=} received on `_on_order_status` for {order_ref=}",
@@ -1695,32 +1754,34 @@ class InteractiveBrokersExecutionClient(LiveExecutionClient):
                 nautilus_order = self._cache.order(mapped_client_order_id)
 
         if nautilus_order:
-            # Update order with average fill price if provided and order is filled/partially filled
-            if avg_fill_price and avg_fill_price > 0 and status == OrderStatus.FILLED:
-                # Generate an order updated event with the average fill price
-                instrument = self._cache.instrument(nautilus_order.instrument_id)
-                if instrument:
-                    price_magnifier = self.instrument_provider.get_price_magnifier(
-                        nautilus_order.instrument_id,
-                    )
-                    converted_avg_price = ib_price_to_nautilus_price(
-                        avg_fill_price,
-                        price_magnifier,
-                    )
-                    avg_px = instrument.make_price(converted_avg_price)
-
-                    # Store the average price for later use in fill events
-                    self._order_avg_prices[nautilus_order.client_order_id] = avg_px
-
-                    self._log.debug(
-                        f"Updated order {nautilus_order.client_order_id} with avg_px={avg_px}",
-                    )
-
-            self._handle_order_event(
-                status=status,
-                order=nautilus_order,
-                reason=reason,
+            self._update_order_avg_price(
+                nautilus_order=nautilus_order,
+                avg_fill_price=avg_fill_price,
+                filled_decimal=filled_decimal,
             )
+
+            if ignore_order_event:
+                self._log.debug(
+                    f"Ignoring `_on_order_status` event for {order_status=} after caching fill progress",
+                )
+            else:
+                self._handle_order_event(
+                    status=status,
+                    order=nautilus_order,
+                    reason=reason,
+                    venue_order_id=venue_order_id,
+                )
+
+            if status in (
+                OrderStatus.FILLED,
+                OrderStatus.CANCELED,
+                OrderStatus.REJECTED,
+                OrderStatus.EXPIRED,
+            ):
+                self._flush_pending_combo_fills(nautilus_order.client_order_id)
+                self._pending_combo_fills.pop(nautilus_order.client_order_id, None)
+                self._pending_combo_fill_avgs.pop(nautilus_order.client_order_id, None)
+                self._order_fill_progress.pop(nautilus_order.client_order_id, None)
 
             if venue_order_id is not None and status in (
                 OrderStatus.FILLED,
@@ -1769,6 +1830,26 @@ class InteractiveBrokersExecutionClient(LiveExecutionClient):
             )
             return
 
+        # IB's execDetails callback can race ahead of openOrder for fast fills (typically
+        # market orders or marketable limit orders on liquid combos). The Execution object
+        # is authoritative for venue_order_id, so backfill the mapping into the cache by
+        # synthesizing an OrderAccepted event for a submitted order when openOrder hasn't
+        # fired yet. Without this, downstream FillReports during continuous reconciliation
+        # cannot map venue_order_id back to client_order_id and are silently dropped. If
+        # openOrder arrives later, _handle_order_event skips the duplicate acceptance.
+        if nautilus_order.venue_order_id is None and nautilus_order.status == OrderStatus.SUBMITTED:
+            self._log.warning(
+                f"execDetails arrived before openOrder for {nautilus_order.client_order_id}; "
+                f"synthesizing OrderAccepted with venue_order_id={venue_order_id}",
+            )
+            self.generate_order_accepted(
+                strategy_id=nautilus_order.strategy_id,
+                instrument_id=nautilus_order.instrument_id,
+                client_order_id=nautilus_order.client_order_id,
+                venue_order_id=venue_order_id,
+                ts_event=timestring_to_timestamp(execution.time).value,
+            )
+
         # Check if this is a spread order and handle accordingly
         if is_generic_spread_id(nautilus_order.instrument_id):
             self._handle_spread_execution(
@@ -1776,6 +1857,7 @@ class InteractiveBrokersExecutionClient(LiveExecutionClient):
                 execution,
                 contract,
                 commission_report,
+                venue_order_id,
             )
             return
 
@@ -1798,7 +1880,7 @@ class InteractiveBrokersExecutionClient(LiveExecutionClient):
             strategy_id=nautilus_order.strategy_id,
             instrument_id=nautilus_order.instrument_id,
             client_order_id=nautilus_order.client_order_id,
-            venue_order_id=nautilus_order.venue_order_id,
+            venue_order_id=venue_order_id,
             venue_position_id=None,
             trade_id=TradeId(execution.execId),
             order_side=OrderSide[ORDER_SIDE_TO_ORDER_ACTION[execution.side]],
@@ -1843,12 +1925,109 @@ class InteractiveBrokersExecutionClient(LiveExecutionClient):
 
         return None
 
+    def _update_order_avg_price(
+        self,
+        nautilus_order: Order,
+        avg_fill_price: float,
+        filled_decimal: Decimal,
+    ) -> None:
+        is_spread_order = is_generic_spread_id(nautilus_order.instrument_id)
+
+        if (
+            filled_decimal <= 0
+            or not math.isfinite(avg_fill_price)
+            or avg_fill_price == UNSET_DOUBLE
+            or avg_fill_price == 0
+            or (avg_fill_price < 0 and not is_spread_order)
+        ):
+            return
+
+        instrument = self._cache.instrument(nautilus_order.instrument_id)
+        if instrument is None:
+            return
+
+        price_magnifier = self.instrument_provider.get_price_magnifier(
+            nautilus_order.instrument_id,
+        )
+        converted_avg_price = ib_price_to_nautilus_price(
+            avg_fill_price,
+            price_magnifier,
+        )
+        avg_px = instrument.make_price(converted_avg_price)
+        client_order_id = nautilus_order.client_order_id
+
+        self._order_avg_prices[client_order_id] = avg_px
+        self._log.debug(f"Updated order {client_order_id} with avg_px={avg_px}")
+
+        previous_filled, previous_notional = self._order_fill_progress.get(
+            client_order_id,
+            (Decimal(0), Decimal(0)),
+        )
+        total_notional = filled_decimal * Decimal(str(converted_avg_price))
+        fill_delta = filled_decimal - previous_filled
+
+        self._order_fill_progress[client_order_id] = (filled_decimal, total_notional)
+
+        if fill_delta <= 0 or not is_spread_order:
+            return
+
+        notional_delta = total_notional - previous_notional
+        partial_avg_value = float(notional_delta / fill_delta)
+        partial_avg_px = instrument.make_price(partial_avg_value)
+
+        self._pending_combo_fill_avgs.setdefault(client_order_id, deque()).append(
+            (fill_delta, partial_avg_px),
+        )
+        self._flush_pending_combo_fills(client_order_id)
+
+    def _flush_pending_combo_fills(self, client_order_id: ClientOrderId) -> None:
+        pending_combo_fills = self._pending_combo_fills.get(client_order_id)
+        pending_avg_chunks = self._pending_combo_fill_avgs.get(client_order_id)
+
+        if not pending_combo_fills or not pending_avg_chunks:
+            return
+
+        while pending_combo_fills and pending_avg_chunks:
+            (
+                nautilus_order,
+                execution,
+                contract,
+                commission_report,
+                combo_quantity,
+                venue_order_id,
+            ) = pending_combo_fills[0]
+            avg_chunk_quantity, avg_px = pending_avg_chunks[0]
+
+            if combo_quantity > avg_chunk_quantity:
+                break
+
+            pending_combo_fills.popleft()
+            self._generate_combo_fill(
+                nautilus_order,
+                execution,
+                contract,
+                commission_report,
+                venue_order_id,
+                avg_px_override=avg_px,
+            )
+
+            if combo_quantity == avg_chunk_quantity:
+                pending_avg_chunks.popleft()
+            else:
+                pending_avg_chunks[0] = (avg_chunk_quantity - combo_quantity, avg_px)
+
+        if not pending_combo_fills:
+            self._pending_combo_fills.pop(client_order_id, None)
+        if not pending_avg_chunks:
+            self._pending_combo_fill_avgs.pop(client_order_id, None)
+
     def _handle_spread_execution(
         self,
         nautilus_order: Order,
         execution: Execution,
         contract: IBContract,
         commission_report: CommissionAndFeesReport,
+        venue_order_id: VenueOrderId,
     ) -> None:
         """
         Handle spread execution by translating leg fills to combo progress and
@@ -1871,14 +2050,24 @@ class InteractiveBrokersExecutionClient(LiveExecutionClient):
 
             self._spread_fill_tracking[client_order_id].add(fill_id)
 
-            if len(self._spread_fill_tracking[client_order_id]) == 1:
-                # Combo fill for order management, generated only once per combo
-                self._generate_combo_fill(
-                    nautilus_order,
-                    execution,
-                    contract,
-                    commission_report,
+            spread_n_legs = generic_spread_id_n_legs(nautilus_order.instrument_id)
+
+            if (len(self._spread_fill_tracking[client_order_id]) - 1) % spread_n_legs == 0:
+                combo_quantity = self._calculate_combo_quantity(nautilus_order, execution, contract)
+                self._pending_combo_fills.setdefault(
+                    nautilus_order.client_order_id,
+                    deque(),
+                ).append(
+                    (
+                        nautilus_order,
+                        execution,
+                        contract,
+                        commission_report,
+                        combo_quantity,
+                        venue_order_id,
+                    ),
                 )
+                self._flush_pending_combo_fills(nautilus_order.client_order_id)
 
             # Leg fill to update leg position in nautilus
             self._generate_leg_fill(
@@ -1886,6 +2075,7 @@ class InteractiveBrokersExecutionClient(LiveExecutionClient):
                 execution,
                 contract,
                 commission_report,
+                venue_order_id,
             )
         except Exception as e:
             self._log.error(f"Error handling spread execution: {e}")
@@ -1896,6 +2086,8 @@ class InteractiveBrokersExecutionClient(LiveExecutionClient):
         execution: Execution,
         contract: IBContract,
         commission_report: CommissionAndFeesReport,
+        venue_order_id: VenueOrderId,
+        avg_px_override: Price | None = None,
     ) -> None:
         """
         Generate combo fill from leg fill for order management.
@@ -1919,10 +2111,8 @@ class InteractiveBrokersExecutionClient(LiveExecutionClient):
                 precision=spread_instrument.price_precision,
             )
 
-            # Combo quantity
-            combo_quantity_value = execution.shares / abs(ratio)
             combo_quantity = Quantity(
-                combo_quantity_value,
+                self._calculate_combo_quantity(nautilus_order, execution, contract),
                 precision=spread_instrument.size_precision,
             )
 
@@ -1952,14 +2142,16 @@ class InteractiveBrokersExecutionClient(LiveExecutionClient):
             # Include avg_px in info if we have it stored
             info = {}
 
-            if nautilus_order.client_order_id in self._order_avg_prices:
+            if avg_px_override is not None:
+                info["avg_px"] = avg_px_override
+            elif nautilus_order.client_order_id in self._order_avg_prices:
                 info["avg_px"] = self._order_avg_prices[nautilus_order.client_order_id]
 
             self.generate_order_filled(
                 strategy_id=nautilus_order.strategy_id,
                 instrument_id=nautilus_order.instrument_id,  # Keep spread ID
                 client_order_id=nautilus_order.client_order_id,
-                venue_order_id=nautilus_order.venue_order_id,
+                venue_order_id=venue_order_id,
                 venue_position_id=None,
                 trade_id=TradeId(execution.execId),
                 order_side=combo_order_side,
@@ -1975,12 +2167,25 @@ class InteractiveBrokersExecutionClient(LiveExecutionClient):
         except Exception as e:
             self._log.error(f"Error generating combo fill: {e}")
 
+    def _calculate_combo_quantity(
+        self,
+        nautilus_order: Order,
+        execution: Execution,
+        contract: IBContract,
+    ) -> Decimal:
+        _leg_instrument_id, ratio = self._get_leg_instrument_id_and_ratio(
+            nautilus_order.instrument_id,
+            contract,
+        )
+        return Decimal(execution.shares) / Decimal(abs(ratio))
+
     def _generate_leg_fill(
         self,
         nautilus_order: Order,
         execution: Execution,
         contract: IBContract,
         commission_report: CommissionAndFeesReport,
+        venue_order_id: VenueOrderId,
     ) -> None:
         """
         Generate individual leg fill for portfolio updates.
@@ -2019,9 +2224,10 @@ class InteractiveBrokersExecutionClient(LiveExecutionClient):
             leg_trade_id_str = f"{execution.execId}-{leg_position}"
             leg_trade_id = TradeId(leg_trade_id_str)
 
-            # Unique venue_order_id for leg, based on parent order's venue_order_id
-            base_venue_order_id = nautilus_order.venue_order_id
-            leg_venue_order_id = VenueOrderId(f"{base_venue_order_id.value}-LEG-{leg_position}")
+            # Unique venue_order_id for leg, derived from venue_order_id resolved at the
+            # execDetails entry point (defends against execDetails arriving before openOrder
+            # has set nautilus_order.venue_order_id).
+            leg_venue_order_id = VenueOrderId(f"{venue_order_id.value}-LEG-{leg_position}")
 
             price_magnifier = self.instrument_provider.get_price_magnifier(leg_instrument_id)
             converted_execution_price = ib_price_to_nautilus_price(execution.price, price_magnifier)

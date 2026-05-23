@@ -29,9 +29,13 @@ use nautilus_model::{
     types::{Price, Quantity},
 };
 use pyo3::{prelude::*, types::PyList};
+use rust_decimal::Decimal;
 use serde_json::to_string;
 
-use crate::http::{client::HyperliquidHttpClient, parse::HyperliquidMarketType};
+use crate::{
+    common::enums::HyperliquidEnvironment,
+    http::{client::HyperliquidHttpClient, parse::HyperliquidMarketType},
+};
 
 #[pymethods]
 #[pyo3_stub_gen::derive::gen_stub_pymethods]
@@ -42,12 +46,12 @@ impl HyperliquidHttpClient {
     /// with Nautilus domain types. It maintains an instrument cache and handles conversions
     /// between Hyperliquid API responses and Nautilus domain models.
     #[new]
-    #[pyo3(signature = (private_key=None, vault_address=None, account_address=None, is_testnet=false, timeout_secs=60, proxy_url=None, normalize_prices=true))]
+    #[pyo3(signature = (private_key=None, vault_address=None, account_address=None, environment=HyperliquidEnvironment::Mainnet, timeout_secs=60, proxy_url=None, normalize_prices=true))]
     fn py_new(
         private_key: Option<String>,
         vault_address: Option<String>,
         account_address: Option<String>,
-        is_testnet: bool,
+        environment: HyperliquidEnvironment,
         timeout_secs: u64,
         proxy_url: Option<String>,
         normalize_prices: bool,
@@ -56,7 +60,7 @@ impl HyperliquidHttpClient {
             private_key,
             vault_address,
             account_address,
-            is_testnet,
+            environment,
             timeout_secs,
             proxy_url,
         )
@@ -71,25 +75,25 @@ impl HyperliquidHttpClient {
     ///
     /// Returns `Error.Auth` if required environment variables are not set.
     #[staticmethod]
-    #[pyo3(name = "from_env", signature = (is_testnet=false))]
-    fn py_from_env(is_testnet: bool) -> PyResult<Self> {
-        Self::from_env(is_testnet).map_err(to_pyvalue_err)
+    #[pyo3(name = "from_env", signature = (environment=HyperliquidEnvironment::Mainnet))]
+    fn py_from_env(environment: HyperliquidEnvironment) -> PyResult<Self> {
+        Self::from_env(environment).map_err(to_pyvalue_err)
     }
 
     /// Creates a new `HyperliquidHttpClient` configured with explicit credentials.
     #[staticmethod]
-    #[pyo3(name = "from_credentials", signature = (private_key, vault_address=None, is_testnet=false, timeout_secs=60, proxy_url=None))]
+    #[pyo3(name = "from_credentials", signature = (private_key, vault_address=None, environment=HyperliquidEnvironment::Mainnet, timeout_secs=60, proxy_url=None))]
     fn py_from_credentials(
         private_key: &str,
         vault_address: Option<&str>,
-        is_testnet: bool,
+        environment: HyperliquidEnvironment,
         timeout_secs: u64,
         proxy_url: Option<String>,
     ) -> PyResult<Self> {
         Self::from_credentials(
             private_key,
             vault_address,
-            is_testnet,
+            environment,
             timeout_secs,
             proxy_url,
         )
@@ -159,13 +163,14 @@ impl HyperliquidHttpClient {
         })
     }
 
-    #[pyo3(name = "load_instrument_definitions", signature = (include_spot=true, include_perps=true, include_perps_hip3=false))]
+    #[pyo3(name = "load_instrument_definitions", signature = (include_spot=true, include_perps=true, include_perps_hip3=false, include_outcomes=false))]
     fn py_load_instrument_definitions<'py>(
         &self,
         py: Python<'py>,
         include_spot: bool,
         include_perps: bool,
         include_perps_hip3: bool,
+        include_outcomes: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
         let client = self.clone();
 
@@ -184,6 +189,7 @@ impl HyperliquidHttpClient {
                     }
                 }
                 HyperliquidMarketType::Spot => include_spot,
+                HyperliquidMarketType::Outcome => include_outcomes,
             });
 
             let mut instruments = client.convert_defs(defs);
@@ -280,7 +286,7 @@ impl HyperliquidHttpClient {
         post_only=false,
         reduce_only=false,
     ))]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn py_submit_order<'py>(
         &self,
         py: Python<'py>,
@@ -350,7 +356,7 @@ impl HyperliquidHttpClient {
     /// The HL modify API requires a full replacement order spec plus the
     /// venue order ID. The caller must provide all order fields.
     #[pyo3(name = "modify_order")]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn py_modify_order<'py>(
         &self,
         py: Python<'py>,
@@ -453,6 +459,62 @@ impl HyperliquidHttpClient {
         })
     }
 
+    /// Request a single order status report by venue order ID.
+    ///
+    /// Queries `info_frontend_open_orders` and filters for the given oid so the
+    /// result includes trigger metadata (trigger_px, tpsl, trailing_stop, etc.).
+    /// Falls back to `info_order_status` when the order is no longer open.
+    #[pyo3(name = "request_order_status_report")]
+    #[pyo3(signature = (venue_order_id=None, client_order_id=None))]
+    fn py_request_order_status_report<'py>(
+        &self,
+        py: Python<'py>,
+        venue_order_id: Option<&str>,
+        client_order_id: Option<&str>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+        let venue_order_id = venue_order_id.map(VenueOrderId::from);
+        let client_order_id = client_order_id.map(ClientOrderId::from);
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            if venue_order_id.is_none() && client_order_id.is_none() {
+                return Err(to_pyvalue_err(
+                    "at least one of venue_order_id or client_order_id is required",
+                ));
+            }
+
+            let account_address = client.get_account_address().map_err(to_pyvalue_err)?;
+
+            if let Some(coid) = client_order_id.as_ref()
+                && let Some(report) = client
+                    .request_order_status_report_by_client_order_id(&account_address, coid)
+                    .await
+                    .map_err(to_pyvalue_err)?
+            {
+                return Python::attach(|py| Ok(report.into_py_any_unwrap(py)));
+            }
+
+            let report = if let Some(vid) = venue_order_id.as_ref() {
+                let oid: u64 = vid
+                    .as_str()
+                    .parse()
+                    .map_err(|e| to_pyvalue_err(format!("invalid venue_order_id: {e}")))?;
+
+                client
+                    .request_order_status_report(&account_address, oid)
+                    .await
+                    .map_err(to_pyvalue_err)?
+            } else {
+                None
+            };
+
+            Python::attach(|py| match report {
+                Some(r) => Ok(r.into_py_any_unwrap(py)),
+                None => Ok(py.None()),
+            })
+        })
+    }
+
     /// Request fill reports for a user.
     ///
     /// Fetches user fills via `info_user_fills` and parses them into FillReports.
@@ -486,11 +548,20 @@ impl HyperliquidHttpClient {
 
     /// Request position status reports for a user.
     ///
-    /// Fetches clearinghouse state via `info_clearinghouse_state` and parses positions into PositionStatusReports.
-    /// This method requires instruments to be added to the client cache via `cache_instrument()`.
+    /// Fetches perp clearinghouse state and spot clearinghouse state, then returns
+    /// the union of perp asset positions (short/long with PnL) and spot holdings
+    /// (long only). This method requires instruments to be added to the client
+    /// cache via `cache_instrument()`.
     ///
-    /// For vault tokens (starting with "vntls:") that are not in the cache, synthetic instruments
-    /// will be created automatically.
+    /// When `instrument_id` resolves to a specific product type, the opposite
+    /// product's endpoint is skipped to avoid wasted round trips and make
+    /// filtered queries independent of the unused endpoint's availability.
+    /// HIP-4 outcomes live in `spotClearinghouseState`, so an outcome filter
+    /// is routed like a spot filter (perp leg skipped).
+    ///
+    /// For vault tokens (starting with "vntls:") that are not in the cache,
+    /// synthetic instruments will be created automatically. Spot balances whose
+    /// base token has no cached instrument are skipped with a debug log.
     #[pyo3(name = "request_position_status_reports")]
     fn py_request_position_status_reports<'py>(
         &self,
@@ -517,11 +588,16 @@ impl HyperliquidHttpClient {
 
     /// Request account state (balances and margins) for a user.
     ///
-    /// Fetches clearinghouse state from Hyperliquid API and converts it to `AccountState`.
+    /// Fetches perp and spot clearinghouse state from Hyperliquid and merges them
+    /// into a single `AccountState`. USDC is taken from the perp margin summary
+    /// when present (to avoid double-counting combined `withdrawable`); non-USDC
+    /// tokens are appended from the spot balances.
     ///
     /// # Errors
     ///
-    /// Returns an error if `account_id` is not set or the API request fails.
+    /// Returns an error if `account_id` is not set, or if either the perp or
+    /// spot clearinghouse request fails. Spot failures are propagated so the
+    /// caller sees real API errors instead of a silently truncated snapshot.
     #[pyo3(name = "request_account_state")]
     fn py_request_account_state<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let client = self.clone();
@@ -537,6 +613,87 @@ impl HyperliquidHttpClient {
         })
     }
 
+    /// Request spot token balances for a user.
+    ///
+    /// Fetches `spotClearinghouseState` and returns one `AccountBalance` per
+    /// non-zero token. USDC is included as a separate balance entry when present;
+    /// callers that also report perp margin state must dedupe currencies before
+    /// emitting an `AccountState`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the API request fails or the response cannot be parsed.
+    #[pyo3(name = "request_spot_balances")]
+    fn py_request_spot_balances<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let account_address = client.get_account_address().map_err(to_pyvalue_err)?;
+            let balances = client
+                .request_spot_balances(&account_address)
+                .await
+                .map_err(to_pyvalue_err)?;
+
+            Python::attach(|py| {
+                let pylist =
+                    PyList::new(py, balances.into_iter().map(|b| b.into_py_any_unwrap(py)))?;
+                Ok(pylist.into_py_any_unwrap(py))
+            })
+        })
+    }
+
+    /// Request spot position status reports for a user.
+    ///
+    /// Each non-zero spot balance is reported as a Long position against its
+    /// `{BASE}-{QUOTE}-SPOT` instrument. HIP-4 outcome side tokens arrive on
+    /// this same endpoint with `coin` set to the `+<encoding>` token form;
+    /// those balances are resolved against the matching Outcome instrument so
+    /// outcome holdings surface as positions through the standard reconcile
+    /// path. Balances whose base token has no matching instrument in the
+    /// cache are skipped with a debug log (callers should ensure
+    /// `request_instruments` has run first).
+    #[pyo3(name = "request_spot_position_status_reports")]
+    fn py_request_spot_position_status_reports<'py>(
+        &self,
+        py: Python<'py>,
+        instrument_id: Option<&str>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+        let instrument_id = instrument_id.map(InstrumentId::from);
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let account_address = client.get_account_address().map_err(to_pyvalue_err)?;
+            let reports = client
+                .request_spot_position_status_reports(&account_address, instrument_id)
+                .await
+                .map_err(to_pyvalue_err)?;
+
+            Python::attach(|py| {
+                let pylist =
+                    PyList::new(py, reports.into_iter().map(|r| r.into_py_any_unwrap(py)))?;
+                Ok(pylist.into_py_any_unwrap(py))
+            })
+        })
+    }
+
+    /// Get spot clearinghouse state (per-token spot balances) for a user.
+    #[pyo3(name = "info_spot_clearinghouse_state")]
+    fn py_info_spot_clearinghouse_state<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let account_address = client.get_account_address().map_err(to_pyvalue_err)?;
+            let json = client
+                .info_spot_clearinghouse_state(&account_address)
+                .await
+                .map_err(to_pyvalue_err)?;
+            to_string(&json).map_err(to_pyvalue_err)
+        })
+    }
+
     /// Get user fee schedule and effective rates.
     #[pyo3(name = "info_user_fees")]
     fn py_info_user_fees<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
@@ -549,6 +706,100 @@ impl HyperliquidHttpClient {
                 .await
                 .map_err(to_pyvalue_err)?;
             to_string(&json).map_err(to_pyvalue_err)
+        })
+    }
+
+    /// Split an HIP-4 outcome's quote tokens into matched Yes and No side tokens.
+    ///
+    /// Submits a `userOutcome` exchange action with the `splitOutcome` operation:
+    /// debits `amount` quote tokens (USDH) and credits `amount` Yes plus `amount`
+    /// No side tokens for the given `outcome` index. Ordinary directional
+    /// buys and sells on outcome instruments go through the standard order path
+    /// without calling this; the action is for dual-side market making and
+    /// inventory creation.
+    #[pyo3(name = "submit_split_outcome")]
+    fn py_submit_split_outcome<'py>(
+        &self,
+        py: Python<'py>,
+        outcome: u32,
+        amount: Decimal,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let response = client
+                .submit_split_outcome(outcome, amount)
+                .await
+                .map_err(to_pyvalue_err)?;
+            to_string(&response).map_err(to_pyvalue_err)
+        })
+    }
+
+    /// Merge matched Yes + No side-token pairs of an HIP-4 outcome back into quote tokens.
+    ///
+    /// Submits a `userOutcome` action with the `mergeOutcome` operation. Pass
+    /// `amount = None` to merge the maximum mergeable balance (venue-side
+    /// `null`).
+    #[pyo3(name = "submit_merge_outcome", signature = (outcome, amount=None))]
+    fn py_submit_merge_outcome<'py>(
+        &self,
+        py: Python<'py>,
+        outcome: u32,
+        amount: Option<Decimal>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let response = client
+                .submit_merge_outcome(outcome, amount)
+                .await
+                .map_err(to_pyvalue_err)?;
+            to_string(&response).map_err(to_pyvalue_err)
+        })
+    }
+
+    /// Merge `Yes` shares of every outcome in a multi-outcome question into quote tokens.
+    ///
+    /// Submits a `userOutcome` action with the `mergeQuestion` operation. Pass
+    /// `amount = None` to merge the maximum balance.
+    #[pyo3(name = "submit_merge_question", signature = (question, amount=None))]
+    fn py_submit_merge_question<'py>(
+        &self,
+        py: Python<'py>,
+        question: u32,
+        amount: Option<Decimal>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let response = client
+                .submit_merge_question(question, amount)
+                .await
+                .map_err(to_pyvalue_err)?;
+            to_string(&response).map_err(to_pyvalue_err)
+        })
+    }
+
+    /// Swap `No` shares of one outcome into `Yes` shares of every other outcome.
+    ///
+    /// Submits a `userOutcome` action with the `negateOutcome` operation. Both
+    /// outcomes must belong to the same multi-outcome `question`.
+    #[pyo3(name = "submit_negate_outcome")]
+    fn py_submit_negate_outcome<'py>(
+        &self,
+        py: Python<'py>,
+        question: u32,
+        outcome: u32,
+        amount: Decimal,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let response = client
+                .submit_negate_outcome(question, outcome, amount)
+                .await
+                .map_err(to_pyvalue_err)?;
+            to_string(&response).map_err(to_pyvalue_err)
         })
     }
 }

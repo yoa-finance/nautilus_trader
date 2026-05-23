@@ -57,10 +57,12 @@
 pub mod builder;
 pub mod config;
 pub mod controller;
-pub mod factories;
+pub mod event_store;
 pub mod kernel;
 pub mod messages;
 pub mod trader;
+
+mod registration;
 
 #[cfg(feature = "python")]
 pub mod python;
@@ -69,7 +71,7 @@ pub mod python;
 pub use builder::NautilusKernelBuilder;
 pub use config::{NautilusKernelConfig, RotationConfig, StreamingConfig};
 pub use controller::Controller;
-pub use factories::{ClientConfig, DataClientFactory, ExecutionClientFactory};
+pub use event_store::{EventStoreFactory, KernelEventStore, RegisteredComponents};
 pub use kernel::NautilusKernel;
 pub use messages::ControllerCommand;
 #[cfg(feature = "python")]

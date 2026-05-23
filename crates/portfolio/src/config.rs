@@ -21,7 +21,12 @@ use serde::{Deserialize, Serialize};
     feature = "python",
     pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.live", from_py_object)
 )]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.portfolio")
+)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, bon::Builder)]
+#[serde(deny_unknown_fields)]
 pub struct PortfolioConfig {
     /// The type of prices used for portfolio calculations, such as unrealized PnLs.
     /// If false (default), uses quote prices if available; otherwise, last trade prices
@@ -50,6 +55,15 @@ pub struct PortfolioConfig {
     /// Useful for HFT deployments to prevent excessive logging when account states change rapidly.
     #[serde(default)]
     pub min_account_state_logging_interval_ms: Option<u64>,
+    /// The interval (milliseconds) between portfolio snapshot emissions per account.
+    /// When set, a [`PortfolioSnapshot`] is emitted at this cadence while the
+    /// account holds at least one open position, carrying continuous
+    /// mark-to-market equity. When `None` (the default), no periodic snapshots
+    /// are emitted.
+    ///
+    /// [`PortfolioSnapshot`]: nautilus_model::events::PortfolioSnapshot
+    #[serde(default)]
+    pub snapshot_interval_ms: Option<u64>,
     /// If debug mode is active (will provide extra debug logging).
     #[serde(default)]
     #[builder(default)]

@@ -35,6 +35,47 @@ use crate::{
 #[pymethods]
 #[pyo3_stub_gen::derive::gen_stub_pymethods]
 impl LoggerConfig {
+    /// Configuration for the Nautilus logger.
+    #[new]
+    #[pyo3(signature = (
+        stdout_level=None,
+        fileout_level=None,
+        component_levels=None,
+        is_colored=None,
+        print_config=None,
+        bypass_logging=None,
+        log_components_only=None,
+        file_config=None,
+        clear_log_file=None,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn py_new(
+        stdout_level: Option<LogLevel>,
+        fileout_level: Option<LogLevel>,
+        component_levels: Option<std::collections::HashMap<String, String>>,
+        is_colored: Option<bool>,
+        print_config: Option<bool>,
+        bypass_logging: Option<bool>,
+        log_components_only: Option<bool>,
+        file_config: Option<FileWriterConfig>,
+        clear_log_file: Option<bool>,
+    ) -> PyResult<Self> {
+        let component_levels = parse_component_levels(component_levels).map_err(to_pyvalue_err)?;
+        Ok(Self::new(
+            stdout_level.map_or(LevelFilter::Info, map_log_level_to_filter),
+            fileout_level.map_or(LevelFilter::Off, map_log_level_to_filter),
+            component_levels,
+            AHashMap::new(),
+            log_components_only.unwrap_or(false),
+            is_colored.unwrap_or(true),
+            print_config.unwrap_or(false),
+            false,
+            bypass_logging.unwrap_or(false),
+            file_config,
+            clear_log_file.unwrap_or(false),
+        ))
+    }
+
     /// Parses a configuration from a spec string.
     ///
     /// # Format
@@ -83,7 +124,7 @@ impl FileWriterConfig {
 #[pyfunction]
 #[pyo3_stub_gen::derive::gen_stub_pyfunction(module = "nautilus_trader.common")]
 #[pyo3(name = "init_logging")]
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 #[pyo3(signature = (trader_id, instance_id, level_stdout, level_file=None, component_levels=None, directory=None, file_name=None, file_format=None, file_rotate=None, is_colored=None, is_bypassed=None, print_config=None, log_components_only=None))]
 pub fn py_init_logging(
     trader_id: TraderId,
@@ -104,6 +145,8 @@ pub fn py_init_logging(
 
     let component_levels = parse_component_levels(component_levels).map_err(to_pyvalue_err)?;
 
+    let file_config = FileWriterConfig::new(directory, file_name, file_format, file_rotate);
+
     let config = LoggerConfig::new(
         map_log_level_to_filter(level_stdout),
         level_file,
@@ -112,12 +155,13 @@ pub fn py_init_logging(
         log_components_only.unwrap_or(false),
         is_colored.unwrap_or(true),
         print_config.unwrap_or(false),
-        false, // use_tracing - Python handles this separately in kernel
+        false,                        // use_tracing - Python handles this separately in kernel
+        is_bypassed.unwrap_or(false), // bypass_logging
+        None,                         // file_config - passed separately to init_logging
+        false,                        // clear_log_file
     );
 
-    let file_config = FileWriterConfig::new(directory, file_name, file_format, file_rotate);
-
-    if is_bypassed.unwrap_or(false) {
+    if config.bypass_logging {
         logging_set_bypass();
     }
 
@@ -137,6 +181,7 @@ fn parse_component_levels(
     match original_map {
         Some(map) => {
             let mut new_map = AHashMap::new();
+
             for (key, value) in map {
                 let ustr_key = Ustr::from(&key);
                 let level = parse_level_filter_str(&value)?;
@@ -253,6 +298,11 @@ impl PyLogger {
             name: Ustr::from(name),
         }
     }
+
+    fn log_message(&self, level: LogLevel, color: Option<LogColor>, message: &str) {
+        let color = color.unwrap_or(LogColor::Normal);
+        logger::log(level, color, self.name, message);
+    }
 }
 
 #[pymethods]
@@ -274,31 +324,31 @@ impl PyLogger {
     /// Emit a TRACE level record.
     #[pyo3(name = "trace")]
     fn py_trace(&self, message: &str, color: Option<LogColor>) {
-        self._log(LogLevel::Trace, color, message);
+        self.log_message(LogLevel::Trace, color, message);
     }
 
     /// Emit a DEBUG level record.
     #[pyo3(name = "debug")]
     fn py_debug(&self, message: &str, color: Option<LogColor>) {
-        self._log(LogLevel::Debug, color, message);
+        self.log_message(LogLevel::Debug, color, message);
     }
 
     /// Emit an INFO level record.
     #[pyo3(name = "info")]
     fn py_info(&self, message: &str, color: Option<LogColor>) {
-        self._log(LogLevel::Info, color, message);
+        self.log_message(LogLevel::Info, color, message);
     }
 
     /// Emit a WARNING level record.
     #[pyo3(name = "warning")]
     fn py_warning(&self, message: &str, color: Option<LogColor>) {
-        self._log(LogLevel::Warning, color, message);
+        self.log_message(LogLevel::Warning, color, message);
     }
 
     /// Emit an ERROR level record.
     #[pyo3(name = "error")]
     fn py_error(&self, message: &str, color: Option<LogColor>) {
-        self._log(LogLevel::Error, color, message);
+        self.log_message(LogLevel::Error, color, message);
     }
 
     /// Emit an ERROR level record with the active Python exception info.
@@ -318,7 +368,7 @@ impl PyLogger {
             }
         }
 
-        self._log(LogLevel::Error, color, &full_msg);
+        self.log_message(LogLevel::Error, color, &full_msg);
     }
 
     /// Flush buffered log records.
@@ -327,8 +377,9 @@ impl PyLogger {
         log::logger().flush();
     }
 
-    fn _log(&self, level: LogLevel, color: Option<LogColor>, message: &str) {
-        let color = color.unwrap_or(LogColor::Normal);
-        logger::log(level, color, self.name, message);
+    /// Emit a log record at the given level (Python-facing helper).
+    #[pyo3(name = "_log")]
+    fn py_log(&self, level: LogLevel, color: Option<LogColor>, message: &str) {
+        self.log_message(level, color, message);
     }
 }

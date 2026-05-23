@@ -19,10 +19,15 @@
 //! 1. Queries the cache for all BTC option instruments
 //! 2. Finds the nearest expiry
 //! 3. Filters for CALL options at that expiry
-//! 4. Subscribes to OptionGreeks for each one
-//! 5. Logs received greeks in the `on_option_greeks` handler
+//! 4. Subscribes to OptionGreeks for each one, alternating three param shapes:
+//!    the first third with no params (defaults to both conventions), the second
+//!    third narrowed to Black-Scholes only, and the final third narrowed to
+//!    price-adjusted only.
+//! 5. Logs received greeks (including the emitted `convention`) in the
+//!    `on_option_greeks` handler so the downstream branch on `greeks.convention`
+//!    is visible.
 //!
-//! Run with: `cargo run --example okx-greeks-tester --package nautilus-okx`
+//! Run with: `cargo run --example okx-greeks-tester --package nautilus-okx --features examples`
 
 use std::fmt::Debug;
 
@@ -32,17 +37,24 @@ use nautilus_common::{
     nautilus_actor,
     timer::TimeEvent,
 };
+use nautilus_core::Params;
 use nautilus_live::node::LiveNode;
 use nautilus_model::{
     data::option_chain::OptionGreeks,
-    enums::OptionKind,
-    identifiers::{ClientId, InstrumentId, TraderId, Venue},
+    enums::{GreeksConvention, OptionKind},
+    identifiers::{ClientId, InstrumentId, TraderId},
     instruments::Instrument,
     stubs::TestDefault,
 };
 use nautilus_okx::{
-    common::enums::OKXInstrumentType, config::OKXDataClientConfig, factories::OKXDataClientFactory,
+    common::{
+        consts::{OKX_CLIENT_ID, OKX_VENUE},
+        enums::OKXInstrumentType,
+    },
+    config::OKXDataClientConfig,
+    factories::OKXDataClientFactory,
 };
+use serde_json::json;
 use ustr::Ustr;
 
 #[derive(Debug)]
@@ -69,7 +81,7 @@ impl GreeksTester {
 
 impl DataActor for GreeksTester {
     fn on_start(&mut self) -> anyhow::Result<()> {
-        let venue = Venue::new("OKX");
+        let venue = *OKX_VENUE;
         let underlying_filter = Ustr::from("BTC");
 
         let mut options: Vec<(InstrumentId, f64, u64)> = {
@@ -114,14 +126,39 @@ impl DataActor for GreeksTester {
         }
 
         let client_id = self.client_id;
-        for (instrument_id, _, _) in &options {
+        let third = options.len() / 3;
+        let (default_slice, rest) = options.split_at(third);
+        let (bs_slice, pa_slice) = rest.split_at(rest.len() / 2);
+
+        for (instrument_id, _, _) in default_slice {
             self.subscribe_option_greeks(*instrument_id, Some(client_id), None);
             self.subscribed_instruments.push(*instrument_id);
         }
 
+        let bs_only = GreeksConvention::BlackScholes.to_string();
+
+        for (instrument_id, _, _) in bs_slice {
+            let mut params = Params::new();
+            params.insert("greeks_convention".to_string(), json!(bs_only));
+            self.subscribe_option_greeks(*instrument_id, Some(client_id), Some(params));
+            self.subscribed_instruments.push(*instrument_id);
+        }
+
+        let pa_only = GreeksConvention::PriceAdjusted.to_string();
+
+        for (instrument_id, _, _) in pa_slice {
+            let mut params = Params::new();
+            params.insert("greeks_convention".to_string(), json!(pa_only));
+            self.subscribe_option_greeks(*instrument_id, Some(client_id), Some(params));
+            self.subscribed_instruments.push(*instrument_id);
+        }
+
         log::info!(
-            "Subscribed to option greeks for {} instruments",
+            "Subscribed to option greeks for {} instruments ({} default both, {} BS, {} PA)",
             self.subscribed_instruments.len(),
+            default_slice.len(),
+            bs_slice.len(),
+            pa_slice.len(),
         );
 
         Ok(())
@@ -129,10 +166,11 @@ impl DataActor for GreeksTester {
 
     fn on_option_greeks(&mut self, greeks: &OptionGreeks) -> anyhow::Result<()> {
         log::info!(
-            "GREEKS | {} | delta={:.4} gamma={:.6} vega={:.4} theta={:.4} | \
+            "GREEKS | {} | convention={} | delta={:.4} gamma={:.6} vega={:.4} theta={:.4} | \
              mark_iv={} bid_iv={} ask_iv={} | \
              underlying={} oi={}",
             greeks.instrument_id,
+            greeks.convention,
             greeks.delta,
             greeks.gamma,
             greeks.vega,
@@ -173,7 +211,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let environment = Environment::Live;
     let trader_id = TraderId::test_default();
-    let client_id = ClientId::new("OKX");
+    let client_id = *OKX_CLIENT_ID;
 
     let okx_config = OKXDataClientConfig {
         api_key: None,        // Will use 'OKX_API_KEY' env var

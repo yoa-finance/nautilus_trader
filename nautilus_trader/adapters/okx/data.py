@@ -19,6 +19,7 @@ from typing import Any
 from nautilus_trader.adapters.okx.config import OKXDataClientConfig
 from nautilus_trader.adapters.okx.constants import OKX_VENUE
 from nautilus_trader.adapters.okx.providers import OKXInstrumentProvider
+from nautilus_trader.adapters.okx.types import GREEKS_CONVENTION_TO_TYPE
 from nautilus_trader.adapters.okx.types import OKX_INSTRUMENT_TYPES
 from nautilus_trader.adapters.okx.types import OkxInstrument
 from nautilus_trader.cache.cache import Cache
@@ -30,6 +31,9 @@ from nautilus_trader.common.secure import mask_api_key
 from nautilus_trader.core import nautilus_pyo3
 from nautilus_trader.core.correctness import PyCondition
 from nautilus_trader.core.datetime import ensure_pydatetime_utc
+from nautilus_trader.core.nautilus_pyo3 import GreeksConvention
+from nautilus_trader.core.nautilus_pyo3 import OKXEnvironment
+from nautilus_trader.core.nautilus_pyo3 import OKXGreeksType
 from nautilus_trader.data.messages import RequestBars
 from nautilus_trader.data.messages import RequestForwardPrices
 from nautilus_trader.data.messages import RequestFundingRates
@@ -65,6 +69,7 @@ from nautilus_trader.live.data_client import LiveMarketDataClient
 from nautilus_trader.model.data import Bar
 from nautilus_trader.model.data import DataType
 from nautilus_trader.model.data import FundingRateUpdate
+from nautilus_trader.model.data import InstrumentStatus
 from nautilus_trader.model.data import OptionGreeks
 from nautilus_trader.model.data import OrderBookDeltas
 from nautilus_trader.model.data import TradeTick
@@ -72,6 +77,8 @@ from nautilus_trader.model.data import capsule_to_data
 from nautilus_trader.model.enums import BookType
 from nautilus_trader.model.enums import book_type_to_str
 from nautilus_trader.model.identifiers import ClientId
+from nautilus_trader.model.identifiers import InstrumentId
+from nautilus_trader.model.instruments import CryptoFuture
 from nautilus_trader.model.instruments import CryptoPerpetual
 from nautilus_trader.model.instruments import Instrument
 
@@ -130,20 +137,21 @@ class OKXDataClient(LiveMarketDataClient):
             [c.name.upper() for c in config.contract_types] if config.contract_types else None
         )
 
+        self._environment = config.environment or OKXEnvironment.LIVE
+
         # Configuration
         self._config = config
         self._log.info(f"config.instrument_types={instrument_types}", LogColor.BLUE)
         self._log.info(f"{config.instrument_families=}", LogColor.BLUE)
         self._log.info(f"config.contract_types={contract_types}", LogColor.BLUE)
-        self._log.info(f"{config.is_demo=}", LogColor.BLUE)
+        self._log.info(f"environment={self._environment}", LogColor.BLUE)
         self._log.info(f"{config.http_timeout_secs=}", LogColor.BLUE)
         self._log.info(f"{config.max_retries=}", LogColor.BLUE)
         self._log.info(f"{config.retry_delay_initial_ms=}", LogColor.BLUE)
         self._log.info(f"{config.retry_delay_max_ms=}", LogColor.BLUE)
         self._log.info(f"{config.update_instruments_interval_mins=}", LogColor.BLUE)
         self._log.info(f"{config.vip_level=}", LogColor.BLUE)
-        self._log.info(f"{config.http_proxy_url=}", LogColor.BLUE)
-        self._log.info(f"{config.ws_proxy_url=}", LogColor.BLUE)
+        self._log.info(f"{config.proxy_url=}", LogColor.BLUE)
 
         # HTTP API
         self._http_client = client
@@ -153,23 +161,26 @@ class OKXDataClient(LiveMarketDataClient):
 
         # WebSocket API
         self._ws_client = nautilus_pyo3.OKXWebSocketClient(
-            url=config.base_url_ws or nautilus_pyo3.get_okx_ws_url_public(config.is_demo),
+            url=config.base_url_ws or nautilus_pyo3.get_okx_ws_url_public(self._environment),
             api_key=None,
             api_secret=None,
             api_passphrase=None,
             heartbeat=20,
+            proxy_url=config.proxy_url,
         )
         self._ws_client_futures: set[asyncio.Future] = set()
         self._option_summary_family_subs: dict[str, int] = {}
+        self._option_greeks_instrument_ids: set[InstrumentId] = set()
 
         # WebSocket API for business data (bars/candlesticks)
-        _public_url = config.base_url_ws or nautilus_pyo3.get_okx_ws_url_public(config.is_demo)
+        _public_url = config.base_url_ws or nautilus_pyo3.get_okx_ws_url_public(self._environment)
         self._ws_business_client = nautilus_pyo3.OKXWebSocketClient(
             url=nautilus_pyo3.derive_okx_ws_url(_public_url, "business"),
             api_key=config.api_key,
             api_secret=config.api_secret,
             api_passphrase=config.api_passphrase,
             heartbeat=20,
+            proxy_url=config.proxy_url,
         )
         self._ws_business_client_futures: set[asyncio.Future] = set()
 
@@ -323,14 +334,13 @@ class OKXDataClient(LiveMarketDataClient):
         await self._ws_client.subscribe_index_prices(pyo3_instrument_id)
 
     async def _subscribe_funding_rates(self, command: SubscribeFundingRates) -> None:
-        # Funding rates only apply to perpetual swaps
+        # Funding rates apply to perpetual swaps and OKX X-Perp expiring perpetuals
         instrument = self._instrument_provider.find(command.instrument_id)
         if instrument is None:
             self._log.error(f"Cannot find instrument for {command.instrument_id}")
             return
 
-        # Check if instrument is a perpetual swap
-        if not isinstance(instrument, CryptoPerpetual):
+        if not _supports_funding_rates(instrument):
             self._log.warning(
                 f"Funding rates not applicable for {command.instrument_id} "
                 f"(instrument type: {type(instrument).__name__}), skipping subscription",
@@ -352,7 +362,12 @@ class OKXDataClient(LiveMarketDataClient):
             return
         inst_family = f"{parts[0]}-{parts[1]}"
 
-        self._ws_client.add_option_greeks_sub(pyo3_instrument_id)  # type: ignore[attr-defined]
+        conventions = self._resolve_greeks_conventions(command.params)
+        self._ws_client.add_option_greeks_sub_with_conventions(  # type: ignore[attr-defined]
+            pyo3_instrument_id,
+            conventions,
+        )
+        self._option_greeks_instrument_ids.add(command.instrument_id)
 
         count = self._option_summary_family_subs.get(inst_family, 0)
         self._option_summary_family_subs[inst_family] = count + 1
@@ -362,10 +377,48 @@ class OKXDataClient(LiveMarketDataClient):
                 await self._ws_client.subscribe_option_summary(inst_family)  # type: ignore[attr-defined]
             except Exception:
                 self._ws_client.remove_option_greeks_sub(pyo3_instrument_id)  # type: ignore[attr-defined]
+                self._option_greeks_instrument_ids.discard(command.instrument_id)
                 self._option_summary_family_subs[inst_family] -= 1
                 if self._option_summary_family_subs[inst_family] <= 0:
                     del self._option_summary_family_subs[inst_family]
                 raise
+
+    def _resolve_greeks_conventions(
+        self,
+        params: dict[str, Any] | None,
+    ) -> list[OKXGreeksType]:
+        default = [OKXGreeksType.BS, OKXGreeksType.PA]
+        if params is None:
+            return default
+        raw = params.get("greeks_convention")
+        if raw is None:
+            return default
+
+        entries: list[Any]
+        if isinstance(raw, list | tuple):
+            entries = list(raw)
+        else:
+            entries = [raw]
+
+        resolved: list[OKXGreeksType] = []
+
+        for entry in entries:
+            if not isinstance(entry, str):
+                self._log.warning(
+                    f"Ignoring non-string greeks_convention entry {entry!r}",
+                )
+                continue
+            convention = getattr(GreeksConvention, entry.upper(), None)
+            if convention is None:
+                self._log.warning(
+                    f"Unrecognized greeks_convention {entry!r}, skipping",
+                )
+                continue
+            greeks_type = GREEKS_CONVENTION_TO_TYPE[convention]
+            if greeks_type not in resolved:
+                resolved.append(greeks_type)
+
+        return resolved if resolved else default
 
     async def _unsubscribe_order_book_deltas(self, command: UnsubscribeOrderBook) -> None:
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
@@ -410,7 +463,7 @@ class OKXDataClient(LiveMarketDataClient):
             self._log.error(f"Cannot find instrument for {command.instrument_id}")
             return
 
-        if not isinstance(instrument, CryptoPerpetual):
+        if not _supports_funding_rates(instrument):
             self._log.warning(
                 f"Funding rates not applicable for {command.instrument_id} "
                 f"(instrument type: {type(instrument).__name__}), skipping unsubscription",
@@ -419,6 +472,10 @@ class OKXDataClient(LiveMarketDataClient):
 
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
         await self._ws_client.unsubscribe_funding_rates(pyo3_instrument_id)
+
+    def unsubscribe_option_greeks(self, command: UnsubscribeOptionGreeks) -> None:
+        self._option_greeks_instrument_ids.discard(command.instrument_id)
+        super().unsubscribe_option_greeks(command)
 
     async def _unsubscribe_option_greeks(self, command: UnsubscribeOptionGreeks) -> None:
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
@@ -491,6 +548,7 @@ class OKXDataClient(LiveMarketDataClient):
                 family,
             )
             instruments = []
+
             for pyo3_instrument in pyo3_instruments:
                 self._cache_instrument(pyo3_instrument)  # type: ignore[arg-type]
                 instrument = transform_instrument_from_pyo3(pyo3_instrument)
@@ -524,6 +582,7 @@ class OKXDataClient(LiveMarketDataClient):
                 nautilus_pyo3.OKXInstrumentType.FUTURES,
                 nautilus_pyo3.OKXInstrumentType.SWAP,
                 nautilus_pyo3.OKXInstrumentType.OPTION,
+                nautilus_pyo3.OKXInstrumentType.EVENTS,
             )
 
             if instrument_families and supports_family:
@@ -693,9 +752,11 @@ class OKXDataClient(LiveMarketDataClient):
                 self._handle_instrument_update(msg)
             elif isinstance(msg, nautilus_pyo3.FundingRateUpdate):
                 self._handle_data(FundingRateUpdate.from_pyo3(msg))
+            elif isinstance(msg, nautilus_pyo3.InstrumentStatus):
+                self._handle_data(InstrumentStatus.from_pyo3(msg))
             elif isinstance(msg, nautilus_pyo3.OptionGreeks):
                 greeks = OptionGreeks.from_pyo3(msg)
-                if greeks.instrument_id in self._subscriptions_option_greeks:
+                if greeks.instrument_id in self._option_greeks_instrument_ids:
                     self._handle_data(greeks)
             else:
                 self._log.error(f"Cannot handle message {msg}, not implemented")
@@ -717,3 +778,12 @@ class OKXDataClient(LiveMarketDataClient):
         instrument = transform_instrument_from_pyo3(pyo3_instrument)
 
         self._handle_data(instrument)
+
+
+def _supports_funding_rates(instrument: Instrument) -> bool:
+    if isinstance(instrument, CryptoPerpetual):
+        return True
+    if isinstance(instrument, CryptoFuture):
+        info = instrument.info or {}
+        return str(info.get("rule_type", "")).lower() == "xperp"
+    return False

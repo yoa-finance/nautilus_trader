@@ -15,11 +15,6 @@
 
 //! Python bindings from [PyO3](https://pyo3.rs).
 
-#![allow(
-    clippy::missing_errors_doc,
-    reason = "errors documented on underlying Rust methods"
-)]
-
 pub mod config;
 pub mod csv;
 pub mod enums;
@@ -27,16 +22,15 @@ pub mod factories;
 pub mod http;
 pub mod machine;
 
+use nautilus_common::factories::{ClientConfig, DataClientFactory};
 use nautilus_core::python::{enums::parse_enum, to_pyruntime_err, to_pyvalue_err};
-use nautilus_system::{
-    factories::{ClientConfig, DataClientFactory},
-    get_global_pyo3_registry,
-};
+use nautilus_system::get_global_pyo3_registry;
 use pyo3::prelude::*;
 use ustr::Ustr;
 
 use crate::{
     common::{
+        consts::TARDIS,
         enums::{TardisExchange, TardisInstrumentType},
         parse::normalize_symbol_str,
     },
@@ -66,7 +60,7 @@ pub fn py_tardis_normalize_symbol_str(
     Ok(normalize_symbol_str(symbol, &exchange, &instrument_type, is_inverse).to_string())
 }
 
-#[allow(clippy::needless_pass_by_value)]
+#[expect(clippy::needless_pass_by_value)]
 fn extract_tardis_data_factory(
     py: Python<'_>,
     factory: Py<PyAny>,
@@ -79,7 +73,7 @@ fn extract_tardis_data_factory(
     }
 }
 
-#[allow(clippy::needless_pass_by_value)]
+#[expect(clippy::needless_pass_by_value)]
 fn extract_tardis_data_config(
     py: Python<'_>,
     config: Py<PyAny>,
@@ -151,7 +145,7 @@ pub fn tardis(_: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     let registry = get_global_pyo3_registry();
 
     if let Err(e) =
-        registry.register_factory_extractor("TARDIS".to_string(), extract_tardis_data_factory)
+        registry.register_factory_extractor(TARDIS.to_string(), extract_tardis_data_factory)
     {
         return Err(to_pyruntime_err(format!(
             "Failed to register Tardis data factory extractor: {e}"

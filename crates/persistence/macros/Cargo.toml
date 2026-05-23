@@ -11,7 +11,6 @@ keywords.workspace = true
 documentation.workspace = true
 repository.workspace = true
 homepage.workspace = true
-publish = false
 
 [lints]
 workspace = true
@@ -23,3 +22,6 @@ proc-macro = true
 proc-macro2 = "1.0"
 quote = "1.0"
 syn = { version = "2.0", features = ["full"] }
+
+[dev-dependencies]
+rstest = { workspace = true }

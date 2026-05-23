@@ -13,10 +13,13 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
+use serde::{Deserialize, Serialize};
+
 /// Configuration for `OrderMatchingEngine` instances.
-#[derive(Debug, Clone, bon::Builder)]
+#[derive(Debug, Clone, Deserialize, Serialize, bon::Builder)]
+#[serde(default, deny_unknown_fields)]
 pub struct OrderMatchingEngineConfig {
-    #[builder(default)]
+    #[builder(default = true)]
     pub bar_execution: bool,
     #[builder(default)]
     pub bar_adaptive_high_low_ordering: bool,
@@ -24,17 +27,17 @@ pub struct OrderMatchingEngineConfig {
     pub trade_execution: bool,
     #[builder(default)]
     pub liquidity_consumption: bool,
-    #[builder(default)]
+    #[builder(default = true)]
     pub reject_stop_orders: bool,
-    #[builder(default)]
+    #[builder(default = true)]
     pub support_gtd_orders: bool,
-    #[builder(default)]
+    #[builder(default = true)]
     pub support_contingent_orders: bool,
-    #[builder(default)]
+    #[builder(default = true)]
     pub use_position_ids: bool,
     #[builder(default)]
     pub use_random_ids: bool,
-    #[builder(default)]
+    #[builder(default = true)]
     pub use_reduce_only: bool,
     #[builder(default)]
     pub use_market_order_acks: bool,
@@ -45,56 +48,36 @@ pub struct OrderMatchingEngineConfig {
     pub price_protection_points: Option<u32>,
 }
 
-impl OrderMatchingEngineConfig {
-    /// Creates a new default [`OrderMatchingEngineConfig`] instance.
-    #[must_use]
-    #[allow(clippy::too_many_arguments)]
-    pub const fn new(
-        bar_execution: bool,
-        bar_adaptive_high_low_ordering: bool,
-        trade_execution: bool,
-        liquidity_consumption: bool,
-        reject_stop_orders: bool,
-        support_gtd_orders: bool,
-        support_contingent_orders: bool,
-        use_position_ids: bool,
-        use_random_ids: bool,
-        use_reduce_only: bool,
-        use_market_order_acks: bool,
-        queue_position: bool,
-        oto_full_trigger: bool,
-    ) -> Self {
-        Self {
-            bar_execution,
-            bar_adaptive_high_low_ordering,
-            trade_execution,
-            liquidity_consumption,
-            reject_stop_orders,
-            support_gtd_orders,
-            support_contingent_orders,
-            use_position_ids,
-            use_random_ids,
-            use_reduce_only,
-            use_market_order_acks,
-            queue_position,
-            oto_full_trigger,
-            price_protection_points: None,
-        }
-    }
-
-    /// Sets the price protection points for the matching engine.
-    #[must_use]
-    pub const fn with_price_protection_points(
-        mut self,
-        price_protection_points: Option<u32>,
-    ) -> Self {
-        self.price_protection_points = price_protection_points;
-        self
-    }
-}
-
 impl Default for OrderMatchingEngineConfig {
     fn default() -> Self {
         Self::builder().build()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rstest::rstest;
+
+    use super::*;
+
+    // Locks Rust defaults to the Cython per-engine constructor at
+    // nautilus_trader/backtest/engine.pyx:3882-3894.
+    #[rstest]
+    fn test_default_matches_cython() {
+        let config = OrderMatchingEngineConfig::default();
+        assert!(config.bar_execution);
+        assert!(!config.bar_adaptive_high_low_ordering);
+        assert!(config.trade_execution);
+        assert!(!config.liquidity_consumption);
+        assert!(config.reject_stop_orders);
+        assert!(config.support_gtd_orders);
+        assert!(config.support_contingent_orders);
+        assert!(config.use_position_ids);
+        assert!(!config.use_random_ids);
+        assert!(config.use_reduce_only);
+        assert!(!config.use_market_order_acks);
+        assert!(!config.queue_position);
+        assert!(!config.oto_full_trigger);
+        assert_eq!(config.price_protection_points, None);
     }
 }

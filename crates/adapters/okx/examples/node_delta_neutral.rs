@@ -36,13 +36,13 @@
 //! - Rehedge check every 30 seconds
 //! - Entry disabled by default (set `enter_strangle` to enable live orders)
 //!
-//! Run with: `cargo run --example okx-delta-neutral --package nautilus-okx`
+//! Run with: `cargo run --example okx-delta-neutral --package nautilus-okx --features examples`
 
 use nautilus_common::enums::Environment;
 use nautilus_live::node::LiveNode;
-use nautilus_model::identifiers::{AccountId, ClientId, InstrumentId, TraderId};
+use nautilus_model::identifiers::{AccountId, InstrumentId, TraderId};
 use nautilus_okx::{
-    common::enums::OKXInstrumentType,
+    common::{consts::OKX_CLIENT_ID, enums::OKXInstrumentType},
     config::{OKXDataClientConfig, OKXExecClientConfig},
     factories::{OKXDataClientFactory, OKXExecutionClientFactory},
 };
@@ -57,7 +57,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let environment = Environment::Live;
     let trader_id = TraderId::from("TESTER-001");
     let account_id = AccountId::from("OKX-001");
-    let client_id = ClientId::new("OKX");
+    let client_id = *OKX_CLIENT_ID;
 
     let data_config = OKXDataClientConfig {
         api_key: None,        // Will use 'OKX_API_KEY' env var

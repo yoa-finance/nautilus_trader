@@ -61,7 +61,7 @@ pub struct DeltaNeutralVolConfig {
     pub entry_iv_offset: f64,
     /// Time-in-force for strangle entry orders.
     pub entry_time_in_force: TimeInForce,
-    /// Param key for implied volatility passed to `submit_order_with_params`.
+    /// Param key for implied volatility passed to `submit_order`.
     /// Adapter-specific: Bybit uses `"order_iv"`, OKX uses `"px_vol"`.
     pub iv_param_key: String,
 }
@@ -190,7 +190,7 @@ impl DeltaNeutralVolConfig {
         entry_time_in_force=TimeInForce::Gtc,
         iv_param_key="px_vol",
     ))]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn py_new(
         option_family: String,
         hedge_instrument_id: InstrumentId,

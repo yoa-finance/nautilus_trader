@@ -15,20 +15,16 @@
 
 //! Python bindings from [PyO3](https://pyo3.rs).
 
-#![allow(
-    clippy::missing_errors_doc,
-    reason = "errors documented on underlying Rust methods"
-)]
-
 use pyo3::pymethods;
 
 use crate::config::PortfolioConfig;
 
+#[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pymethods]
 impl PortfolioConfig {
     /// Configuration for `Portfolio` instances.
     #[new]
-    #[pyo3(signature = (use_mark_prices=None, use_mark_xrates=None, bar_updates=None, convert_to_account_base_currency=None, min_account_state_logging_interval_ms=None, debug=None))]
+    #[pyo3(signature = (use_mark_prices=None, use_mark_xrates=None, bar_updates=None, convert_to_account_base_currency=None, min_account_state_logging_interval_ms=None, debug=None, snapshot_interval_ms=None))]
     fn py_new(
         use_mark_prices: Option<bool>,
         use_mark_xrates: Option<bool>,
@@ -36,6 +32,7 @@ impl PortfolioConfig {
         convert_to_account_base_currency: Option<bool>,
         min_account_state_logging_interval_ms: Option<u64>,
         debug: Option<bool>,
+        snapshot_interval_ms: Option<u64>,
     ) -> Self {
         let default = Self::default();
         Self {
@@ -45,6 +42,7 @@ impl PortfolioConfig {
             convert_to_account_base_currency: convert_to_account_base_currency
                 .unwrap_or(default.convert_to_account_base_currency),
             min_account_state_logging_interval_ms,
+            snapshot_interval_ms,
             debug: debug.unwrap_or(default.debug),
         }
     }
@@ -80,6 +78,11 @@ impl PortfolioConfig {
     #[getter]
     fn min_account_state_logging_interval_ms(&self) -> Option<u64> {
         self.min_account_state_logging_interval_ms
+    }
+
+    #[getter]
+    fn snapshot_interval_ms(&self) -> Option<u64> {
+        self.snapshot_interval_ms
     }
 
     #[getter]

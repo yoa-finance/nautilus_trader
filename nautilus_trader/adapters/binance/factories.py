@@ -14,7 +14,6 @@
 # -------------------------------------------------------------------------------------------------
 
 import asyncio
-import warnings
 from functools import lru_cache
 
 from nautilus_trader.adapters.binance.common.credentials import get_api_key
@@ -24,7 +23,9 @@ from nautilus_trader.adapters.binance.common.enums import BinanceAccountType
 from nautilus_trader.adapters.binance.common.enums import BinanceEnvironment
 from nautilus_trader.adapters.binance.common.enums import BinanceKeyType
 from nautilus_trader.adapters.binance.common.urls import get_http_base_url
+from nautilus_trader.adapters.binance.common.urls import get_usdm_ws_route_base_url
 from nautilus_trader.adapters.binance.common.urls import get_ws_base_url
+from nautilus_trader.adapters.binance.common.urls import get_ws_public_base_url
 from nautilus_trader.adapters.binance.config import BinanceDataClientConfig
 from nautilus_trader.adapters.binance.config import BinanceExecClientConfig
 from nautilus_trader.adapters.binance.config import BinanceInstrumentProviderConfig
@@ -47,22 +48,7 @@ from nautilus_trader.model.identifiers import Venue
 
 def _resolve_environment(
     environment: BinanceEnvironment | None,
-    testnet: bool,
 ) -> BinanceEnvironment:
-    if environment is not None and testnet:
-        raise ValueError(
-            "Cannot set both `environment` and `testnet`. "
-            "Use `environment` only (`testnet` is deprecated).",
-        )
-
-    if testnet:
-        warnings.warn(
-            "`testnet` is deprecated, use `environment=BinanceEnvironment.TESTNET` instead.",
-            DeprecationWarning,
-            stacklevel=3,
-        )
-        return BinanceEnvironment.TESTNET
-
     return environment or BinanceEnvironment.LIVE
 
 
@@ -286,7 +272,7 @@ class BinanceLiveDataClientFactory(LiveDataClientFactory):
             If `config.account_type` is not a valid `BinanceAccountType`.
 
         """
-        environment = _resolve_environment(config.environment, config.testnet)
+        environment = _resolve_environment(config.environment)
 
         # Get HTTP client singleton
         client: BinanceHttpClient = get_cached_binance_http_client(
@@ -342,6 +328,26 @@ class BinanceLiveDataClientFactory(LiveDataClientFactory):
                 venue=config.venue,
             )
 
+            default_base_url_ws_public: str = get_ws_public_base_url(
+                account_type=config.account_type,
+                environment=environment,
+                is_us=config.us,
+            )
+
+            base_url_ws = config.base_url_ws or default_base_url_ws
+            base_url_ws_public = config.base_url_ws or default_base_url_ws_public
+
+            if (
+                config.base_url_ws is not None
+                and environment == BinanceEnvironment.LIVE
+                and config.account_type == BinanceAccountType.USDT_FUTURES
+            ):
+                base_url_ws = get_usdm_ws_route_base_url(config.base_url_ws, "market")
+                base_url_ws_public = get_usdm_ws_route_base_url(
+                    config.base_url_ws,
+                    "public",
+                )
+
             return BinanceFuturesDataClient(
                 loop=loop,
                 client=client,
@@ -350,9 +356,10 @@ class BinanceLiveDataClientFactory(LiveDataClientFactory):
                 clock=clock,
                 instrument_provider=provider,
                 account_type=config.account_type,
-                base_url_ws=config.base_url_ws or default_base_url_ws,
+                base_url_ws=base_url_ws,
                 name=name,
                 config=config,
+                base_url_ws_public=base_url_ws_public,
             )
 
 
@@ -404,7 +411,7 @@ class BinanceLiveExecClientFactory(LiveExecClientFactory):
                 "Use Ed25519 or HMAC keys instead.",
             )
 
-        environment = _resolve_environment(config.environment, config.testnet)
+        environment = _resolve_environment(config.environment)
 
         api_key = config.api_key or get_api_key(config.account_type, environment)
         api_secret = config.api_secret or get_api_secret(config.account_type, environment)

@@ -325,6 +325,9 @@ def post_process_stubs(root: Path) -> None:
         # Fix enum variant names in default values (signature defaults use Rust names)
         content = fix_enum_defaults_in_signatures(content, renamed_enums)
 
+        # Replace forward local class defaults that are invalid inside class bodies
+        content = elide_forward_class_defaults_in_signatures(content)
+
         # Import model symbols used without a module qualifier
         content = add_missing_model_imports(content)
 
@@ -351,7 +354,7 @@ ATTR_NAME_RE = re.compile(r'\bname\s*=\s*"([^"]+)"')
 RUST_IMPL_RE = re.compile(r"^\s*impl(?:\s*<[^>]+>)?\s+([A-Za-z_][A-Za-z0-9_:<>]*)\s*\{")
 RUST_STRUCT_RE = re.compile(r"^\s*(?:pub\s+)?struct\s+([A-Za-z_][A-Za-z0-9_]*)\b")
 RUST_FN_RE = re.compile(
-    r"fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\((.*)\)\s*(?:->\s*(.*?))?\s*\{",
+    r"fn\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*<[^>]+>)?\s*\((.*)\)\s*(?:->\s*(.*?))?\s*\{",
     flags=re.DOTALL,
 )
 IDENTIFIER_INVOKE_RE = re.compile(
@@ -410,6 +413,7 @@ def _resolve_signature_params(
 
     """
     params: list[tuple[str, str | None]] = []
+
     for raw_param in _split_signature_params(params_str):
         param = raw_param.strip()
         if not param or param == "*":
@@ -449,6 +453,7 @@ def _split_signature_params(params_str: str) -> list[str]:
     params: list[str] = []
     depth = 0
     current: list[str] = []
+
     for ch in params_str:
         if ch in "(<[":
             depth += 1
@@ -530,6 +535,10 @@ def collect_rust_class_fixups(workspace_root: Path) -> dict[str, ClassMethodFixu
         _collect_identifier_macro_fixups(source, fixups)
         _collect_pymethod_fixups(source, fixups)
         _collect_pyfunction_signature_defaults(source, fixups)
+
+    for rust_file in sorted(workspace_root.glob("crates/**/src/**/*.rs")):
+        source = rust_file.read_text()
+        _collect_custom_data_macro_fixups(source, fixups)
 
     return fixups
 
@@ -639,6 +648,72 @@ def fix_enum_defaults_in_signatures(content: str, renamed_enums: set[str]) -> st
     return content
 
 
+FORWARD_LOCAL_CLASS_DEFAULT_RE = re.compile(
+    r"=\s*(?P<class_name>[A-Za-z_][A-Za-z0-9_]*)\.[A-Za-z_][A-Za-z0-9_]*\b",
+)
+
+
+def _replace_forward_local_class_default(
+    match: re.Match[str],
+    class_positions: dict[str, int],
+    current_index: int,
+) -> str:
+    class_name = match.group("class_name")
+    class_pos = class_positions.get(class_name)
+    if class_pos is None or class_pos < current_index:
+        return match.group(0)
+    return "= ..."
+
+
+def elide_forward_class_defaults_in_signatures(content: str) -> str:
+    """
+    Replace local class defaults with ``...`` when the class is declared later in the
+    same stub file.
+
+    This keeps the signature shape while avoiding invalid runtime expressions
+    like ``BitmexEnvironment.MAINNET`` inside a class body before
+    ``BitmexEnvironment`` is defined.
+
+    """
+    lines = content.split("\n")
+    class_positions = {
+        match.group(1): index
+        for index, line in enumerate(lines)
+        if (match := STUB_CLASS_RE.match(line.strip())) is not None
+    }
+
+    if not class_positions:
+        return content
+
+    result: list[str] = []
+    in_signature = False
+
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+
+        if STUB_DEF_RE.match(line):
+            in_signature = True
+
+        if in_signature:
+            updated_line = FORWARD_LOCAL_CLASS_DEFAULT_RE.sub(
+                lambda match, current_index=index: _replace_forward_local_class_default(
+                    match,
+                    class_positions,
+                    current_index,
+                ),
+                line,
+            )
+        else:
+            updated_line = line
+
+        if in_signature and stripped.endswith((":", "...")):
+            in_signature = False
+
+        result.append(updated_line)
+
+    return "\n".join(result)
+
+
 def _collect_pyclass_name_fixups(source: str, fixups: dict[str, ClassMethodFixup]) -> None:
     lines = source.splitlines()
     pending_attrs: list[str] = []
@@ -686,6 +761,62 @@ def _collect_identifier_macro_fixups(source: str, fixups: dict[str, ClassMethodF
         fixup = fixups.setdefault(class_name, ClassMethodFixup())
         fixup.getters.update(IDENTIFIER_MACRO_METHOD_FIXUPS.getters)
         fixup.staticmethods.update(IDENTIFIER_MACRO_METHOD_FIXUPS.staticmethods)
+
+
+def _collect_custom_data_macro_fixups(source: str, fixups: dict[str, ClassMethodFixup]) -> None:
+    lines = source.splitlines()
+    pending_attrs: list[str] = []
+    i = 0
+
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+
+        if not stripped:
+            pending_attrs.clear()
+            i += 1
+            continue
+
+        if stripped.startswith("#["):
+            attribute, i = consume_rust_attribute(lines, i)
+            pending_attrs.append(attribute)
+            continue
+
+        struct_match = RUST_STRUCT_RE.match(line)
+        if struct_match is None:
+            pending_attrs.clear()
+            i += 1
+            continue
+
+        custom_data_attr = next(
+            (attr for attr in pending_attrs if "custom_data(" in attr and "stub_module" in attr),
+            None,
+        )
+
+        if custom_data_attr is not None:
+            class_name = struct_match.group(1)
+            fixup = fixups.setdefault(class_name, ClassMethodFixup())
+            fixup.getters.update(_collect_struct_field_names(lines, i))
+            fixup.classmethods.add("from_json")
+
+        pending_attrs.clear()
+        i += 1
+
+
+def _collect_struct_field_names(lines: list[str], struct_start: int) -> set[str]:
+    fields: set[str] = set()
+    brace_depth = lines[struct_start].count("{") - lines[struct_start].count("}")
+    i = struct_start + 1
+
+    while i < len(lines) and brace_depth > 0:
+        field_match = re.match(r"\s*pub\s+([A-Za-z_][A-Za-z0-9_]*)\s*:", lines[i])
+        if field_match is not None:
+            fields.add(field_match.group(1))
+
+        brace_depth += lines[i].count("{") - lines[i].count("}")
+        i += 1
+
+    return fields
 
 
 def _collect_pymethod_fixups(source: str, fixups: dict[str, ClassMethodFixup]) -> None:
@@ -1257,6 +1388,7 @@ def rewrite_stub_method_block(
             decorators.append("    @staticmethod")
     elif method_name in fixup.classmethods:
         signature_text = replace_self_with_cls(signature_text)
+        signature_text = drop_named_stub_param(signature_text, "_cls")
 
         if not _has_decorator(decorators, "@classmethod"):
             decorators.append("    @classmethod")
@@ -1307,6 +1439,25 @@ def replace_self_with_cls(signature_text: str) -> str:
     return re.sub(r"\bself\b", "cls", signature_text, count=1)
 
 
+def drop_named_stub_param(signature_text: str, name: str) -> str:
+    """
+    Remove a named parameter inserted by pyo3-stub-gen from a stub signature.
+    """
+    escaped = re.escape(name)
+    signature_text = re.sub(
+        rf",\s*{escaped}\s*:\s*[^,\)]+",
+        "",
+        signature_text,
+        count=1,
+    )
+    return re.sub(
+        rf"\n[ \t]*{escaped}\s*:\s*[^,\n]+,?",
+        "",
+        signature_text,
+        count=1,
+    )
+
+
 def fix_stub_header(content: str) -> str:
     """
     Ensure stub file has proper header with ruff ignores.
@@ -1315,6 +1466,7 @@ def fix_stub_header(content: str) -> str:
 
     # Find where the header ends (first non-comment, non-empty line)
     header_end = 0
+
     for i, line in enumerate(lines):
         stripped = line.strip()
         if stripped and not stripped.startswith("#"):
@@ -1688,6 +1840,7 @@ def _split_params(params_str: str) -> list[str]:
     parts: list[str] = []
     depth = 0
     start = 0
+
     for i, ch in enumerate(params_str):
         if ch in "([":
             depth += 1
@@ -1714,6 +1867,7 @@ def _is_optional_param(param: str) -> bool:
         return True
     # Check for `| None` only at bracket depth 0
     depth = 0
+
     for i, ch in enumerate(type_part):
         if ch in "([":
             depth += 1
@@ -1729,6 +1883,7 @@ def _has_default(param: str) -> bool:
     Check if a parameter has a default value (respecting brackets).
     """
     depth = 0
+
     for ch in param:
         if ch in "([":
             depth += 1
@@ -1744,6 +1899,7 @@ def _find_matching_paren(line: str, start: int) -> int:
     Return the index of the closing paren matching the open paren at *start*.
     """
     depth = 0
+
     for i in range(start, len(line)):
         if line[i] == "(":
             depth += 1
@@ -1771,6 +1927,7 @@ def _fix_optional_defaults_in_line(line: str) -> str:
         return line
 
     changed = False
+
     for i in range(len(params) - 1, -1, -1):
         p = params[i]
         if _has_default(p):
@@ -1802,6 +1959,7 @@ def add_optional_defaults(content: str) -> str:
     """
     lines = content.split("\n")
     result = []
+
     for line in lines:
         if "def " in line and ("Optional" in line or "| None" in line):
             result.append(_fix_optional_defaults_in_line(line))
@@ -1874,6 +2032,7 @@ def _build_defaults_lookup(
     accounting for pyclass name renames.
     """
     all_defaults: dict[tuple[str | None, str], dict[str, str]] = {}
+
     for rust_class, fixup in class_fixups.items():
         python_class = fixup.python_name or rust_class
         for method_name, defaults in fixup.signature_defaults.items():
@@ -1990,6 +2149,7 @@ def add_missing_model_imports(content: str) -> str:
     }
 
     missing_imports = []
+
     for name in sorted(MODEL_EXPORTS):
         if name in defined_names:
             continue

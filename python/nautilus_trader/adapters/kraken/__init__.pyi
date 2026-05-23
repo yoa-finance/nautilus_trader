@@ -51,7 +51,7 @@ class KrakenDataClientConfig:
         base_url: str | None = None,
         ws_public_url: str | None = None,
         ws_private_url: str | None = None,
-        http_proxy: str | None = None,
+        proxy_url: str | None = None,
         timeout_secs: int | None = None,
         heartbeat_interval_secs: int | None = None,
         max_requests_per_second: int | None = None,
@@ -74,7 +74,7 @@ class KrakenExecClientConfig:
         environment: KrakenEnvironment | None = None,
         base_url: str | None = None,
         ws_url: str | None = None,
-        http_proxy: str | None = None,
+        proxy_url: str | None = None,
         timeout_secs: int | None = None,
         heartbeat_interval_secs: int | None = None,
         max_requests_per_second: int | None = None,
@@ -112,37 +112,37 @@ class KrakenFuturesHttpClient:
     def request_trades(
         self,
         instrument_id: model.InstrumentId,
-        start: datetime.datetime | None = ...,
-        end: datetime.datetime | None = ...,
-        limit: int | None = ...,
+        start: datetime.datetime | None = None,
+        end: datetime.datetime | None = None,
+        limit: int | None = None,
     ) -> typing.Any: ...
     def request_mark_price(self, instrument_id: model.InstrumentId) -> typing.Any: ...
     def request_index_price(self, instrument_id: model.InstrumentId) -> typing.Any: ...
     def request_bars(
         self,
         bar_type: model.BarType,
-        start: datetime.datetime | None = ...,
-        end: datetime.datetime | None = ...,
-        limit: int | None = ...,
+        start: datetime.datetime | None = None,
+        end: datetime.datetime | None = None,
+        limit: int | None = None,
     ) -> typing.Any: ...
     def request_account_state(self, account_id: model.AccountId) -> typing.Any: ...
     def request_order_status_reports(
         self,
         account_id: model.AccountId,
-        instrument_id: model.InstrumentId | None,
-        start: datetime.datetime | None,
-        end: datetime.datetime | None,
-        open_only: bool,
+        instrument_id: model.InstrumentId | None = None,
+        start: datetime.datetime | None = None,
+        end: datetime.datetime | None = None,
+        open_only: bool = False,
     ) -> typing.Any: ...
     def request_fill_reports(
         self,
         account_id: model.AccountId,
-        instrument_id: model.InstrumentId | None = ...,
-        start: datetime.datetime | None = ...,
-        end: datetime.datetime | None = ...,
+        instrument_id: model.InstrumentId | None = None,
+        start: datetime.datetime | None = None,
+        end: datetime.datetime | None = None,
     ) -> typing.Any: ...
     def request_position_status_reports(
-        self, account_id: model.AccountId, instrument_id: model.InstrumentId | None = ...
+        self, account_id: model.AccountId, instrument_id: model.InstrumentId | None = None
     ) -> typing.Any: ...
     def submit_order(
         self,
@@ -153,28 +153,28 @@ class KrakenFuturesHttpClient:
         order_type: model.OrderType,
         quantity: model.Quantity,
         time_in_force: model.TimeInForce,
-        price: model.Price | None,
-        trigger_price: model.Price | None,
-        reduce_only: bool,
-        post_only: bool,
+        price: model.Price | None = None,
+        trigger_price: model.Price | None = None,
+        reduce_only: bool = False,
+        post_only: bool = False,
     ) -> typing.Any: ...
     def modify_order(
         self,
         instrument_id: model.InstrumentId,
-        client_order_id: model.ClientOrderId | None = ...,
-        venue_order_id: model.VenueOrderId | None = ...,
-        quantity: model.Quantity | None = ...,
-        price: model.Price | None = ...,
-        trigger_price: model.Price | None = ...,
+        client_order_id: model.ClientOrderId | None = None,
+        venue_order_id: model.VenueOrderId | None = None,
+        quantity: model.Quantity | None = None,
+        price: model.Price | None = None,
+        trigger_price: model.Price | None = None,
     ) -> typing.Any: ...
     def cancel_order(
         self,
         account_id: model.AccountId,
         instrument_id: model.InstrumentId,
-        client_order_id: model.ClientOrderId | None = ...,
-        venue_order_id: model.VenueOrderId | None = ...,
+        client_order_id: model.ClientOrderId | None = None,
+        venue_order_id: model.VenueOrderId | None = None,
     ) -> typing.Any: ...
-    def cancel_all_orders(self, instrument_id: model.InstrumentId | None = ...) -> typing.Any: ...
+    def cancel_all_orders(self, instrument_id: model.InstrumentId | None = None) -> typing.Any: ...
     def cancel_orders_batch(
         self, venue_order_ids: typing.Sequence[model.VenueOrderId]
     ) -> typing.Any: ...
@@ -188,6 +188,7 @@ class KrakenFuturesWebSocketClient:
         heartbeat_secs: int | None = None,
         api_key: str | None = None,
         api_secret: str | None = None,
+        proxy_url: str | None = None,
     ) -> None: ...
     @property
     def has_credentials(self) -> bool: ...
@@ -214,7 +215,7 @@ class KrakenFuturesWebSocketClient:
     def disconnect(self) -> typing.Any: ...
     def close(self) -> typing.Any: ...
     def subscribe_book(
-        self, instrument_id: model.InstrumentId, depth: int | None = ...
+        self, instrument_id: model.InstrumentId, depth: int | None = None
     ) -> typing.Any: ...
     def subscribe_quotes(self, instrument_id: model.InstrumentId) -> typing.Any: ...
     def subscribe_trades(self, instrument_id: model.InstrumentId) -> typing.Any: ...
@@ -259,42 +260,40 @@ class KrakenSpotHttpClient:
     def api_key_masked(self) -> str | None: ...
     def cache_instrument(self, instrument: typing.Any) -> None: ...
     def cancel_all_requests(self) -> None: ...
-    def set_use_spot_position_reports(self, value: bool) -> None: ...
-    def set_spot_positions_quote_currency(self, currency: str) -> None: ...
     def get_server_time(self) -> typing.Any: ...
-    def request_instruments(self, pairs: typing.Sequence[str] | None = ...) -> typing.Any: ...
+    def request_instruments(self, pairs: typing.Sequence[str] | None = None) -> typing.Any: ...
     def request_trades(
         self,
         instrument_id: model.InstrumentId,
-        start: datetime.datetime | None = ...,
-        end: datetime.datetime | None = ...,
-        limit: int | None = ...,
+        start: datetime.datetime | None = None,
+        end: datetime.datetime | None = None,
+        limit: int | None = None,
     ) -> typing.Any: ...
     def request_bars(
         self,
         bar_type: model.BarType,
-        start: datetime.datetime | None = ...,
-        end: datetime.datetime | None = ...,
-        limit: int | None = ...,
+        start: datetime.datetime | None = None,
+        end: datetime.datetime | None = None,
+        limit: int | None = None,
     ) -> typing.Any: ...
     def request_account_state(self, account_id: model.AccountId) -> typing.Any: ...
     def request_order_status_reports(
         self,
         account_id: model.AccountId,
-        instrument_id: model.InstrumentId | None,
-        start: datetime.datetime | None,
-        end: datetime.datetime | None,
-        open_only: bool,
+        instrument_id: model.InstrumentId | None = None,
+        start: datetime.datetime | None = None,
+        end: datetime.datetime | None = None,
+        open_only: bool = False,
     ) -> typing.Any: ...
     def request_fill_reports(
         self,
         account_id: model.AccountId,
-        instrument_id: model.InstrumentId | None = ...,
-        start: datetime.datetime | None = ...,
-        end: datetime.datetime | None = ...,
+        instrument_id: model.InstrumentId | None = None,
+        start: datetime.datetime | None = None,
+        end: datetime.datetime | None = None,
     ) -> typing.Any: ...
     def request_position_status_reports(
-        self, account_id: model.AccountId, instrument_id: model.InstrumentId | None = ...
+        self, account_id: model.AccountId, instrument_id: model.InstrumentId | None = None
     ) -> typing.Any: ...
     def submit_order(
         self,
@@ -305,18 +304,18 @@ class KrakenSpotHttpClient:
         order_type: model.OrderType,
         quantity: model.Quantity,
         time_in_force: model.TimeInForce,
-        expire_time: int | None,
-        price: model.Price | None,
-        trigger_price: model.Price | None,
-        reduce_only: bool,
-        post_only: bool,
+        expire_time: int | None = None,
+        price: model.Price | None = None,
+        trigger_price: model.Price | None = None,
+        reduce_only: bool = False,
+        post_only: bool = False,
     ) -> typing.Any: ...
     def cancel_order(
         self,
         account_id: model.AccountId,
         instrument_id: model.InstrumentId,
-        client_order_id: model.ClientOrderId | None = ...,
-        venue_order_id: model.VenueOrderId | None = ...,
+        client_order_id: model.ClientOrderId | None = None,
+        venue_order_id: model.VenueOrderId | None = None,
     ) -> typing.Any: ...
     def cancel_all_orders(self) -> typing.Any: ...
     def cancel_orders_batch(
@@ -325,11 +324,11 @@ class KrakenSpotHttpClient:
     def modify_order(
         self,
         instrument_id: model.InstrumentId,
-        client_order_id: model.ClientOrderId | None = ...,
-        venue_order_id: model.VenueOrderId | None = ...,
-        quantity: model.Quantity | None = ...,
-        price: model.Price | None = ...,
-        trigger_price: model.Price | None = ...,
+        client_order_id: model.ClientOrderId | None = None,
+        venue_order_id: model.VenueOrderId | None = None,
+        quantity: model.Quantity | None = None,
+        price: model.Price | None = None,
+        trigger_price: model.Price | None = None,
     ) -> typing.Any: ...
 
 @typing.final
@@ -342,6 +341,7 @@ class KrakenSpotWebSocketClient:
         heartbeat_secs: int | None = None,
         api_key: str | None = None,
         api_secret: str | None = None,
+        proxy_url: str | None = None,
     ) -> None: ...
     @property
     def url(self) -> str: ...
@@ -374,7 +374,9 @@ class KrakenSpotWebSocketClient:
     def subscribe_quotes(self, instrument_id: model.InstrumentId) -> typing.Any: ...
     def subscribe_trades(self, instrument_id: model.InstrumentId) -> typing.Any: ...
     def subscribe_bars(self, bar_type: model.BarType) -> typing.Any: ...
-    def subscribe_executions(self, snap_orders: bool, snap_trades: bool) -> typing.Any: ...
+    def subscribe_executions(
+        self, snap_orders: bool = True, snap_trades: bool = True
+    ) -> typing.Any: ...
     def unsubscribe_book(self, instrument_id: model.InstrumentId) -> typing.Any: ...
     def unsubscribe_quotes(self, instrument_id: model.InstrumentId) -> typing.Any: ...
     def unsubscribe_trades(self, instrument_id: model.InstrumentId) -> typing.Any: ...
@@ -417,6 +419,7 @@ class KrakenFuturesOrderType(enum.Enum):
     StopLower = ...
     TakeProfit = ...
     StopLoss = ...
+    Unknown = ...
 
 @typing.final
 class KrakenInstrumentType(enum.Enum):
@@ -499,12 +502,14 @@ class KrakenTimeInForce(enum.Enum):
 class KrakenTriggerSide(enum.Enum):
     TriggerAbove = ...
     TriggerBelow = ...
+    Unknown = ...
 
 @typing.final
 class KrakenTriggerSignal(enum.Enum):
     Last = ...
     Mark = ...
     Index = ...
+    Unknown = ...
 
 @typing.final
 class KrakenWsChannel(enum.Enum):

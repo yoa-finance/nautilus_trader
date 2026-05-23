@@ -15,9 +15,13 @@
 
 //! Python bindings from [PyO3](https://pyo3.rs).
 
-#![allow(
+#![expect(
     clippy::missing_errors_doc,
     reason = "errors documented on underlying Rust methods"
+)]
+#![allow(
+    clippy::unused_self,
+    reason = "PyO3 stub methods take &self for Python API parity even when the body is empty"
 )]
 
 pub mod average;

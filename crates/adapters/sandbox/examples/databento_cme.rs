@@ -18,7 +18,7 @@
 //! This example demonstrates paper trading against live CME futures data from Databento
 //! using the sandbox execution client for order simulation.
 //!
-//! Run with: `cargo run --example databento-cme-sandbox --package nautilus-sandbox`
+//! Run with: `cargo run --example databento-cme-sandbox --package nautilus-sandbox --features example-databento`
 //!
 //! Environment variables:
 //! - DATABENTO_API_KEY: Your Databento API key
@@ -111,7 +111,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Box::new(databento_factory),
             Box::new(databento_config),
         )?
-        .add_exec_client(
+        .add_simulated_exec_client(
             Some("XCME".to_string()),
             Box::new(sandbox_factory),
             Box::new(sandbox_config),

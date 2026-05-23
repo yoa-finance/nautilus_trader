@@ -18,16 +18,16 @@
 use std::{cell::RefCell, rc::Rc};
 
 use nautilus_common::{
-    cache::Cache,
+    cache::CacheView,
     clients::{DataClient, ExecutionClient},
     clock::Clock,
+    factories::{ClientConfig, DataClientFactory, ExecutionClientFactory},
 };
 use nautilus_live::ExecutionClientCore;
 use nautilus_model::{
     enums::{AccountType, OmsType},
     identifiers::ClientId,
 };
-use nautilus_system::factories::{ClientConfig, DataClientFactory, ExecutionClientFactory};
 
 use crate::{
     common::consts::{BETFAIR, BETFAIR_VENUE},
@@ -68,7 +68,7 @@ impl DataClientFactory for BetfairDataClientFactory {
         &self,
         name: &str,
         config: &dyn ClientConfig,
-        _cache: Rc<RefCell<Cache>>,
+        _cache: CacheView,
         _clock: Rc<RefCell<dyn Clock>>,
     ) -> anyhow::Result<Box<dyn DataClient>> {
         let betfair_config = config
@@ -153,7 +153,7 @@ impl ExecutionClientFactory for BetfairExecutionClientFactory {
         &self,
         name: &str,
         config: &dyn ClientConfig,
-        cache: Rc<RefCell<Cache>>,
+        cache: CacheView,
     ) -> anyhow::Result<Box<dyn ExecutionClient>> {
         let betfair_config = config
             .as_any()
@@ -217,8 +217,12 @@ impl ExecutionClientFactory for BetfairExecutionClientFactory {
 mod tests {
     use std::{cell::RefCell, rc::Rc};
 
-    use nautilus_common::{cache::Cache, clock::TestClock, live::runner::set_data_event_sender};
-    use nautilus_system::factories::{ClientConfig, DataClientFactory, ExecutionClientFactory};
+    use nautilus_common::{
+        cache::Cache,
+        clock::TestClock,
+        factories::{ClientConfig, DataClientFactory, ExecutionClientFactory},
+        live::runner::set_data_event_sender,
+    };
     use rstest::rstest;
 
     use super::*;
@@ -245,14 +249,14 @@ mod tests {
     #[rstest]
     fn test_betfair_data_client_factory_creation() {
         let factory = BetfairDataClientFactory::new();
-        assert_eq!(factory.name(), "BETFAIR");
+        assert_eq!(factory.name(), BETFAIR);
         assert_eq!(factory.config_type(), "BetfairDataConfig");
     }
 
     #[rstest]
     fn test_betfair_execution_client_factory_creation() {
         let factory = BetfairExecutionClientFactory::new();
-        assert_eq!(factory.name(), "BETFAIR");
+        assert_eq!(factory.name(), BETFAIR);
         assert_eq!(factory.config_type(), "BetfairExecConfig");
     }
 
@@ -281,11 +285,11 @@ mod tests {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         set_data_event_sender(tx);
 
-        let result = factory.create("BETFAIR", &config, cache, clock);
+        let result = factory.create(BETFAIR, &config, cache.into(), clock);
         assert!(result.is_ok());
 
         let client = result.unwrap();
-        assert_eq!(client.client_id(), ClientId::from("BETFAIR"));
+        assert_eq!(client.client_id(), ClientId::from(BETFAIR));
     }
 
     #[rstest]
@@ -294,11 +298,11 @@ mod tests {
         let config = exec_config();
         let cache = Rc::new(RefCell::new(Cache::default()));
 
-        let result = factory.create("BETFAIR", &config, cache);
+        let result = factory.create(BETFAIR, &config, cache.into());
         assert!(result.is_ok());
 
         let client = result.unwrap();
-        assert_eq!(client.client_id(), ClientId::from("BETFAIR"));
+        assert_eq!(client.client_id(), ClientId::from(BETFAIR));
     }
 
     #[rstest]
@@ -307,7 +311,7 @@ mod tests {
         let wrong_config = data_config();
         let cache = Rc::new(RefCell::new(Cache::default()));
 
-        let result = factory.create("BETFAIR", &wrong_config, cache);
+        let result = factory.create(BETFAIR, &wrong_config, cache.into());
         assert!(result.is_err());
         assert!(
             result
@@ -328,7 +332,7 @@ mod tests {
         let cache = Rc::new(RefCell::new(Cache::default()));
         let clock = Rc::new(RefCell::new(TestClock::new()));
 
-        let result = factory.create("BETFAIR", &config, cache, clock);
+        let result = factory.create(BETFAIR, &config, cache.into(), clock);
         assert!(result.is_err());
         assert!(
             result

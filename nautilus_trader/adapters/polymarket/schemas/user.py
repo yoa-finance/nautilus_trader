@@ -19,6 +19,7 @@ from typing import Any
 import msgspec
 import pandas as pd
 
+from nautilus_trader.adapters.polymarket.common.constants import DUST_SNAP_THRESHOLD_DEC
 from nautilus_trader.adapters.polymarket.common.enums import PolymarketEventType
 from nautilus_trader.adapters.polymarket.common.enums import PolymarketLiquiditySide
 from nautilus_trader.adapters.polymarket.common.enums import PolymarketOrderSide
@@ -37,10 +38,11 @@ from nautilus_trader.core.datetime import secs_to_nanos
 from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.execution.reports import FillReport
 from nautilus_trader.execution.reports import OrderStatusReport
-from nautilus_trader.model.currencies import USDC_POS
+from nautilus_trader.model.currencies import pUSD
 from nautilus_trader.model.enums import ContingencyType
 from nautilus_trader.model.enums import LiquiditySide
 from nautilus_trader.model.enums import OrderSide
+from nautilus_trader.model.enums import OrderStatus
 from nautilus_trader.model.enums import OrderType
 from nautilus_trader.model.identifiers import AccountId
 from nautilus_trader.model.identifiers import ClientOrderId
@@ -48,6 +50,39 @@ from nautilus_trader.model.identifiers import TradeId
 from nautilus_trader.model.identifiers import VenueOrderId
 from nautilus_trader.model.instruments import BinaryOption
 from nautilus_trader.model.objects import Money
+from nautilus_trader.model.objects import Quantity
+
+
+def _sum_filled_quantity(fills: list[FillReport]) -> float:
+    return sum(float(f.last_qty) for f in fills)
+
+
+def _weighted_average_price(
+    fills: list[FillReport],
+    total_filled: float,
+) -> Decimal | None:
+    # Returns `None` for zero total to avoid divide-by-zero.
+    if total_filled <= 0:
+        return None
+    weighted = sum(float(f.last_qty) * float(f.last_px) for f in fills)
+    return Decimal(str(weighted / total_filled))
+
+
+def _snap_filled_qty_to_quantity(
+    quantity: Quantity,
+    filled_qty: Quantity,
+    order_status: OrderStatus,
+) -> Quantity:
+    # At terminal Filled status, the venue's `size_matched` can differ from
+    # `original_size` by sub-cent dust due to CLOB cent-tick truncation
+    # (underfill) or V2 market-BUY USDC-scale truncation (overfill). Snap to
+    # `quantity` so the engine sees zero leaves at MATCHED.
+    if order_status != OrderStatus.FILLED:
+        return filled_qty
+    diff = quantity.as_decimal() - filled_qty.as_decimal()
+    if diff != 0 and abs(diff) < DUST_SNAP_THRESHOLD_DEC:
+        return quantity
+    return filled_qty
 
 
 class PolymarketUserOrder(msgspec.Struct, tag="order", tag_field="event_type", frozen=True):
@@ -89,10 +124,17 @@ class PolymarketUserOrder(msgspec.Struct, tag="order", tag_field="event_type", f
         client_order_id: ClientOrderId | None,
         ts_init: int,
     ) -> OrderStatusReport:
-        expire_time = (
-            pd.Timestamp(int(self.expiration), unit="ms", tz="UTC") if self.expiration else None
-        )
+        # CLOB V2 emits expiration as Unix seconds, with "0" meaning no expiration.
+        expiration_secs = int(self.expiration) if self.expiration else 0
+        expire_time = pd.Timestamp(expiration_secs, unit="s", tz="UTC") if expiration_secs else None
         timestamp_ns = millis_to_nanos(int(self.timestamp))
+        order_status = parse_order_status(order_status=self.status)
+        quantity = instrument.make_qty(float(self.original_size))
+        filled_qty = _snap_filled_qty_to_quantity(
+            quantity,
+            instrument.make_qty(float(self.size_matched)),
+            order_status,
+        )
         return OrderStatusReport(
             account_id=account_id,
             instrument_id=instrument.id,
@@ -104,10 +146,10 @@ class PolymarketUserOrder(msgspec.Struct, tag="order", tag_field="event_type", f
             contingency_type=ContingencyType.NO_CONTINGENCY,
             time_in_force=parse_time_in_force(order_type=self.order_type),
             expire_time=expire_time,
-            order_status=parse_order_status(order_status=self.status),
+            order_status=order_status,
             price=instrument.make_price(float(self.price)),
-            quantity=instrument.make_qty(float(self.original_size)),
-            filled_qty=instrument.make_qty(float(self.size_matched)),
+            quantity=quantity,
+            filled_qty=filled_qty,
             ts_accepted=timestamp_ns,
             ts_last=timestamp_ns,
             report_id=UUID4(),
@@ -234,13 +276,6 @@ class PolymarketUserTrade(msgspec.Struct, tag="trade", tag_field="event_type", f
             order = self.get_maker_order(filled_user_order_id)
             return Decimal(order.matched_amount)
 
-    def get_fee_rate_bps(self, filled_user_order_id: str) -> Decimal:
-        if self.liquidity_side() == LiquiditySide.TAKER:
-            return Decimal(self.fee_rate_bps)
-        else:
-            order = self.get_maker_order(filled_user_order_id)
-            return Decimal(order.fee_rate_bps)
-
     def parse_to_fill_report(
         self,
         account_id: AccountId,
@@ -251,8 +286,13 @@ class PolymarketUserTrade(msgspec.Struct, tag="trade", tag_field="event_type", f
     ) -> FillReport:
         last_qty = instrument.make_qty(self.last_qty(filled_user_order_id))
         last_px = instrument.make_price(self.last_px(filled_user_order_id))
-        fee_rate_bps = self.get_fee_rate_bps(filled_user_order_id)
-        commission = calculate_commission(last_qty, last_px, fee_rate_bps)
+        liquidity_side = self.liquidity_side()
+        commission = calculate_commission(
+            quantity=last_qty.as_decimal(),
+            price=last_px.as_decimal(),
+            fee_rate=instrument.taker_fee,
+            liquidity_side=liquidity_side,
+        )
         venue_order_id = self.venue_order_id(filled_user_order_id)
         composite_trade_id = make_composite_trade_id(self.id, venue_order_id)
 
@@ -265,8 +305,8 @@ class PolymarketUserTrade(msgspec.Struct, tag="trade", tag_field="event_type", f
             order_side=self.order_side(filled_user_order_id),
             last_qty=last_qty,
             last_px=last_px,
-            commission=Money(commission, USDC_POS),
-            liquidity_side=self.liquidity_side(),
+            commission=Money(commission, pUSD),
+            liquidity_side=liquidity_side,
             report_id=UUID4(),
             ts_event=secs_to_nanos(int(self.match_time)),
             ts_init=ts_init,
@@ -309,10 +349,17 @@ class PolymarketOpenOrder(msgspec.Struct, frozen=True):
         client_order_id: ClientOrderId | None,
         ts_init: int,
     ) -> OrderStatusReport:
-        expire_time = (
-            pd.Timestamp(int(self.expiration), unit="ms", tz="UTC") if self.expiration else None
-        )
+        # CLOB V2 emits expiration as Unix seconds, with "0" meaning no expiration.
+        expiration_secs = int(self.expiration) if self.expiration else 0
+        expire_time = pd.Timestamp(expiration_secs, unit="s", tz="UTC") if expiration_secs else None
         timestamp_ns = secs_to_nanos(int(self.created_at))
+        order_status = parse_order_status(order_status=self.status)
+        quantity = instrument.make_qty(float(self.original_size))
+        filled_qty = _snap_filled_qty_to_quantity(
+            quantity,
+            instrument.make_qty(float(self.size_matched)),
+            order_status,
+        )
         return OrderStatusReport(
             account_id=account_id,
             instrument_id=instrument.id,
@@ -324,10 +371,10 @@ class PolymarketOpenOrder(msgspec.Struct, frozen=True):
             contingency_type=ContingencyType.NO_CONTINGENCY,
             time_in_force=parse_time_in_force(order_type=self.order_type),
             expire_time=expire_time,
-            order_status=parse_order_status(order_status=self.status),
+            order_status=order_status,
             price=instrument.make_price(float(self.price)),
-            quantity=instrument.make_qty(float(self.original_size)),
-            filled_qty=instrument.make_qty(float(self.size_matched)),
+            quantity=quantity,
+            filled_qty=filled_qty,
             ts_accepted=timestamp_ns,
             ts_last=timestamp_ns,
             report_id=UUID4(),

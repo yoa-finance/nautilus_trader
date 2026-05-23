@@ -24,12 +24,16 @@
 //!    price embedded in every option ticker update, eliminating spot-forward basis error
 //! 6. Logs received `OptionChainSlice` snapshots in the `on_option_chain` handler
 //!
-//! Run with: `cargo run --example bybit-option-chain --package nautilus-bybit`
+//! Run with: `cargo run --example bybit-option-chain --package nautilus-bybit --features examples`
 
 use std::fmt::Debug;
 
 use nautilus_bybit::{
-    common::enums::BybitProductType, config::BybitDataClientConfig,
+    common::{
+        consts::{BYBIT_CLIENT_ID, BYBIT_VENUE},
+        enums::BybitProductType,
+    },
+    config::BybitDataClientConfig,
     factories::BybitDataClientFactory,
 };
 use nautilus_common::{
@@ -41,7 +45,7 @@ use nautilus_common::{
 use nautilus_live::node::LiveNode;
 use nautilus_model::{
     data::option_chain::{OptionChainSlice, StrikeRange},
-    identifiers::{ClientId, InstrumentId, OptionSeriesId, TraderId, Venue},
+    identifiers::{ClientId, InstrumentId, OptionSeriesId, TraderId},
     instruments::{Instrument, any::InstrumentAny},
     stubs::TestDefault,
 };
@@ -75,7 +79,7 @@ impl OptionChainTester {
 
 impl DataActor for OptionChainTester {
     fn on_start(&mut self) -> anyhow::Result<()> {
-        let venue = Venue::new("BYBIT");
+        let venue = *BYBIT_VENUE;
         let underlying_filter = Ustr::from("BTC");
 
         // Collect option instrument data from cache (owned copies to release borrow).
@@ -163,6 +167,7 @@ impl DataActor for OptionChainTester {
             strike_range,
             snapshot_interval_ms,
             Some(client_id),
+            None,
         );
 
         self.series_id = Some(series_id);
@@ -249,7 +254,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let environment = Environment::Live;
     let trader_id = TraderId::test_default();
-    let client_id = ClientId::new("BYBIT");
+    let client_id = *BYBIT_CLIENT_ID;
 
     let bybit_config = BybitDataClientConfig {
         api_key: None,    // Will use 'BYBIT_API_KEY' env var

@@ -13,10 +13,12 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
+from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
 import pytest
+from py_clob_client_v2.exceptions import PolyApiException
 
 from nautilus_trader.adapters.polymarket.providers import PolymarketInstrumentProvider
 from nautilus_trader.adapters.polymarket.providers import PolymarketInstrumentProviderConfig
@@ -54,6 +56,22 @@ def instrument_provider(mock_clob_client, live_clock):
         client=mock_clob_client,
         clock=live_clock,
     )
+
+
+@pytest.fixture(autouse=True)
+def patch_fetch_fee_schedules():
+    """
+    Patch the Gamma `fetch_fee_schedules` helper used on the CLOB load path.
+
+    Polymarket provider CLOB methods enrich CLOB payloads with Gamma
+    `feeSchedule` data, which would otherwise hit the network here.
+
+    """
+    with patch(
+        "nautilus_trader.adapters.polymarket.providers.fetch_fee_schedules",
+        new=AsyncMock(return_value={}),
+    ) as mocked:
+        yield mocked
 
 
 # Sample market data with different states
@@ -316,6 +334,100 @@ async def test_load_markets_seq_without_filter_includes_closed_markets(
 
 
 @pytest.mark.asyncio
+async def test_enrich_with_gamma_fee_schedules_attaches_schedule(
+    instrument_provider,
+    patch_fetch_fee_schedules,
+):
+    """
+    _enrich_with_gamma_fee_schedules stitches feeSchedule onto each CLOB payload when
+    Gamma returns a schedule for every condition ID.
+    """
+    # Arrange
+    market_a = {"condition_id": "0xaaa"}
+    market_b = {"condition_id": "0xbbb"}
+    patch_fetch_fee_schedules.return_value = {
+        "0xaaa": {"rate": 0.03},
+        "0xbbb": {"rate": 0.072},
+    }
+
+    # Act
+    await instrument_provider._enrich_with_gamma_fee_schedules([market_a, market_b])
+
+    # Assert
+    assert market_a["feeSchedule"] == {"rate": 0.03}
+    assert market_b["feeSchedule"] == {"rate": 0.072}
+
+
+@pytest.mark.asyncio
+async def test_enrich_with_gamma_fee_schedules_partial_miss(
+    instrument_provider,
+    patch_fetch_fee_schedules,
+):
+    """
+    _enrich_with_gamma_fee_schedules populates resolved markets and leaves missing ones
+    untouched when Gamma only returns a subset.
+    """
+    # Arrange
+    market_a = {"condition_id": "0xaaa"}
+    market_b = {"condition_id": "0xbbb"}
+    patch_fetch_fee_schedules.return_value = {"0xaaa": {"rate": 0.03}}
+
+    # Act
+    await instrument_provider._enrich_with_gamma_fee_schedules([market_a, market_b])
+
+    # Assert
+    assert market_a["feeSchedule"] == {"rate": 0.03}
+    assert "feeSchedule" not in market_b
+
+
+@pytest.mark.asyncio
+async def test_enrich_with_gamma_fee_schedules_fetch_failure_is_logged(
+    instrument_provider,
+    patch_fetch_fee_schedules,
+):
+    """
+    _enrich_with_gamma_fee_schedules leaves payloads untouched and does not raise when
+    fetch_fee_schedules fails.
+    """
+    # Arrange
+    market_a = {"condition_id": "0xaaa"}
+    patch_fetch_fee_schedules.side_effect = RuntimeError("gamma unreachable")
+
+    # Act
+    await instrument_provider._enrich_with_gamma_fee_schedules([market_a])
+
+    # Assert
+    assert "feeSchedule" not in market_a
+
+
+@pytest.mark.asyncio
+async def test_enrich_with_gamma_fee_schedules_skips_empty_input(
+    instrument_provider,
+    patch_fetch_fee_schedules,
+):
+    # Act
+    await instrument_provider._enrich_with_gamma_fee_schedules([])
+
+    # Assert
+    patch_fetch_fee_schedules.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_enrich_with_gamma_fee_schedules_skips_when_condition_ids_absent(
+    instrument_provider,
+    patch_fetch_fee_schedules,
+):
+    # Arrange
+    markets = [{}, {"condition_id": ""}]
+
+    # Act
+    await instrument_provider._enrich_with_gamma_fee_schedules(markets)
+
+    # Assert
+    patch_fetch_fee_schedules.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_gamma_markets_loads_all_sibling_tokens(mock_clob_client, live_clock):
     """
     Test that Gamma API loader loads all sibling tokens for a market.
@@ -378,11 +490,11 @@ async def test_gamma_markets_loads_all_sibling_tokens(mock_clob_client, live_clo
 @pytest.mark.asyncio
 async def test_gamma_markets_deduplicates_condition_ids(mock_clob_client, live_clock):
     """
-    Test that Gamma API loader deduplicates condition IDs before limit check.
+    Test that the Gamma API loader deduplicates condition IDs.
 
     When loading both YES and NO tokens from the same markets (common case), condition
     IDs should be deduplicated so that 60 markets with 2 tokens each (120 instruments)
-    uses the filtered query instead of bulk load.
+    issue a single batch query of 60 unique condition_ids.
 
     """
     # Arrange
@@ -395,6 +507,7 @@ async def test_gamma_markets_deduplicates_condition_ids(mock_clob_client, live_c
 
     # Create 60 instrument pairs (both YES and NO tokens from same market)
     instrument_ids = []
+
     for i in range(60):
         condition_id = f"0x{'1' * 63}{i:x}"
         yes_token_id = f"1{i:063d}"
@@ -421,10 +534,100 @@ async def test_gamma_markets_deduplicates_condition_ids(mock_clob_client, live_c
         call_args = mock_list_markets.call_args
         filters = call_args[1]["filters"]
 
-        # Verify condition_ids filter was applied (means we used targeted query)
+        # Verify condition_ids filter was applied
         assert "condition_ids" in filters
         # Verify we deduplicated: 120 instruments -> 60 unique condition_ids
         assert len(filters["condition_ids"]) == 60
+        # 60 unique condition_ids fits in one batch of 100
+        assert mock_list_markets.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_load_ids_chunks_at_100_condition_ids(mock_clob_client, live_clock):
+    """
+    Gamma's `condition_ids=` query accepts at most 100 IDs per request, so the provider
+    must split larger requests into chunks and union the results.
+    """
+    # Arrange
+    config = InstrumentProviderConfig(use_gamma_markets=True)
+    provider = PolymarketInstrumentProvider(
+        client=mock_clob_client,
+        clock=live_clock,
+        config=config,
+    )
+
+    instrument_ids = []
+    expected_condition_ids: set[str] = set()
+
+    for i in range(250):
+        condition_id = f"0x{i:064x}"
+        expected_condition_ids.add(condition_id)
+        token_id = f"1{i:063d}"
+        instrument_ids.append(
+            InstrumentId.from_str(f"{condition_id}-{token_id}.POLYMARKET"),
+        )
+
+    with patch("nautilus_trader.adapters.polymarket.providers.list_markets") as mock_list_markets:
+        mock_list_markets.side_effect = AsyncMock(return_value=[])
+
+        # Act
+        await provider.load_ids_async(instrument_ids)
+
+    # Assert: 3 chunks (100 + 100 + 50)
+    assert mock_list_markets.await_count == 3
+    batch_sizes = [
+        len(call.kwargs["filters"]["condition_ids"]) for call in mock_list_markets.await_args_list
+    ]
+    assert batch_sizes == [100, 100, 50]
+
+    # Union of all batches must cover the full input set
+    seen: set[str] = set()
+    for call in mock_list_markets.await_args_list:
+        seen.update(call.kwargs["filters"]["condition_ids"])
+    assert seen == expected_condition_ids
+
+
+@pytest.mark.asyncio
+async def test_load_ids_preserves_caller_filters_in_each_chunk(mock_clob_client, live_clock):
+    """
+    Caller-supplied filters (e.g. `active`, `closed`) must survive into every chunked
+    batch alongside the per-chunk `condition_ids` override.
+    """
+    # Arrange: 150 IDs => 2 chunks of 100 + 50
+    config = InstrumentProviderConfig(use_gamma_markets=True)
+    provider = PolymarketInstrumentProvider(
+        client=mock_clob_client,
+        clock=live_clock,
+        config=config,
+    )
+
+    instrument_ids = []
+
+    for i in range(150):
+        condition_id = f"0x{i:064x}"
+        token_id = f"1{i:063d}"
+        instrument_ids.append(
+            InstrumentId.from_str(f"{condition_id}-{token_id}.POLYMARKET"),
+        )
+
+    caller_filters = {"active": True, "closed": False}
+
+    with patch("nautilus_trader.adapters.polymarket.providers.list_markets") as mock_list_markets:
+        mock_list_markets.side_effect = AsyncMock(return_value=[])
+
+        # Act
+        await provider.load_ids_async(instrument_ids, filters=caller_filters)
+
+    # Assert: caller filters carried into each batch
+    assert mock_list_markets.await_count == 2
+    for call in mock_list_markets.await_args_list:
+        batch_filters = call.kwargs["filters"]
+        assert batch_filters["active"] is True
+        assert batch_filters["closed"] is False
+        assert "condition_ids" in batch_filters
+
+    # Caller's dict must not be mutated
+    assert caller_filters == {"active": True, "closed": False}
 
 
 @pytest.mark.asyncio
@@ -968,3 +1171,162 @@ async def test_event_slug_builder_skips_empty_token_id(
         # Assert: Only 1 valid token loaded (the one with non-empty token_id)
         instruments = provider.list_all()
         assert len(instruments) == 1
+
+
+def _make_404_exception() -> PolyApiException:
+    # PolyApiException requires either a Response or an error_msg; we use the
+    # error_msg path and override status_code to mirror what CLOB returns when
+    # a newly-minted market has not yet propagated to the API.
+    exc = PolyApiException(error_msg="market not found")
+    exc.status_code = 404
+    return exc
+
+
+@pytest.mark.asyncio
+async def test_load_markets_seq_treats_clob_404_as_transient(
+    instrument_provider,
+    mock_clob_client,
+):
+    instrument_id = InstrumentId.from_str(
+        f"{ACTIVE_OPEN_MARKET['condition_id']}-"
+        f"{ACTIVE_OPEN_MARKET['tokens'][0]['token_id']}.POLYMARKET",
+    )
+    mock_clob_client.get_market.side_effect = _make_404_exception()
+
+    transient: set[str] = set()
+    await instrument_provider._load_markets_seq(
+        [instrument_id],
+        filters={},
+        transient_condition_ids=transient,
+    )
+
+    # No instrument loaded but condition_id surfaced to the caller for retry
+    assert len(instrument_provider.list_all()) == 0
+    assert ACTIVE_OPEN_MARKET["condition_id"] in transient
+
+
+@pytest.mark.asyncio
+async def test_load_markets_seq_propagates_non_404_poly_api_exceptions(
+    instrument_provider,
+    mock_clob_client,
+):
+    # Non-404 errors (auth, 5xx, rate limit) must NOT be silently swallowed.
+    instrument_id = InstrumentId.from_str(
+        f"{ACTIVE_OPEN_MARKET['condition_id']}-"
+        f"{ACTIVE_OPEN_MARKET['tokens'][0]['token_id']}.POLYMARKET",
+    )
+    exc = PolyApiException(error_msg="internal server error")
+    exc.status_code = 500
+    mock_clob_client.get_market.side_effect = exc
+
+    transient: set[str] = set()
+    with pytest.raises(PolyApiException):
+        await instrument_provider._load_markets_seq(
+            [instrument_id],
+            filters={},
+            transient_condition_ids=transient,
+        )
+
+    assert transient == set()
+
+
+@pytest.mark.asyncio
+async def test_load_async_treats_clob_404_as_transient(
+    instrument_provider,
+    mock_clob_client,
+):
+    instrument_id = InstrumentId.from_str(
+        f"{ACTIVE_OPEN_MARKET['condition_id']}-"
+        f"{ACTIVE_OPEN_MARKET['tokens'][0]['token_id']}.POLYMARKET",
+    )
+    mock_clob_client.get_market.side_effect = _make_404_exception()
+
+    transient: set[str] = set()
+    await instrument_provider.load_async(
+        instrument_id,
+        transient_condition_ids=transient,
+    )
+
+    assert len(instrument_provider.list_all()) == 0
+    assert ACTIVE_OPEN_MARKET["condition_id"] in transient
+
+
+@pytest.mark.asyncio
+async def test_load_markets_seq_propagates_404_when_no_collector(
+    instrument_provider,
+    mock_clob_client,
+):
+    # Without a transient collector the caller cannot retry; a CLOB 404 must
+    # surface as an error rather than silently dropping the instrument.
+    instrument_id = InstrumentId.from_str(
+        f"{ACTIVE_OPEN_MARKET['condition_id']}-"
+        f"{ACTIVE_OPEN_MARKET['tokens'][0]['token_id']}.POLYMARKET",
+    )
+    mock_clob_client.get_market.side_effect = _make_404_exception()
+
+    with pytest.raises(PolyApiException) as exc_info:
+        await instrument_provider._load_markets_seq([instrument_id], filters={})
+
+    assert exc_info.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_load_async_propagates_404_when_no_collector(
+    instrument_provider,
+    mock_clob_client,
+):
+    instrument_id = InstrumentId.from_str(
+        f"{ACTIVE_OPEN_MARKET['condition_id']}-"
+        f"{ACTIVE_OPEN_MARKET['tokens'][0]['token_id']}.POLYMARKET",
+    )
+    mock_clob_client.get_market.side_effect = _make_404_exception()
+
+    with pytest.raises(PolyApiException) as exc_info:
+        await instrument_provider.load_async(instrument_id)
+
+    assert exc_info.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_load_ids_using_clob_api_routes_large_batch_to_seq_when_collector_present(
+    instrument_provider,
+):
+    # The bulk pager cannot observe per-condition 404s, so retry-capable
+    # callers must use the sequential path regardless of batch size.
+    instrument_ids = [
+        InstrumentId.from_str(f"0x{'a' * 63}{i:x}-0x{'b' * 63}{i:x}.POLYMARKET") for i in range(250)
+    ]
+    transient: set[str] = set()
+
+    with (
+        patch.object(instrument_provider, "_load_markets_seq", new=AsyncMock()) as seq,
+        patch.object(instrument_provider, "_load_markets", new=AsyncMock()) as bulk,
+    ):
+        await instrument_provider._load_ids_using_clob_api(
+            instrument_ids,
+            filters=None,
+            transient_condition_ids=transient,
+        )
+
+    seq.assert_awaited_once()
+    bulk.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_load_ids_using_clob_api_routes_large_batch_to_bulk_when_no_collector(
+    instrument_provider,
+):
+    # Legacy callers (no collector) keep the fast bulk-pager behavior for
+    # large batches.
+    instrument_ids = [
+        InstrumentId.from_str(f"0x{'a' * 63}{i:x}-0x{'b' * 63}{i:x}.POLYMARKET") for i in range(250)
+    ]
+
+    with (
+        patch.object(instrument_provider, "_load_markets_seq", new=AsyncMock()) as seq,
+        patch.object(instrument_provider, "_load_markets", new=AsyncMock()) as bulk,
+    ):
+        await instrument_provider._load_ids_using_clob_api(instrument_ids, filters=None)
+
+    bulk.assert_awaited_once()
+    seq.assert_not_awaited()

@@ -76,7 +76,9 @@ from nautilus_trader.model.data import OrderBookDeltas
 from nautilus_trader.model.data import QuoteTick
 from nautilus_trader.model.data import TradeTick
 from nautilus_trader.model.enums import AccountType
+from nautilus_trader.model.enums import AssetClass
 from nautilus_trader.model.enums import BookType
+from nautilus_trader.model.enums import ContinuousFutureAdjustmentType
 from nautilus_trader.model.enums import OmsType
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.events import OrderAccepted
@@ -86,6 +88,7 @@ from nautilus_trader.model.events import PositionEvent
 from nautilus_trader.model.events import PositionOpened
 from nautilus_trader.model.greeks_data import GreeksData
 from nautilus_trader.model.identifiers import ClientId
+from nautilus_trader.model.identifiers import Symbol
 from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.identifiers import new_generic_spread_id
@@ -93,6 +96,7 @@ from nautilus_trader.model.instruments import CryptoPerpetual
 from nautilus_trader.model.instruments import FuturesContract
 from nautilus_trader.model.instruments import Instrument
 from nautilus_trader.model.instruments.betting import BettingInstrument
+from nautilus_trader.model.objects import Currency
 from nautilus_trader.model.objects import Money
 from nautilus_trader.model.tick_scheme import TieredTickScheme
 from nautilus_trader.model.tick_scheme import register_tick_scheme
@@ -1626,6 +1630,7 @@ class TestBacktestCommandSettling:
 
         timestamps = pd.date_range(start="2020-01-01", periods=3, freq="1min")
         quotes = []
+
         for i, ts in enumerate(timestamps):
             bid = 0.70000 + (i * 0.00001)
             quote = QuoteTick(
@@ -1737,6 +1742,7 @@ class TestBacktestCommandSettling:
 
         timestamps = pd.date_range(start="2020-01-01", periods=3, freq="1min")
         quotes = []
+
         for i, ts in enumerate(timestamps):
             bid = 0.70000 + (i * 0.00001)
             quote = QuoteTick(
@@ -1841,6 +1847,7 @@ class TestBacktestCommandSettling:
         # Data spans timer time so the timer fires between data points
         timestamps = pd.date_range(start="2020-01-01", periods=3, freq="1min")
         quotes = []
+
         for ts in timestamps:
             quote = QuoteTick(
                 instrument_id=instrument.id,
@@ -1864,6 +1871,7 @@ class TestBacktestCommandSettling:
         assert len(strategy.orders_submitted) == 2
 
         timer_ts = pd.Timestamp("2020-01-01 00:00:30", tz="UTC").value
+
         for order in strategy.orders_submitted:
             cached = engine.cache.order(order.client_order_id)
             assert cached.is_closed
@@ -1910,17 +1918,19 @@ class TestBacktestNodeWithBacktestDataIterator:
 
         # Assert
         expected_order_filled_messages = [
-            "Order filled: ESM4 P5230.XCME, qty=10, price=97.25, trade_id=XCME-1-001",
-            "Order filled: ESM4 P5250.XCME, qty=10, price=108.50, trade_id=XCME-2-001",
-            "Order filled: ESM4.XCME, qty=1, price=5199.75, trade_id=XCME-3-002",
+            "Order filled: ESM4 P5230.XCME, qty=10, price=97.25, trade_id=T-d47be5ca9f6901ab-001",
+            "Order filled: ESM4 P5250.XCME, qty=10, price=108.50, trade_id=T-7f8e274f85bbdd3e-001",
+            "Order filled: ESM4.XCME, qty=1, price=5199.75, trade_id=T-75d12aa71a6bb07d-004",
             "Order filled: ((1))ESM4 P5230___(1)ESM4 P5250.XCME, qty=5, price=10.75, "
-            "trade_id=XCME-5-001",
-            "Order filled: ESM4 P5230.XCME, qty=5, price=97.62, trade_id=XCME-5-001-0",
-            "Order filled: ESM4 P5250.XCME, qty=5, price=108.38, trade_id=XCME-5-001-1",
-            "Order filled: ((1))ESM4___(1)NQM4.XCME, qty=2, price=12930.50, trade_id=XCME-6-001",
-            "Order filled: ((1))ESM4___(1)NQM4.XCME, qty=3, price=12930.75, trade_id=XCME-6-002",
-            "Order filled: ESM4.XCME, qty=2, price=5199.62, trade_id=XCME-6-002-0",
-            "Order filled: NQM4.XCME, qty=2, price=18130.12, trade_id=XCME-6-002-1",
+            "trade_id=T-75c4107db8ae4ad7-001",
+            "Order filled: ESM4 P5230.XCME, qty=5, price=97.62, trade_id=T-75c4107db8ae4ad7-001-0",
+            "Order filled: ESM4 P5250.XCME, qty=5, price=108.38, trade_id=T-75c4107db8ae4ad7-001-1",
+            "Order filled: ((1))ESM4___(1)NQM4.XCME, qty=2, price=12930.50, "
+            "trade_id=T-8ba53c03fcdf19ba-001",
+            "Order filled: ((1))ESM4___(1)NQM4.XCME, qty=3, price=12930.75, "
+            "trade_id=T-8ba53c03fcdf19ba-002",
+            "Order filled: ESM4.XCME, qty=2, price=5199.62, trade_id=T-8ba53c03fcdf19ba-002-0",
+            "Order filled: NQM4.XCME, qty=2, price=18130.12, trade_id=T-8ba53c03fcdf19ba-002-1",
         ]
         assert order_filled_messages == expected_order_filled_messages
 
@@ -2093,6 +2103,7 @@ def run_backtest(test_callback=None, with_data=True, log_path=None):
 
     # Create and write custom data to catalog (every minute between 10:00 and 10:05)
     custom_data_list = []
+
     for minute in range(6):  # 0, 1, 2, 3, 4, 5 (10:00 to 10:05)
         timestamp_str = f"2024-05-09T10:0{minute}:00"
         ts_nanos = dt_to_unix_nanos(time_object_to_dt(timestamp_str))
@@ -2488,3 +2499,257 @@ class OptionStrategy(Strategy):
         self.unsubscribe_data(DataType(GreeksData), instrument_id=self.config.option_id2)
         self.unsubscribe_quote_ticks(self.config.spread_id, params=self.default_data_params)
         self.unsubscribe_quote_ticks(self.config.spread_id2, params=self.default_data_params)
+
+
+class ContFutTransitionStrategyConfig(StrategyConfig, frozen=True):
+    target_bar_type: BarType
+    transitions: list
+    request_start_iso: str
+    backtest_start_iso: str
+
+
+class ContFutTransitionStrategy(Strategy):
+    """
+    Request adjusted continuous-future bars for the history preceding the backtest
+    start, then subscribe for the post-start live segment.
+
+    The roll adjustment is identical across both phases so the resulting series is
+    seamless.
+
+    """
+
+    def __init__(self, config: ContFutTransitionStrategyConfig):
+        super().__init__(config=config)
+        self.historical_bars: list = []
+        self.live_bars: list = []
+
+    def on_start(self):
+        params = {
+            "continuous_future_transitions": list(self.config.transitions),
+            "continuous_future_adjustment_mode": ContinuousFutureAdjustmentType.BACKWARD_SPREAD,
+        }
+        # Composite target bar types go through `request_aggregated_bars`; the list is
+        # the chain of `bar_types` the continuous future engine will set up (here just
+        # the single composite target).
+        self.request_aggregated_bars(
+            [self.config.target_bar_type],
+            start=time_object_to_dt(self.config.request_start_iso),
+            end=time_object_to_dt(self.config.backtest_start_iso) - pd.Timedelta(nanoseconds=1),
+            params=params,
+        )
+        self.subscribe_bars(self.config.target_bar_type, params=params)
+
+    def on_historical_data(self, data):
+        if isinstance(data, Bar):
+            self.historical_bars.append(data)
+
+    def on_bar(self, bar):
+        self.live_bars.append(bar)
+
+    def on_stop(self):
+        self.unsubscribe_bars(
+            self.config.target_bar_type,
+            params={"continuous_future_transitions": list(self.config.transitions)},
+        )
+
+
+class TestBacktestContinuousFuture:
+    """
+    Verifies the transition from a historical ``request_bars`` to a live
+    ``subscribe_bars`` for a continuous future.
+
+    Layout:
+        - ESH26 raw 1-min bars 09:00..09:04
+        - transition @ 09:05 (pre=104, post=110)
+        - ESM26 raw 1-min bars 09:05..09:09
+        - transition @ 09:10 (pre=114, post=120)
+        - ESU26 raw 1-min bars 09:10..09:14
+        - backtest runs 09:10..09:15
+
+    Backward-adjusted offsets:
+        - ESH26: (110-104) + (120-114) = +12  → adjusted 112..116
+        - ESM26: (120-114)             = +6   → adjusted 116..120
+        - ESU26: 0                            → unadjusted 120..124
+
+    The full continuous series is a monotone increasing 112..124; the historical
+    phase emits 112..120 (the first 10 adjusted bars) and the live phase emits
+    the tail starting at 120.
+
+    """
+
+    def _futures_contract(self, symbol: str, expiration_ns: int) -> FuturesContract:
+        return FuturesContract(
+            instrument_id=InstrumentId.from_str(f"{symbol}.XCME"),
+            raw_symbol=Symbol(symbol),
+            asset_class=AssetClass.INDEX,
+            currency=Currency.from_str("USD"),
+            price_precision=2,
+            price_increment=Price.from_str("0.25"),
+            multiplier=Quantity.from_int(50),
+            lot_size=Quantity.from_int(1),
+            underlying="ES",
+            activation_ns=0,
+            expiration_ns=expiration_ns,
+            ts_event=0,
+            ts_init=0,
+        )
+
+    def _build_catalog(self, tmp_path):
+        catalog = setup_catalog(protocol="file", path=tmp_path / "contfut_catalog")
+
+        instruments = [
+            self._futures_contract("ESH26", 1773532800000000000),
+            self._futures_contract("ESM26", 1781308800000000000),
+            self._futures_contract("ESU26", 1789257600000000000),
+        ]
+        catalog.write_data(instruments)
+
+        def make_bars(symbol: str, first_minute_iso: str, close_prices: list[float]) -> list[Bar]:
+            bar_type = BarType.from_str(f"{symbol}.XCME-1-MINUTE-LAST-EXTERNAL")
+            start_ns = pd.Timestamp(first_minute_iso).value
+            minute_ns = 60 * 1_000_000_000
+            bars = []
+
+            for i, close in enumerate(close_prices):
+                ts = start_ns + i * minute_ns
+                bars.append(
+                    Bar(
+                        bar_type,
+                        Price.from_str(f"{close:.2f}"),
+                        Price.from_str(f"{close:.2f}"),
+                        Price.from_str(f"{close:.2f}"),
+                        Price.from_str(f"{close:.2f}"),
+                        Quantity.from_int(1),
+                        ts,
+                        ts,
+                    ),
+                )
+            return bars
+
+        bars = []
+        bars += make_bars("ESH26", "2026-03-16T09:00:00Z", [100, 101, 102, 103, 104])
+        bars += make_bars("ESM26", "2026-03-16T09:05:00Z", [110, 111, 112, 113, 114])
+        bars += make_bars("ESU26", "2026-03-16T09:10:00Z", [120, 121, 122, 123, 124])
+        catalog.write_data(bars)
+
+        return catalog
+
+    def test_continuous_future_transition_from_request_to_subscription(self, tmp_path):
+        catalog = self._build_catalog(tmp_path)
+
+        target_bar_type = BarType.from_str(
+            "ES.XCME-1-MINUTE-LAST-INTERNAL@1-MINUTE-EXTERNAL",
+        )
+        transitions = [
+            {
+                "transition_time_ns": pd.Timestamp("2026-03-16T09:05:00Z").value,
+                "pre_instrument_id": "ESH26.XCME",
+                "post_instrument_id": "ESM26.XCME",
+                "pre_price": "104.00",
+                "post_price": "110.00",
+            },
+            {
+                "transition_time_ns": pd.Timestamp("2026-03-16T09:10:00Z").value,
+                "pre_instrument_id": "ESM26.XCME",
+                "post_instrument_id": "ESU26.XCME",
+                "pre_price": "114.00",
+                "post_price": "120.00",
+            },
+        ]
+
+        strategies = [
+            ImportableStrategyConfig(
+                strategy_path=ContFutTransitionStrategy.fully_qualified_name(),
+                config_path=ContFutTransitionStrategyConfig.fully_qualified_name(),
+                config={
+                    "target_bar_type": target_bar_type,
+                    "transitions": transitions,
+                    "request_start_iso": "2026-03-16T09:00:00Z",
+                    "backtest_start_iso": "2026-03-16T09:10:00Z",
+                },
+            ),
+        ]
+
+        data = [
+            BacktestDataConfig(
+                data_cls=Bar,
+                catalog_path=str(catalog.path),
+                instrument_id=InstrumentId.from_str(f"{symbol}.XCME"),
+                bar_spec="1-MINUTE-LAST",
+            )
+            for symbol in ("ESH26", "ESM26", "ESU26")
+        ]
+
+        venues = [
+            BacktestVenueConfig(
+                name="XCME",
+                oms_type="NETTING",
+                account_type="MARGIN",
+                base_currency="USD",
+                starting_balances=["1_000_000 USD"],
+            ),
+        ]
+
+        engine_config = BacktestEngineConfig(
+            logging=LoggingConfig(bypass_logging=True),
+            strategies=strategies,
+            catalogs=[DataCatalogConfig(path=str(catalog.path))],
+        )
+
+        run_config = BacktestRunConfig(
+            engine=engine_config,
+            data=data,
+            venues=venues,
+            start="2026-03-16T09:10:00Z",
+            end="2026-03-16T09:15:00Z",
+            raise_exception=True,
+            dispose_on_completion=False,
+        )
+
+        node = BacktestNode(configs=[run_config])
+        node.build()
+        engine = node.get_engine(run_config.id)
+
+        # The continuous root instrument (e.g. ES.XCME) is synthesised automatically by
+        # the data engine from the first segment's properties on the first CF request or
+        # subscription; no manual `add_instrument` call is required.
+
+        node.run()
+        strategy = engine.trader.strategies()[0]
+
+        # Historical phase: 10 adjusted bars spanning segments 0 and 1.
+        # BACKWARD_SPREAD offsets (sum of post-pre across later rolls):
+        #   segment 0 (ESH26) = (110-104) + (120-114) = +12
+        #   segment 1 (ESM26) = (120-114) = +6
+        # ESH26 raw closes 100..104 shift by +12 → 112..116.
+        # ESM26 raw closes 110..114 shift by +6 → 116..120.
+        historical_closes = [float(b.close) for b in strategy.historical_bars]
+        assert historical_closes == [
+            112.0,
+            113.0,
+            114.0,
+            115.0,
+            116.0,
+            116.0,
+            117.0,
+            118.0,
+            119.0,
+            120.0,
+        ]
+
+        # Live phase: ESU26 raw closes 120..124 pass through unadjusted (last segment has offset 0).
+        # The engine pushes five 1-min source bars; the final extra bar at backtest end comes from
+        # the aggregator's default `build_with_no_updates=True` carrying the last close forward.
+        live_closes = [float(b.close) for b in strategy.live_bars]
+        assert live_closes[:5] == [120.0, 121.0, 122.0, 123.0, 124.0]
+
+        # Seam check: the last historical close (adjusted ESM26) joins the first live close
+        # (unadjusted ESU26) at 120.0 — both phases share the same adjusted frame.
+        assert historical_closes[-1] == live_closes[0] == 120.0
+
+        # Every bar must carry the continuous (target) standard bar type, not a segment contract.
+        expected_bar_type = target_bar_type.standard()
+        assert all(b.bar_type == expected_bar_type for b in strategy.historical_bars)
+        assert all(b.bar_type == expected_bar_type for b in strategy.live_bars)
+
+        node.dispose()
