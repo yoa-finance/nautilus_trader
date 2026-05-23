@@ -73,7 +73,7 @@ nautilus-core = { package = "stratneo-nautilus-core", path = "crates/core", vers
 nautilus-cryptography = { package = "stratneo-nautilus-cryptography", path = "crates/cryptography", version = "0.57.0" }
 nautilus-data = { package = "stratneo-nautilus-data", path = "crates/data", version = "0.57.0" }
 nautilus-execution = { package = "stratneo-nautilus-execution", path = "crates/execution", version = "0.57.0" }
-nautilus-indicators = { path = "crates/indicators", version = "0.57.0" }
+nautilus-indicators = { package = "stratneo-nautilus-indicators", path = "crates/indicators", version = "0.57.0" }
 nautilus-infrastructure = { path = "crates/infrastructure", version = "0.57.0" }
 nautilus-live = { package = "stratneo-nautilus-live", path = "crates/live", version = "0.57.0", default-features = false }
 nautilus-model = { package = "stratneo-nautilus-model", path = "crates/model", version = "0.57.0" }

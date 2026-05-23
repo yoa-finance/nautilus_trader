@@ -5786,20 +5786,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nautilus-indicators"
-version = "0.57.0"
-dependencies = [
- "anyhow",
- "arraydeque",
- "pyo3",
- "pyo3-stub-gen",
- "rstest",
- "stratneo-nautilus-core",
- "stratneo-nautilus-model",
- "strum 0.28.0",
-]
-
-[[package]]
 name = "nautilus-infrastructure"
 version = "0.57.0"
 dependencies = [
@@ -6036,7 +6022,6 @@ dependencies = [
  "nautilus-deribit",
  "nautilus-dydx",
  "nautilus-hyperliquid",
- "nautilus-indicators",
  "nautilus-infrastructure",
  "nautilus-interactive-brokers",
  "nautilus-kraken",
@@ -6054,6 +6039,7 @@ dependencies = [
  "stratneo-nautilus-cryptography",
  "stratneo-nautilus-data",
  "stratneo-nautilus-execution",
+ "stratneo-nautilus-indicators",
  "stratneo-nautilus-live",
  "stratneo-nautilus-model",
  "stratneo-nautilus-network",
@@ -8800,7 +8786,6 @@ dependencies = [
  "chrono-tz",
  "indexmap 2.14.0",
  "log",
- "nautilus-indicators",
  "nautilus-testkit",
  "pyo3",
  "pyo3-stub-gen",
@@ -8812,6 +8797,7 @@ dependencies = [
  "stratneo-nautilus-core",
  "stratneo-nautilus-data",
  "stratneo-nautilus-execution",
+ "stratneo-nautilus-indicators",
  "stratneo-nautilus-model",
  "stratneo-nautilus-persistence",
  "stratneo-nautilus-portfolio",
@@ -8893,7 +8879,6 @@ dependencies = [
  "itoa",
  "log",
  "madsim",
- "nautilus-indicators",
  "proptest",
  "pyo3",
  "pyo3-async-runtimes",
@@ -8907,6 +8892,7 @@ dependencies = [
  "serde_json",
  "smallvec",
  "stratneo-nautilus-core",
+ "stratneo-nautilus-indicators",
  "stratneo-nautilus-model",
  "stratneo-nautilus-serialization",
  "strum 0.28.0",
@@ -9027,6 +9013,20 @@ dependencies = [
  "stratneo-nautilus-model",
  "ustr",
  "uuid",
+]
+
+[[package]]
+name = "stratneo-nautilus-indicators"
+version = "0.57.0"
+dependencies = [
+ "anyhow",
+ "arraydeque",
+ "pyo3",
+ "pyo3-stub-gen",
+ "rstest",
+ "stratneo-nautilus-core",
+ "stratneo-nautilus-model",
+ "strum 0.28.0",
 ]
 
 [[package]]
@@ -9330,7 +9330,6 @@ dependencies = [
  "chrono-tz",
  "indexmap 2.14.0",
  "log",
- "nautilus-indicators",
  "pyo3",
  "pyo3-stub-gen",
  "rstest",
@@ -9341,6 +9340,7 @@ dependencies = [
  "stratneo-nautilus-common",
  "stratneo-nautilus-core",
  "stratneo-nautilus-execution",
+ "stratneo-nautilus-indicators",
  "stratneo-nautilus-model",
  "stratneo-nautilus-portfolio",
  "strum 0.28.0",
