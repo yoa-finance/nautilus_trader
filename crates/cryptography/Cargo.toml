@@ -1,5 +1,5 @@
 [package]
-name = "nautilus-cryptography"
+name = "stratneo-nautilus-cryptography"
 readme = "README.md"
 version.workspace = true
 edition.workspace = true

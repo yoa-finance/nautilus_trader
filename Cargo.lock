@@ -75,9 +75,9 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
 name = "alloy"
-version = "2.0.4"
+version = "2.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d8010fc7e9e8643ef4e758cdccf3eef26734594aedf88a9d5ed35e51837d42ef"
+checksum = "5e1e915a830ea2ee123c9d3886bfec3302a7ddcd73a973ab165ed45aca2e42c3"
 dependencies = [
  "alloy-consensus",
  "alloy-contract",
@@ -105,9 +105,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-consensus"
-version = "2.0.4"
+version = "2.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e3d64da86c616b5092ea64eea648f311bbd58630a0b384c42d699175d6f9122b"
+checksum = "83447eeb17816e172f1dfc0db1f9dc0b7c5d069bd1f7cecbecceb382bf931015"
 dependencies = [
  "alloy-eips",
  "alloy-primitives",
@@ -132,9 +132,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-consensus-any"
-version = "2.0.4"
+version = "2.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8fd98696ca3617d3a9ba1a6f2011880cbfd5618228dab6400c9f8bca457859a8"
+checksum = "5406343e306856dc2be762700e98a16904de45dee14a07f233e742ce68daff2f"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -146,9 +146,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-contract"
-version = "2.0.4"
+version = "2.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "de3df0aadc569a8b277808a7d0ad0e421180654ea36a3c59e9ed2bb968c9a1cd"
+checksum = "3ae8b60d71b92824e095b4003ff01fd2bc923017b7568997c5f459240e83499c"
 dependencies = [
  "alloy-consensus",
  "alloy-dyn-abi",
@@ -169,9 +169,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-core"
-version = "1.5.7"
+version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23e8604b0c092fabc80d075ede181c9b9e596249c70b99253082d7e689836529"
+checksum = "62ddde5968de6044d67af107ad835bc0069a7ca245870b94c5958a7d8712b184"
 dependencies = [
  "alloy-dyn-abi",
  "alloy-json-abi",
@@ -182,9 +182,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-dyn-abi"
-version = "1.5.7"
+version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cc2db5c583aaef0255aa63a4fe827f826090142528bba48d1bf4119b62780cad"
+checksum = "a475bb02d9cef2dbb99065c1664ab3fe1f9352e21d6d5ed3f02cdbfc06ed1abc"
 dependencies = [
  "alloy-json-abi",
  "alloy-primitives",
@@ -193,7 +193,7 @@ dependencies = [
  "itoa",
  "serde",
  "serde_json",
- "winnow 0.7.15",
+ "winnow 1.0.3",
 ]
 
 [[package]]
@@ -250,9 +250,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-eips"
-version = "2.0.4"
+version = "2.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "64c0456f5f7a4497e9342d20f528e30f5288ddfa0d6a012bd5044afee46cd8a0"
+checksum = "0dca4c89ace90684b4b77366d00631ed498c9af962079af2a5dbc593a0618a77"
 dependencies = [
  "alloy-eip2124",
  "alloy-eip2930",
@@ -273,9 +273,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-json-abi"
-version = "1.5.7"
+version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e9dbe713da0c737d9e5e387b0ba790eb98b14dd207fe53eef50e19a5a8ec3dac"
+checksum = "7c36c9d7f9021601b04bfef14a4b64849f6d73116a4e91e071d7fbfe10247901"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-type-parser",
@@ -285,9 +285,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-json-rpc"
-version = "2.0.4"
+version = "2.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "19e352478b756bad5d7203148e4b461861282ea2ded3da406ba24868b52cd098"
+checksum = "ec0a82e56b1843bce483942d54fcadea92e676f1bde162e93c7d3b621fabc4e1"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
@@ -300,9 +300,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-network"
-version = "2.0.4"
+version = "2.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed08ae169869e08370ed121612e0d3dadac33d1a256e9f2465926b23f0bd7d95"
+checksum = "a7db7b095b0b1db1d18ce7e91dcd2e82007f2d52bfb8125e6b64633a74a06bc3"
 dependencies = [
  "alloy-consensus",
  "alloy-consensus-any",
@@ -326,9 +326,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-network-primitives"
-version = "2.0.4"
+version = "2.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "02e6c7ad28afe348a9a9c5624b67ee5b3607b8de98d5816b3056ecdfa6fa2697"
+checksum = "cd28d9bfd11729037d194f2b1d43db8642eb3f342032691f4ca96bb745479c3c"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -339,9 +339,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-primitives"
-version = "1.5.7"
+version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "de3b431b4e72cd8bd0ec7a50b4be18e73dab74de0dba180eef171055e5d5926e"
+checksum = "4885c1409b6936c4898e646ef58baf6ec54edaf6d8179f79df805a7b85b7cf3e"
 dependencies = [
  "alloy-rlp",
  "bytes",
@@ -349,7 +349,7 @@ dependencies = [
  "const-hex",
  "derive_more 2.1.1",
  "foldhash 0.2.0",
- "hashbrown 0.16.1",
+ "hashbrown 0.17.1",
  "indexmap 2.14.0",
  "itoa",
  "k256",
@@ -360,15 +360,16 @@ dependencies = [
  "rapidhash",
  "ruint",
  "rustc-hash 2.1.2",
+ "secp256k1 0.31.1",
  "serde",
  "sha3",
 ]
 
 [[package]]
 name = "alloy-provider"
-version = "2.0.4"
+version = "2.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "93a7c17472b55482d4734154c2f5ed13f72e03f6752cebb927f6a2d8b52e646c"
+checksum = "8955ab30418343de57b356de2ea60200f9fb8016a7ea3bc7f5c6176f01a8b1cf"
 dependencies = [
  "alloy-chains",
  "alloy-consensus",
@@ -427,9 +428,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-rpc-client"
-version = "2.0.4"
+version = "2.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5beb5c2fe6b960c8e8b038e69fd502a90a2e930afa4770efb748b163b0767729"
+checksum = "24f461f091dc8f657e73b5dea18fd63d5c7049720cd252f1eade4a7ebed6a7e1"
 dependencies = [
  "alloy-json-rpc",
  "alloy-primitives",
@@ -450,9 +451,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-rpc-types-any"
-version = "2.0.4"
+version = "2.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a234bfbdf7a76c3d13808f729af5321852de3dedcaa6fc6d5f54787aaf54c6a"
+checksum = "0a6561ed4759c974d9c144500a59e3fb8c1d87327a12900d5ce455c0cae6dcb6"
 dependencies = [
  "alloy-consensus-any",
  "alloy-network-primitives",
@@ -465,9 +466,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-rpc-types-eth"
-version = "2.0.4"
+version = "2.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "56a282daf869eeb7383d3d5c2deb35b0b3fb45ecb329513af4090fc61245ee18"
+checksum = "175a2a5b6017d7f61b5e4b800d21215fe8e94fe729d00828e13bb6d93dcf3492"
 dependencies = [
  "alloy-consensus",
  "alloy-consensus-any",
@@ -486,9 +487,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-serde"
-version = "2.0.4"
+version = "2.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a0eada2558e921b39dfcead33c487364df9b31374f5733c1c9d2c891c4529933"
+checksum = "cc21a8772af7d78bba286726aa245bd2ff81cd9abe230afea2e91578996831c9"
 dependencies = [
  "alloy-primitives",
  "serde",
@@ -497,9 +498,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-signer"
-version = "2.0.4"
+version = "2.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "41eb29f7a8adcd8941fbb8e134022a133e6f8dfd345f2e3b7109599f8a7dca08"
+checksum = "8ffbce94c50dd9d4d1f83e044c5595bbd3ada981bd3057ce28b3a5470e77385d"
 dependencies = [
  "alloy-primitives",
  "async-trait",
@@ -512,9 +513,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-signer-local"
-version = "2.0.4"
+version = "2.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bef839e7ce9b59aa60fa9a175e97986c6145c888d643b0f1fb0a3e7b8e56a2e2"
+checksum = "e48366d2c42b8d95ef951101bafa28486590f21b7a1e68b6b2d069746557bbe3"
 dependencies = [
  "alloy-consensus",
  "alloy-network",
@@ -528,9 +529,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-sol-macro"
-version = "1.5.7"
+version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab81bab693da9bb79f7a95b64b394718259fdd7e41dceeced4cad57cb71c4f6a"
+checksum = "840128ed2b2971d6d4668a553fe403a82683d3acc646c73e75887e7157408033"
 dependencies = [
  "alloy-sol-macro-expander",
  "alloy-sol-macro-input",
@@ -542,9 +543,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-sol-macro-expander"
-version = "1.5.7"
+version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "489f1620bb7e2483fb5819ed01ab6edc1d2f93939dce35a5695085a1afd1d699"
+checksum = "63ec265e5d65d725175f6ca7711c970824c90ef9c0d1f1973711d4150ee612dd"
 dependencies = [
  "alloy-json-abi",
  "alloy-sol-macro-input",
@@ -561,9 +562,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-sol-macro-input"
-version = "1.5.7"
+version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "56cef806ad22d4392c5fc83cf8f2089f988eb99c7067b4e0c6f1971fc1cca318"
+checksum = "89bf01077f18650876cfa682eb1f949967b5cde03f1a51c955c469d2c9b4aa67"
 dependencies = [
  "alloy-json-abi",
  "const-hex",
@@ -579,19 +580,19 @@ dependencies = [
 
 [[package]]
 name = "alloy-sol-type-parser"
-version = "1.5.7"
+version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a6df77fea9d6a2a75c0ef8d2acbdfd92286cc599983d3175ccdc170d3433d249"
+checksum = "857b470ecdd2ed38beaf82ad1a38c516a8ff75266750f38b9eeed001d575241b"
 dependencies = [
  "serde",
- "winnow 0.7.15",
+ "winnow 1.0.3",
 ]
 
 [[package]]
 name = "alloy-sol-types"
-version = "1.5.7"
+version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "64612d29379782a5dde6f4b6570d9c756d734d760c0c94c254d361e678a6591f"
+checksum = "384cf252de0db2dec52821eac037a7f57e2aa33fe5b900ce6fe39973402341f1"
 dependencies = [
  "alloy-json-abi",
  "alloy-primitives",
@@ -601,9 +602,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-transport"
-version = "2.0.4"
+version = "2.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ac7a80c0bac3e44559d53d002e34c461dc2f23262b42cafec019bc70551abbe"
+checksum = "86052fdcec72d37ca4aa4b66254601e7453c45a6e1c70aa4561033d002fb80cc"
 dependencies = [
  "alloy-json-rpc",
  "auto_impl",
@@ -624,9 +625,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-transport-http"
-version = "2.0.4"
+version = "2.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eed3ed3300a998f88639ed619fdbbd88bd82865e00c6a8ecb796c99eb12358f6"
+checksum = "b273587487921274f4f5d0ef2c7ef36944dcbb75a4e2318e69eae822bd263f91"
 dependencies = [
  "alloy-json-rpc",
  "alloy-transport",
@@ -656,9 +657,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-tx-macros"
-version = "2.0.4"
+version = "2.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "99fce0350197dcd4ba4e9a7dd43915d908c0eb0e7352755791709a705e1c76b6"
+checksum = "01a0035943b75fe1e249f52e688492d7a1b1826bc2d19b8e1d5d3c24a2ad8f50"
 dependencies = [
  "darling 0.23.0",
  "proc-macro2",
@@ -1505,9 +1506,9 @@ dependencies = [
 
 [[package]]
 name = "autocfg"
-version = "1.5.0"
+version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
+checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "aws-lc-rs"
@@ -1755,6 +1756,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "block-buffer"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cdd35008169921d80bc60d3d0ab416eecb028c4cd653352907921d95084790be"
+dependencies = [
+ "hybrid-array",
+]
+
+[[package]]
 name = "blst"
 version = "0.3.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1891,9 +1901,9 @@ dependencies = [
 
 [[package]]
 name = "bumpalo"
-version = "3.20.2"
+version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d20789868f4b01b2f2caec9f5c4e0213b41e3e5702a50157d699ae31ced2fcb"
+checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
 name = "byte-slice-cast"
@@ -2479,6 +2489,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "crypto-common"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ce6e4c961d6cd6c9a86db418387425e8bdeaf05b3c8bc1411e6dca4c252f1453"
+dependencies = [
+ "hybrid-array",
+]
+
+[[package]]
 name = "csv"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2646,9 +2665,9 @@ dependencies = [
 
 [[package]]
 name = "dashmap"
-version = "6.1.0"
+version = "6.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5041cc499144891f3790297212f32a74fb938e5136a14943f338ef9e0ae276cf"
+checksum = "e6361d5c062261c78a176addb82d4c821ae42bed6089de0e12603cd25de2059c"
 dependencies = [
  "cfg-if",
  "crossbeam-utils",
@@ -3496,8 +3515,18 @@ checksum = "9ed9a281f7bc9b7576e61468ba615a66a5c8cfdff42420a70aa82701a3b1e292"
 dependencies = [
  "block-buffer 0.10.4",
  "const-oid",
- "crypto-common",
+ "crypto-common 0.1.6",
  "subtle",
+]
+
+[[package]]
+name = "digest"
+version = "0.11.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f1dd6dbb5841937940781866fa1281a1ff7bd3bf827091440879f9994983d5c2"
+dependencies = [
+ "block-buffer 0.12.0",
+ "crypto-common 0.2.2",
 ]
 
 [[package]]
@@ -3617,9 +3646,9 @@ dependencies = [
 
 [[package]]
 name = "either"
-version = "1.15.0"
+version = "1.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
+checksum = "91622ff5e7162018101f2fea40d6ebf4a78bbe5a49736a2020649edf9693679e"
 dependencies = [
  "serde",
 ]
@@ -4004,9 +4033,9 @@ checksum = "037711b3d59c33004d3856fbdc83b99d4ff37a24768fa1be9ce3538a1cde4393"
 
 [[package]]
 name = "futures-timer"
-version = "3.0.3"
+version = "3.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f288b0a4f20f9a56b5d1da57e2227c661b7b16168e2f72365f57b63326e29b24"
+checksum = "af43fadb8a98512d547e37b4e92e0ced13e205c061b87b4623eff01d918d6968"
 
 [[package]]
 name = "futures-util"
@@ -4175,8 +4204,6 @@ dependencies = [
  "allocator-api2",
  "equivalent",
  "foldhash 0.2.0",
- "serde",
- "serde_core",
 ]
 
 [[package]]
@@ -4184,6 +4211,11 @@ name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
+dependencies = [
+ "foldhash 0.2.0",
+ "serde",
+ "serde_core",
+]
 
 [[package]]
 name = "hashlink"
@@ -4298,6 +4330,15 @@ name = "humantime"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "135b12329e5e3ce057a9f972339ea52bc954fe1e9358ef27f95e89716fbc5424"
+
+[[package]]
+name = "hybrid-array"
+version = "0.4.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9155a582abd142abc056962c29e3ce5ff2ad5469f4246b537ed42c5deba857da"
+dependencies = [
+ "typenum",
+]
 
 [[package]]
 name = "hyper"
@@ -4862,9 +4903,9 @@ dependencies = [
 
 [[package]]
 name = "js-sys"
-version = "0.3.98"
+version = "0.3.99"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "67df7112613f8bfd9150013a0314e196f4800d3201ae742489d999db2f979f08"
+checksum = "142bc4740e452c1e57ade0cbc129f139c9093e354346f0872ef985f4f5cf5f11"
 dependencies = [
  "cfg-if",
  "futures-util",
@@ -4898,18 +4939,19 @@ dependencies = [
 
 [[package]]
 name = "keccak"
-version = "0.1.6"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb26cec98cce3a3d96cbb7bced3c4b16e3d13f27ec56dbd62cbc8f39cfb9d653"
+checksum = "9e24a010dd405bd7ed803e5253182815b41bf2e6a80cc3bfc066658e03a198aa"
 dependencies = [
- "cpufeatures 0.2.17",
+ "cfg-if",
+ "cpufeatures 0.3.0",
 ]
 
 [[package]]
 name = "keccak-asm"
-version = "0.1.6"
+version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fa468878266ad91431012b3e5ef1bf9b170eab22883503a318d46857afa4579a"
+checksum = "1766b89733097006f3a1388a02849865d6bc98c89273cb622e29fdd209922183"
 dependencies = [
  "digest 0.10.7",
  "sha3-asm",
@@ -5010,9 +5052,9 @@ dependencies = [
 
 [[package]]
 name = "libbz2-rs-sys"
-version = "0.2.4"
+version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f8fc329e1457d97a9d58a4e2ca49e3be572431a7e096008efc2e3a3c19d428f4"
+checksum = "34b357333733e8260735ba5894eb928c02ecc69c78715f01a8019e7fa7f2db4c"
 
 [[package]]
 name = "libc"
@@ -5114,9 +5156,9 @@ dependencies = [
 
 [[package]]
 name = "macro-string"
-version = "0.1.4"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1b27834086c65ec3f9387b096d66e99f221cf081c2b738042aa252bcd41204e3"
+checksum = "59a9dbbfc75d2688ed057456ce8a3ee3f48d12eec09229f560f3643b9f275653"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5250,21 +5292,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "034a0ad7deebf0c2abcf2435950a6666c3c15ea9d8fad0c0f48efa8a7f843fed"
 
 [[package]]
-name = "nautilus-analysis"
-version = "0.57.0"
-dependencies = [
- "ahash 0.8.12",
- "anyhow",
- "indexmap 2.14.0",
- "nautilus-core",
- "nautilus-model",
- "pyo3",
- "pyo3-stub-gen",
- "rstest",
- "rust_decimal",
-]
-
-[[package]]
 name = "nautilus-architect-ax"
 version = "0.57.0"
 dependencies = [
@@ -5282,14 +5309,7 @@ dependencies = [
  "futures-util",
  "itoa",
  "log",
- "nautilus-common",
- "nautilus-core",
- "nautilus-live",
- "nautilus-model",
- "nautilus-network",
- "nautilus-system",
  "nautilus-testkit",
- "nautilus-trading",
  "pyo3",
  "pyo3-async-runtimes",
  "pyo3-stub-gen",
@@ -5300,6 +5320,13 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_urlencoded",
+ "stratneo-nautilus-common",
+ "stratneo-nautilus-core",
+ "stratneo-nautilus-live",
+ "stratneo-nautilus-model",
+ "stratneo-nautilus-network",
+ "stratneo-nautilus-system",
+ "stratneo-nautilus-trading",
  "strum 0.28.0",
  "thiserror 2.0.18",
  "tokio",
@@ -5308,41 +5335,6 @@ dependencies = [
  "toml 1.1.2+spec-1.1.0",
  "ustr",
  "zeroize",
-]
-
-[[package]]
-name = "nautilus-backtest"
-version = "0.57.0"
-dependencies = [
- "ahash 0.8.12",
- "anyhow",
- "async-trait",
- "bon",
- "cbindgen",
- "chrono",
- "chrono-tz",
- "indexmap 2.14.0",
- "log",
- "nautilus-analysis",
- "nautilus-common",
- "nautilus-core",
- "nautilus-data",
- "nautilus-execution",
- "nautilus-indicators",
- "nautilus-model",
- "nautilus-persistence",
- "nautilus-portfolio",
- "nautilus-risk",
- "nautilus-system",
- "nautilus-testkit",
- "nautilus-trading",
- "pyo3",
- "pyo3-stub-gen",
- "rstest",
- "rust_decimal",
- "serde_json",
- "tempfile",
- "ustr",
 ]
 
 [[package]]
@@ -5361,73 +5353,25 @@ dependencies = [
  "dotenvy",
  "flate2",
  "log",
- "nautilus-backtest",
- "nautilus-common",
- "nautilus-core",
- "nautilus-execution",
- "nautilus-live",
- "nautilus-model",
- "nautilus-network",
- "nautilus-persistence-macros",
- "nautilus-serialization",
- "nautilus-system",
  "nautilus-testkit",
- "nautilus-trading",
  "pyo3",
  "pyo3-stub-gen",
  "rstest",
  "rust_decimal",
  "serde",
  "serde_json",
+ "stratneo-nautilus-backtest",
+ "stratneo-nautilus-common",
+ "stratneo-nautilus-core",
+ "stratneo-nautilus-execution",
+ "stratneo-nautilus-live",
+ "stratneo-nautilus-model",
+ "stratneo-nautilus-network",
+ "stratneo-nautilus-persistence-macros",
+ "stratneo-nautilus-serialization",
+ "stratneo-nautilus-system",
+ "stratneo-nautilus-trading",
  "strum 0.28.0",
- "thiserror 2.0.18",
- "tokio",
- "tokio-tungstenite",
- "tokio-util",
- "toml 1.1.2+spec-1.1.0",
- "ustr",
- "zeroize",
-]
-
-[[package]]
-name = "nautilus-binance"
-version = "0.57.0"
-dependencies = [
- "ahash 0.8.12",
- "anyhow",
- "arc-swap",
- "arrow 58.3.0",
- "async-stream",
- "async-trait",
- "aws-lc-rs",
- "axum",
- "base64",
- "bon",
- "chrono",
- "criterion",
- "dashmap",
- "derive_builder",
- "dotenvy",
- "ed25519-dalek",
- "futures-util",
- "log",
- "nautilus-common",
- "nautilus-core",
- "nautilus-live",
- "nautilus-model",
- "nautilus-network",
- "nautilus-serialization",
- "nautilus-system",
- "nautilus-testkit",
- "nautilus-trading",
- "pyo3",
- "pyo3-stub-gen",
- "rstest",
- "rust_decimal",
- "rust_decimal_macros",
- "serde",
- "serde_json",
- "serde_urlencoded",
  "thiserror 2.0.18",
  "tokio",
  "tokio-tungstenite",
@@ -5455,14 +5399,7 @@ dependencies = [
  "dotenvy",
  "futures-util",
  "log",
- "nautilus-common",
- "nautilus-core",
- "nautilus-live",
- "nautilus-model",
- "nautilus-network",
- "nautilus-system",
  "nautilus-testkit",
- "nautilus-trading",
  "pyo3",
  "pyo3-async-runtimes",
  "pyo3-stub-gen",
@@ -5471,6 +5408,13 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_urlencoded",
+ "stratneo-nautilus-common",
+ "stratneo-nautilus-core",
+ "stratneo-nautilus-live",
+ "stratneo-nautilus-model",
+ "stratneo-nautilus-network",
+ "stratneo-nautilus-system",
+ "stratneo-nautilus-trading",
  "strum 0.28.0",
  "thiserror 2.0.18",
  "tokio",
@@ -5498,13 +5442,7 @@ dependencies = [
  "futures-util",
  "hypersync-client",
  "log",
- "nautilus-common",
- "nautilus-core",
  "nautilus-infrastructure",
- "nautilus-live",
- "nautilus-model",
- "nautilus-network",
- "nautilus-system",
  "pyo3",
  "pyo3-stub-gen",
  "rstest",
@@ -5512,6 +5450,12 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlx",
+ "stratneo-nautilus-common",
+ "stratneo-nautilus-core",
+ "stratneo-nautilus-live",
+ "stratneo-nautilus-model",
+ "stratneo-nautilus-network",
+ "stratneo-nautilus-system",
  "strum 0.28.0",
  "thiserror 2.0.18",
  "tokio",
@@ -5541,14 +5485,7 @@ dependencies = [
  "dotenvy",
  "futures-util",
  "log",
- "nautilus-common",
- "nautilus-core",
- "nautilus-live",
- "nautilus-model",
- "nautilus-network",
- "nautilus-system",
  "nautilus-testkit",
- "nautilus-trading",
  "pyo3",
  "pyo3-async-runtimes",
  "pyo3-stub-gen",
@@ -5559,6 +5496,13 @@ dependencies = [
  "serde_json",
  "serde_repr",
  "serde_urlencoded",
+ "stratneo-nautilus-common",
+ "stratneo-nautilus-core",
+ "stratneo-nautilus-live",
+ "stratneo-nautilus-model",
+ "stratneo-nautilus-network",
+ "stratneo-nautilus-system",
+ "stratneo-nautilus-trading",
  "strum 0.28.0",
  "thiserror 2.0.18",
  "tokio",
@@ -5578,10 +5522,10 @@ dependencies = [
  "dotenvy",
  "log",
  "nautilus-blockchain",
- "nautilus-common",
- "nautilus-core",
  "nautilus-infrastructure",
- "nautilus-model",
+ "stratneo-nautilus-common",
+ "stratneo-nautilus-core",
+ "stratneo-nautilus-model",
  "tokio",
  "tokio-util",
  "ustr",
@@ -5603,14 +5547,7 @@ dependencies = [
  "dotenvy",
  "futures-util",
  "log",
- "nautilus-common",
- "nautilus-core",
- "nautilus-live",
- "nautilus-model",
- "nautilus-network",
- "nautilus-system",
  "nautilus-testkit",
- "nautilus-trading",
  "pem",
  "pyo3",
  "pyo3-stub-gen",
@@ -5619,6 +5556,13 @@ dependencies = [
  "rust_decimal_macros",
  "serde",
  "serde_json",
+ "stratneo-nautilus-common",
+ "stratneo-nautilus-core",
+ "stratneo-nautilus-live",
+ "stratneo-nautilus-model",
+ "stratneo-nautilus-network",
+ "stratneo-nautilus-system",
+ "stratneo-nautilus-trading",
  "strum 0.28.0",
  "thiserror 2.0.18",
  "tokio",
@@ -5628,135 +5572,6 @@ dependencies = [
  "url",
  "ustr",
  "zeroize",
-]
-
-[[package]]
-name = "nautilus-common"
-version = "0.57.0"
-dependencies = [
- "ahash 0.8.12",
- "alloy-primitives",
- "anyhow",
- "arraydeque",
- "async-stream",
- "async-trait",
- "bon",
- "bytes",
- "capnp 0.25.4",
- "cbindgen",
- "chrono",
- "criterion",
- "derive_builder",
- "futures",
- "iai",
- "indexmap 2.14.0",
- "itoa",
- "log",
- "madsim",
- "nautilus-core",
- "nautilus-indicators",
- "nautilus-model",
- "nautilus-serialization",
- "proptest",
- "pyo3",
- "pyo3-async-runtimes",
- "pyo3-stub-gen",
- "rand 0.10.1",
- "regex",
- "rstest",
- "rust_decimal",
- "rust_decimal_macros",
- "serde",
- "serde_json",
- "smallvec",
- "strum 0.28.0",
- "sysinfo",
- "tempfile",
- "tokio",
- "toml 1.1.2+spec-1.1.0",
- "tracing",
- "tracing-subscriber",
- "ustr",
-]
-
-[[package]]
-name = "nautilus-core"
-version = "0.57.0"
-dependencies = [
- "ahash 0.8.12",
- "anyhow",
- "arc-swap",
- "bytes",
- "cbindgen",
- "chrono",
- "criterion",
- "dashmap",
- "iai",
- "indexmap 2.14.0",
- "log",
- "madsim",
- "proptest",
- "pyo3",
- "pyo3-stub-gen",
- "rand 0.10.1",
- "rmp-serde",
- "rstest",
- "rust_decimal",
- "rust_decimal_macros",
- "serde",
- "serde_json",
- "strum 0.28.0",
- "thiserror 2.0.18",
- "toml 1.1.2+spec-1.1.0",
- "ustr",
- "uuid",
-]
-
-[[package]]
-name = "nautilus-cryptography"
-version = "0.57.0"
-dependencies = [
- "anyhow",
- "aws-lc-rs",
- "base64",
- "ed25519-dalek",
- "log",
- "nautilus-core",
- "pem",
- "pyo3",
- "pyo3-stub-gen",
- "rstest",
- "rustls",
- "webpki-roots 1.0.7",
-]
-
-[[package]]
-name = "nautilus-data"
-version = "0.57.0"
-dependencies = [
- "ahash 0.8.12",
- "alloy-primitives",
- "anyhow",
- "async-trait",
- "bon",
- "chrono",
- "criterion",
- "futures",
- "indexmap 2.14.0",
- "log",
- "nautilus-common",
- "nautilus-core",
- "nautilus-model",
- "nautilus-persistence",
- "proptest",
- "pyo3",
- "pyo3-stub-gen",
- "rstest",
- "rust_decimal",
- "serde",
- "serde_json",
- "tokio",
- "ustr",
 ]
 
 [[package]]
@@ -5773,13 +5588,6 @@ dependencies = [
  "indexmap 2.14.0",
  "itoa",
  "log",
- "nautilus-common",
- "nautilus-core",
- "nautilus-live",
- "nautilus-model",
- "nautilus-network",
- "nautilus-serialization",
- "nautilus-system",
  "proptest",
  "pyo3",
  "pyo3-async-runtimes",
@@ -5787,6 +5595,13 @@ dependencies = [
  "rstest",
  "serde",
  "serde_json",
+ "stratneo-nautilus-common",
+ "stratneo-nautilus-core",
+ "stratneo-nautilus-live",
+ "stratneo-nautilus-model",
+ "stratneo-nautilus-network",
+ "stratneo-nautilus-serialization",
+ "stratneo-nautilus-system",
  "strum 0.28.0",
  "time",
  "tokio",
@@ -5815,16 +5630,7 @@ dependencies = [
  "dotenvy",
  "futures-util",
  "log",
- "nautilus-common",
- "nautilus-core",
- "nautilus-live",
- "nautilus-model",
- "nautilus-network",
- "nautilus-persistence-macros",
- "nautilus-serialization",
- "nautilus-system",
  "nautilus-testkit",
- "nautilus-trading",
  "pyo3",
  "pyo3-async-runtimes",
  "pyo3-stub-gen",
@@ -5833,6 +5639,15 @@ dependencies = [
  "rust_decimal_macros",
  "serde",
  "serde_json",
+ "stratneo-nautilus-common",
+ "stratneo-nautilus-core",
+ "stratneo-nautilus-live",
+ "stratneo-nautilus-model",
+ "stratneo-nautilus-network",
+ "stratneo-nautilus-persistence-macros",
+ "stratneo-nautilus-serialization",
+ "stratneo-nautilus-system",
+ "stratneo-nautilus-trading",
  "strum 0.28.0",
  "thiserror 2.0.18",
  "tokio",
@@ -5863,14 +5678,7 @@ dependencies = [
  "dydx-proto",
  "futures-util",
  "log",
- "nautilus-common",
- "nautilus-core",
- "nautilus-live",
- "nautilus-model",
- "nautilus-network",
- "nautilus-system",
  "nautilus-testkit",
- "nautilus-trading",
  "prost",
  "pyo3",
  "pyo3-async-runtimes",
@@ -5881,6 +5689,13 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "stratneo-nautilus-common",
+ "stratneo-nautilus-core",
+ "stratneo-nautilus-live",
+ "stratneo-nautilus-model",
+ "stratneo-nautilus-network",
+ "stratneo-nautilus-system",
+ "stratneo-nautilus-trading",
  "strum 0.28.0",
  "thiserror 2.0.18",
  "tokio",
@@ -5904,49 +5719,19 @@ dependencies = [
  "criterion",
  "indexmap 2.14.0",
  "log",
- "nautilus-common",
- "nautilus-core",
- "nautilus-execution",
- "nautilus-model",
- "nautilus-system",
  "proptest",
  "redb",
  "rmp-serde",
  "rstest",
  "serde",
+ "stratneo-nautilus-common",
+ "stratneo-nautilus-core",
+ "stratneo-nautilus-execution",
+ "stratneo-nautilus-model",
+ "stratneo-nautilus-system",
  "tempfile",
  "thiserror 2.0.18",
  "ustr",
-]
-
-[[package]]
-name = "nautilus-execution"
-version = "0.57.0"
-dependencies = [
- "ahash 0.8.12",
- "anyhow",
- "async-trait",
- "bon",
- "chrono",
- "criterion",
- "futures",
- "indexmap 2.14.0",
- "log",
- "madsim",
- "nautilus-common",
- "nautilus-core",
- "nautilus-model",
- "proptest",
- "pyo3",
- "pyo3-stub-gen",
- "rand 0.10.1",
- "rstest",
- "rust_decimal",
- "rust_decimal_macros",
- "serde",
- "smallvec",
- "ustr",
- "uuid",
 ]
 
 [[package]]
@@ -5969,16 +5754,7 @@ dependencies = [
  "dotenvy",
  "futures-util",
  "log",
- "nautilus-common",
- "nautilus-core",
- "nautilus-live",
- "nautilus-model",
- "nautilus-network",
- "nautilus-persistence-macros",
- "nautilus-serialization",
- "nautilus-system",
  "nautilus-testkit",
- "nautilus-trading",
  "pyo3",
  "pyo3-async-runtimes",
  "pyo3-stub-gen",
@@ -5988,6 +5764,15 @@ dependencies = [
  "rust_decimal_macros",
  "serde",
  "serde_json",
+ "stratneo-nautilus-common",
+ "stratneo-nautilus-core",
+ "stratneo-nautilus-live",
+ "stratneo-nautilus-model",
+ "stratneo-nautilus-network",
+ "stratneo-nautilus-persistence-macros",
+ "stratneo-nautilus-serialization",
+ "stratneo-nautilus-system",
+ "stratneo-nautilus-trading",
  "strum 0.28.0",
  "thiserror 2.0.18",
  "tokio",
@@ -6006,11 +5791,11 @@ version = "0.57.0"
 dependencies = [
  "anyhow",
  "arraydeque",
- "nautilus-core",
- "nautilus-model",
  "pyo3",
  "pyo3-stub-gen",
  "rstest",
+ "stratneo-nautilus-core",
+ "stratneo-nautilus-model",
  "strum 0.28.0",
 ]
 
@@ -6028,12 +5813,6 @@ dependencies = [
  "futures",
  "indexmap 2.14.0",
  "log",
- "nautilus-common",
- "nautilus-core",
- "nautilus-cryptography",
- "nautilus-model",
- "nautilus-persistence",
- "nautilus-serialization",
  "pyo3",
  "pyo3-async-runtimes",
  "pyo3-stub-gen",
@@ -6045,6 +5824,12 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlx",
+ "stratneo-nautilus-common",
+ "stratneo-nautilus-core",
+ "stratneo-nautilus-cryptography",
+ "stratneo-nautilus-model",
+ "stratneo-nautilus-persistence",
+ "stratneo-nautilus-serialization",
  "tokio",
  "toml 1.1.2+spec-1.1.0",
  "ustr",
@@ -6066,15 +5851,7 @@ dependencies = [
  "ibapi",
  "indexmap 2.14.0",
  "log",
- "nautilus-common",
- "nautilus-core",
- "nautilus-execution",
- "nautilus-live",
- "nautilus-model",
- "nautilus-network",
- "nautilus-system",
  "nautilus-testkit",
- "nautilus-trading",
  "pyo3",
  "pyo3-async-runtimes",
  "rstest",
@@ -6082,6 +5859,14 @@ dependencies = [
  "rust_decimal_macros",
  "serde",
  "serde_json",
+ "stratneo-nautilus-common",
+ "stratneo-nautilus-core",
+ "stratneo-nautilus-execution",
+ "stratneo-nautilus-live",
+ "stratneo-nautilus-model",
+ "stratneo-nautilus-network",
+ "stratneo-nautilus-system",
+ "stratneo-nautilus-trading",
  "tempfile",
  "thiserror 2.0.18",
  "time",
@@ -6113,16 +5898,8 @@ dependencies = [
  "futures-util",
  "indexmap 2.14.0",
  "log",
- "nautilus-backtest",
- "nautilus-common",
- "nautilus-core",
- "nautilus-live",
- "nautilus-model",
- "nautilus-network",
- "nautilus-system",
  "nautilus-tardis",
  "nautilus-testkit",
- "nautilus-trading",
  "proptest",
  "pyo3",
  "pyo3-async-runtimes",
@@ -6133,6 +5910,14 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_urlencoded",
+ "stratneo-nautilus-backtest",
+ "stratneo-nautilus-common",
+ "stratneo-nautilus-core",
+ "stratneo-nautilus-live",
+ "stratneo-nautilus-model",
+ "stratneo-nautilus-network",
+ "stratneo-nautilus-system",
+ "stratneo-nautilus-trading",
  "strum 0.28.0",
  "thiserror 2.0.18",
  "tokio",
@@ -6141,121 +5926,6 @@ dependencies = [
  "toml 1.1.2+spec-1.1.0",
  "ustr",
  "zeroize",
-]
-
-[[package]]
-name = "nautilus-live"
-version = "0.57.0"
-dependencies = [
- "ahash 0.8.12",
- "anyhow",
- "async-trait",
- "bon",
- "criterion",
- "indexmap 2.14.0",
- "log",
- "madsim",
- "nautilus-common",
- "nautilus-core",
- "nautilus-data",
- "nautilus-execution",
- "nautilus-model",
- "nautilus-persistence",
- "nautilus-portfolio",
- "nautilus-risk",
- "nautilus-system",
- "nautilus-trading",
- "pyo3",
- "pyo3-stub-gen",
- "rstest",
- "rust_decimal",
- "rust_decimal_macros",
- "serde",
- "serde_json",
- "tabled",
- "tokio",
- "toml 1.1.2+spec-1.1.0",
- "ustr",
-]
-
-[[package]]
-name = "nautilus-model"
-version = "0.57.0"
-dependencies = [
- "ahash 0.8.12",
- "alloy-primitives",
- "anyhow",
- "arrow 58.3.0",
- "bon",
- "cbindgen",
- "chrono",
- "criterion",
- "dashmap",
- "derive_builder",
- "enum_dispatch",
- "iai",
- "implied-vol",
- "indexmap 2.14.0",
- "log",
- "nautilus-core",
- "proptest",
- "pyo3",
- "pyo3-stub-gen",
- "rstest",
- "rust_decimal",
- "rust_decimal_macros",
- "serde",
- "serde_json",
- "strum 0.28.0",
- "tabled",
- "thiserror 2.0.18",
- "ustr",
-]
-
-[[package]]
-name = "nautilus-network"
-version = "0.57.0"
-dependencies = [
- "ahash 0.8.12",
- "anyhow",
- "axum",
- "base64",
- "bon",
- "bytes",
- "criterion",
- "dashmap",
- "futures",
- "futures-util",
- "http",
- "log",
- "madsim",
- "nautilus-common",
- "nautilus-core",
- "nautilus-cryptography",
- "proptest",
- "pyo3",
- "pyo3-async-runtimes",
- "pyo3-stub-gen",
- "rand 0.10.1",
- "reqwest 0.13.3",
- "rstest",
- "rustls",
- "rustls-pemfile",
- "serde",
- "serde_json",
- "serde_urlencoded",
- "sockudo-ws",
- "strum 0.28.0",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tokio-rustls",
- "tokio-tungstenite",
- "tokio-util",
- "turmoil",
- "url",
- "ustr",
- "webpki-roots 1.0.7",
 ]
 
 [[package]]
@@ -6278,14 +5948,7 @@ dependencies = [
  "dotenvy",
  "futures-util",
  "log",
- "nautilus-common",
- "nautilus-core",
- "nautilus-live",
- "nautilus-model",
- "nautilus-network",
- "nautilus-system",
  "nautilus-testkit",
- "nautilus-trading",
  "pyo3",
  "pyo3-async-runtimes",
  "pyo3-stub-gen",
@@ -6295,6 +5958,13 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_urlencoded",
+ "stratneo-nautilus-common",
+ "stratneo-nautilus-core",
+ "stratneo-nautilus-live",
+ "stratneo-nautilus-model",
+ "stratneo-nautilus-network",
+ "stratneo-nautilus-system",
+ "stratneo-nautilus-trading",
  "strum 0.28.0",
  "thiserror 2.0.18",
  "tokio",
@@ -6303,54 +5973,6 @@ dependencies = [
  "toml 1.1.2+spec-1.1.0",
  "ustr",
  "zeroize",
-]
-
-[[package]]
-name = "nautilus-persistence"
-version = "0.57.0"
-dependencies = [
- "ahash 0.8.12",
- "anyhow",
- "arrow 58.3.0",
- "arrow-row 58.3.0",
- "chrono",
- "chrono-tz",
- "criterion",
- "datafusion",
- "futures",
- "indexmap 2.14.0",
- "itertools 0.14.0",
- "log",
- "nautilus-common",
- "nautilus-core",
- "nautilus-model",
- "nautilus-persistence-macros",
- "nautilus-serialization",
- "nautilus-testkit",
- "object_store",
- "parquet 58.3.0",
- "pretty_assertions",
- "proptest",
- "pyo3",
- "pyo3-stub-gen",
- "rstest",
- "rust_decimal",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "unbounded-interval-tree",
- "url",
-]
-
-[[package]]
-name = "nautilus-persistence-macros"
-version = "0.57.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "rstest",
- "syn 2.0.117",
 ]
 
 [[package]]
@@ -6372,14 +5994,7 @@ dependencies = [
  "dotenvy",
  "futures-util",
  "log",
- "nautilus-common",
- "nautilus-core",
- "nautilus-live",
- "nautilus-model",
- "nautilus-network",
- "nautilus-system",
  "nautilus-testkit",
- "nautilus-trading",
  "proptest",
  "pyo3",
  "pyo3-stub-gen",
@@ -6389,6 +6004,13 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_repr",
+ "stratneo-nautilus-common",
+ "stratneo-nautilus-core",
+ "stratneo-nautilus-live",
+ "stratneo-nautilus-model",
+ "stratneo-nautilus-network",
+ "stratneo-nautilus-system",
+ "stratneo-nautilus-trading",
  "strum 0.28.0",
  "thiserror 2.0.18",
  "tokio",
@@ -6402,171 +6024,44 @@ dependencies = [
 ]
 
 [[package]]
-name = "nautilus-portfolio"
-version = "0.57.0"
-dependencies = [
- "ahash 0.8.12",
- "bon",
- "criterion",
- "indexmap 2.14.0",
- "log",
- "nautilus-analysis",
- "nautilus-common",
- "nautilus-core",
- "nautilus-model",
- "pyo3",
- "pyo3-stub-gen",
- "rstest",
- "rust_decimal",
- "rust_decimal_macros",
- "serde",
-]
-
-[[package]]
 name = "nautilus-pyo3"
 version = "0.57.0"
 dependencies = [
- "nautilus-analysis",
  "nautilus-architect-ax",
- "nautilus-backtest",
- "nautilus-binance",
  "nautilus-bitmex",
  "nautilus-blockchain",
  "nautilus-bybit",
  "nautilus-coinbase",
- "nautilus-common",
- "nautilus-core",
- "nautilus-cryptography",
- "nautilus-data",
  "nautilus-databento",
  "nautilus-deribit",
  "nautilus-dydx",
- "nautilus-execution",
  "nautilus-hyperliquid",
  "nautilus-indicators",
  "nautilus-infrastructure",
  "nautilus-interactive-brokers",
  "nautilus-kraken",
- "nautilus-live",
- "nautilus-model",
- "nautilus-network",
  "nautilus-okx",
- "nautilus-persistence",
  "nautilus-polymarket",
- "nautilus-risk",
- "nautilus-sandbox",
- "nautilus-serialization",
  "nautilus-tardis",
  "nautilus-testkit",
- "nautilus-trading",
  "pyo3",
  "pyo3-stub-gen",
-]
-
-[[package]]
-name = "nautilus-risk"
-version = "0.57.0"
-dependencies = [
- "ahash 0.8.12",
- "bon",
- "indexmap 2.14.0",
- "log",
- "nautilus-common",
- "nautilus-core",
- "nautilus-execution",
- "nautilus-model",
- "nautilus-portfolio",
- "pyo3",
- "pyo3-stub-gen",
- "rstest",
- "rust_decimal",
- "rust_decimal_macros",
- "serde",
- "ustr",
-]
-
-[[package]]
-name = "nautilus-sandbox"
-version = "0.57.0"
-dependencies = [
- "ahash 0.8.12",
- "anyhow",
- "async-trait",
- "bon",
- "dotenvy",
- "log",
- "nautilus-common",
- "nautilus-core",
- "nautilus-databento",
- "nautilus-execution",
- "nautilus-live",
- "nautilus-model",
- "nautilus-testkit",
- "nautilus-trading",
- "pyo3",
- "pyo3-stub-gen",
- "rstest",
- "rust_decimal",
- "serde",
- "tokio",
- "toml 1.1.2+spec-1.1.0",
- "ustr",
-]
-
-[[package]]
-name = "nautilus-serialization"
-version = "0.57.0"
-dependencies = [
- "anyhow",
- "arrow 58.3.0",
- "capnp 0.25.4",
- "capnpc",
- "criterion",
- "indexmap 2.14.0",
- "nautilus-core",
- "nautilus-model",
- "pretty_assertions",
- "pyo3",
- "pyo3-stub-gen",
- "rstest",
- "rust_decimal",
- "rust_decimal_macros",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "ustr",
- "uuid",
- "walkdir",
-]
-
-[[package]]
-name = "nautilus-system"
-version = "0.57.0"
-dependencies = [
- "ahash 0.8.12",
- "anyhow",
- "async-trait",
- "bon",
- "bytes",
- "indexmap 2.14.0",
- "log",
- "nautilus-common",
- "nautilus-core",
- "nautilus-data",
- "nautilus-execution",
- "nautilus-model",
- "nautilus-persistence",
- "nautilus-portfolio",
- "nautilus-risk",
- "nautilus-trading",
- "pyo3",
- "rmp-serde",
- "rstest",
- "serde",
- "sysinfo",
- "tempfile",
- "toml 1.1.2+spec-1.1.0",
- "ustr",
+ "stratneo-nautilus-analysis",
+ "stratneo-nautilus-backtest",
+ "stratneo-nautilus-binance",
+ "stratneo-nautilus-common",
+ "stratneo-nautilus-core",
+ "stratneo-nautilus-cryptography",
+ "stratneo-nautilus-data",
+ "stratneo-nautilus-execution",
+ "stratneo-nautilus-live",
+ "stratneo-nautilus-model",
+ "stratneo-nautilus-network",
+ "stratneo-nautilus-persistence",
+ "stratneo-nautilus-risk",
+ "stratneo-nautilus-sandbox",
+ "stratneo-nautilus-serialization",
+ "stratneo-nautilus-trading",
 ]
 
 [[package]]
@@ -6587,13 +6082,6 @@ dependencies = [
  "flate2",
  "futures-util",
  "log",
- "nautilus-common",
- "nautilus-core",
- "nautilus-live",
- "nautilus-model",
- "nautilus-network",
- "nautilus-serialization",
- "nautilus-system",
  "nautilus-testkit",
  "parquet 58.3.0",
  "pyo3",
@@ -6605,6 +6093,13 @@ dependencies = [
  "ryu",
  "serde",
  "serde_json",
+ "stratneo-nautilus-common",
+ "stratneo-nautilus-core",
+ "stratneo-nautilus-live",
+ "stratneo-nautilus-model",
+ "stratneo-nautilus-network",
+ "stratneo-nautilus-serialization",
+ "stratneo-nautilus-system",
  "strum 0.28.0",
  "thiserror 2.0.18",
  "tokio",
@@ -6629,13 +6124,6 @@ dependencies = [
  "indexmap 2.14.0",
  "itchy",
  "log",
- "nautilus-common",
- "nautilus-core",
- "nautilus-model",
- "nautilus-network",
- "nautilus-portfolio",
- "nautilus-serialization",
- "nautilus-trading",
  "parquet 58.3.0",
  "pyo3",
  "pyo3-stub-gen",
@@ -6646,6 +6134,13 @@ dependencies = [
  "rust_decimal_macros",
  "serde",
  "serde_json",
+ "stratneo-nautilus-common",
+ "stratneo-nautilus-core",
+ "stratneo-nautilus-model",
+ "stratneo-nautilus-network",
+ "stratneo-nautilus-portfolio",
+ "stratneo-nautilus-serialization",
+ "stratneo-nautilus-trading",
  "tempfile",
  "tokio",
 ]
@@ -6653,34 +6148,6 @@ dependencies = [
 [[package]]
 name = "nautilus-trader"
 version = "0.57.0"
-
-[[package]]
-name = "nautilus-trading"
-version = "0.57.0"
-dependencies = [
- "ahash 0.8.12",
- "anyhow",
- "bon",
- "chrono",
- "chrono-tz",
- "indexmap 2.14.0",
- "log",
- "nautilus-common",
- "nautilus-core",
- "nautilus-execution",
- "nautilus-indicators",
- "nautilus-model",
- "nautilus-portfolio",
- "pyo3",
- "pyo3-stub-gen",
- "rstest",
- "rust_decimal",
- "rust_decimal_macros",
- "serde",
- "serde_json",
- "strum 0.28.0",
- "ustr",
-]
 
 [[package]]
 name = "nohash-hasher"
@@ -6753,9 +6220,9 @@ dependencies = [
 
 [[package]]
 name = "num-conv"
-version = "0.2.1"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c6673768db2d862beb9b39a78fdcb1a69439615d5794a1be50caa9bc92c81967"
+checksum = "521739c6d2bac4aa25192232afe6841231376b2b26d4d9fae5ecf8ca5772e441"
 
 [[package]]
 name = "num-integer"
@@ -7226,18 +6693,18 @@ dependencies = [
 
 [[package]]
 name = "pin-project"
-version = "1.1.12"
+version = "1.1.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cbf0d9e68100b3a7989b4901972f265cd542e560a3a8a724e1e20322f4d06ce9"
+checksum = "2466b2336ed02bcdca6b294417127b90ec92038d1d5c4fbeac971a922e0e0924"
 dependencies = [
  "pin-project-internal",
 ]
 
 [[package]]
 name = "pin-project-internal"
-version = "1.1.12"
+version = "1.1.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a990e22f43e84855daf260dded30524ef4a9021cc7541c26540500a50b624389"
+checksum = "c96395f0a926bc13b1c17622aaddda1ecb55d49c8f1bf9777e4d877800a43f8b"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -8614,6 +8081,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "secp256k1"
+version = "0.31.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2c3c81b43dc2d8877c216a3fccf76677ee1ebccd429566d3e67447290d0c42b2"
+dependencies = [
+ "bitcoin_hashes",
+ "rand 0.9.4",
+ "secp256k1-sys 0.11.0",
+]
+
+[[package]]
 name = "secp256k1-sys"
 version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8627,6 +8105,15 @@ name = "secp256k1-sys"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d4387882333d3aa8cb20530a17c69a3752e97837832f34f6dccc760e715001d9"
+dependencies = [
+ "cc",
+]
+
+[[package]]
+name = "secp256k1-sys"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dcb913707158fadaf0d8702c2db0e857de66eb003ccfdda5924b5f5ac98efb38"
 dependencies = [
  "cc",
 ]
@@ -8749,9 +8236,9 @@ dependencies = [
 
 [[package]]
 name = "serde_json"
-version = "1.0.149"
+version = "1.0.150"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "83fc039473c5595ace860d8c4fafa220ff474b3fc6bfdb4293327f1a37e94d86"
+checksum = "e8014e44b4736ed0538adeecded0fce2a272f22dc9578a7eb6b2d9993c74cfb9"
 dependencies = [
  "itoa",
  "memchr",
@@ -8895,19 +8382,19 @@ dependencies = [
 
 [[package]]
 name = "sha3"
-version = "0.10.9"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77fd7028345d415a4034cf8777cd4f8ab1851274233b45f84e3d955502d93874"
+checksum = "be176f1a57ce4e3d31c1a166222d9768de5954f811601fb7ca06fc8203905ce1"
 dependencies = [
- "digest 0.10.7",
+ "digest 0.11.3",
  "keccak",
 ]
 
 [[package]]
 name = "sha3-asm"
-version = "0.1.6"
+version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "59cbb88c189d6352cc8ae96a39d19c7ecad8f7330b29461187f2587fdc2988d5"
+checksum = "9f3f15d4e239ebe08413eed880e0f9b5af4b40ee0472543320efa91d488e96a7"
 dependencies = [
  "cc",
  "cfg-if",
@@ -9286,6 +8773,581 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
+name = "stratneo-nautilus-analysis"
+version = "0.57.0"
+dependencies = [
+ "ahash 0.8.12",
+ "anyhow",
+ "indexmap 2.14.0",
+ "pyo3",
+ "pyo3-stub-gen",
+ "rstest",
+ "rust_decimal",
+ "stratneo-nautilus-core",
+ "stratneo-nautilus-model",
+]
+
+[[package]]
+name = "stratneo-nautilus-backtest"
+version = "0.57.0"
+dependencies = [
+ "ahash 0.8.12",
+ "anyhow",
+ "async-trait",
+ "bon",
+ "cbindgen",
+ "chrono",
+ "chrono-tz",
+ "indexmap 2.14.0",
+ "log",
+ "nautilus-indicators",
+ "nautilus-testkit",
+ "pyo3",
+ "pyo3-stub-gen",
+ "rstest",
+ "rust_decimal",
+ "serde_json",
+ "stratneo-nautilus-analysis",
+ "stratneo-nautilus-common",
+ "stratneo-nautilus-core",
+ "stratneo-nautilus-data",
+ "stratneo-nautilus-execution",
+ "stratneo-nautilus-model",
+ "stratneo-nautilus-persistence",
+ "stratneo-nautilus-portfolio",
+ "stratneo-nautilus-risk",
+ "stratneo-nautilus-system",
+ "stratneo-nautilus-trading",
+ "tempfile",
+ "ustr",
+]
+
+[[package]]
+name = "stratneo-nautilus-binance"
+version = "0.57.0"
+dependencies = [
+ "ahash 0.8.12",
+ "anyhow",
+ "arc-swap",
+ "arrow 58.3.0",
+ "async-stream",
+ "async-trait",
+ "aws-lc-rs",
+ "axum",
+ "base64",
+ "bon",
+ "chrono",
+ "criterion",
+ "dashmap",
+ "derive_builder",
+ "dotenvy",
+ "ed25519-dalek",
+ "futures-util",
+ "log",
+ "nautilus-testkit",
+ "pyo3",
+ "pyo3-stub-gen",
+ "rstest",
+ "rust_decimal",
+ "rust_decimal_macros",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "stratneo-nautilus-common",
+ "stratneo-nautilus-core",
+ "stratneo-nautilus-live",
+ "stratneo-nautilus-model",
+ "stratneo-nautilus-network",
+ "stratneo-nautilus-serialization",
+ "stratneo-nautilus-system",
+ "stratneo-nautilus-trading",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-tungstenite",
+ "tokio-util",
+ "toml 1.1.2+spec-1.1.0",
+ "ustr",
+ "zeroize",
+]
+
+[[package]]
+name = "stratneo-nautilus-common"
+version = "0.57.0"
+dependencies = [
+ "ahash 0.8.12",
+ "alloy-primitives",
+ "anyhow",
+ "arraydeque",
+ "async-stream",
+ "async-trait",
+ "bon",
+ "bytes",
+ "capnp 0.25.4",
+ "cbindgen",
+ "chrono",
+ "criterion",
+ "derive_builder",
+ "futures",
+ "iai",
+ "indexmap 2.14.0",
+ "itoa",
+ "log",
+ "madsim",
+ "nautilus-indicators",
+ "proptest",
+ "pyo3",
+ "pyo3-async-runtimes",
+ "pyo3-stub-gen",
+ "rand 0.10.1",
+ "regex",
+ "rstest",
+ "rust_decimal",
+ "rust_decimal_macros",
+ "serde",
+ "serde_json",
+ "smallvec",
+ "stratneo-nautilus-core",
+ "stratneo-nautilus-model",
+ "stratneo-nautilus-serialization",
+ "strum 0.28.0",
+ "sysinfo",
+ "tempfile",
+ "tokio",
+ "toml 1.1.2+spec-1.1.0",
+ "tracing",
+ "tracing-subscriber",
+ "ustr",
+]
+
+[[package]]
+name = "stratneo-nautilus-core"
+version = "0.57.0"
+dependencies = [
+ "ahash 0.8.12",
+ "anyhow",
+ "arc-swap",
+ "bytes",
+ "cbindgen",
+ "chrono",
+ "criterion",
+ "dashmap",
+ "iai",
+ "indexmap 2.14.0",
+ "log",
+ "madsim",
+ "proptest",
+ "pyo3",
+ "pyo3-stub-gen",
+ "rand 0.10.1",
+ "rmp-serde",
+ "rstest",
+ "rust_decimal",
+ "rust_decimal_macros",
+ "serde",
+ "serde_json",
+ "strum 0.28.0",
+ "thiserror 2.0.18",
+ "toml 1.1.2+spec-1.1.0",
+ "ustr",
+ "uuid",
+]
+
+[[package]]
+name = "stratneo-nautilus-cryptography"
+version = "0.57.0"
+dependencies = [
+ "anyhow",
+ "aws-lc-rs",
+ "base64",
+ "ed25519-dalek",
+ "log",
+ "pem",
+ "pyo3",
+ "pyo3-stub-gen",
+ "rstest",
+ "rustls",
+ "stratneo-nautilus-core",
+ "webpki-roots 1.0.7",
+]
+
+[[package]]
+name = "stratneo-nautilus-data"
+version = "0.57.0"
+dependencies = [
+ "ahash 0.8.12",
+ "alloy-primitives",
+ "anyhow",
+ "async-trait",
+ "bon",
+ "chrono",
+ "criterion",
+ "futures",
+ "indexmap 2.14.0",
+ "log",
+ "proptest",
+ "pyo3",
+ "pyo3-stub-gen",
+ "rstest",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "stratneo-nautilus-common",
+ "stratneo-nautilus-core",
+ "stratneo-nautilus-model",
+ "stratneo-nautilus-persistence",
+ "tokio",
+ "ustr",
+]
+
+[[package]]
+name = "stratneo-nautilus-execution"
+version = "0.57.0"
+dependencies = [
+ "ahash 0.8.12",
+ "anyhow",
+ "async-trait",
+ "bon",
+ "chrono",
+ "criterion",
+ "futures",
+ "indexmap 2.14.0",
+ "log",
+ "madsim",
+ "proptest",
+ "pyo3",
+ "pyo3-stub-gen",
+ "rand 0.10.1",
+ "rstest",
+ "rust_decimal",
+ "rust_decimal_macros",
+ "serde",
+ "smallvec",
+ "stratneo-nautilus-common",
+ "stratneo-nautilus-core",
+ "stratneo-nautilus-model",
+ "ustr",
+ "uuid",
+]
+
+[[package]]
+name = "stratneo-nautilus-live"
+version = "0.57.0"
+dependencies = [
+ "ahash 0.8.12",
+ "anyhow",
+ "async-trait",
+ "bon",
+ "criterion",
+ "indexmap 2.14.0",
+ "log",
+ "madsim",
+ "pyo3",
+ "pyo3-stub-gen",
+ "rstest",
+ "rust_decimal",
+ "rust_decimal_macros",
+ "serde",
+ "serde_json",
+ "stratneo-nautilus-common",
+ "stratneo-nautilus-core",
+ "stratneo-nautilus-data",
+ "stratneo-nautilus-execution",
+ "stratneo-nautilus-model",
+ "stratneo-nautilus-persistence",
+ "stratneo-nautilus-portfolio",
+ "stratneo-nautilus-risk",
+ "stratneo-nautilus-system",
+ "stratneo-nautilus-trading",
+ "tabled",
+ "tokio",
+ "toml 1.1.2+spec-1.1.0",
+ "ustr",
+]
+
+[[package]]
+name = "stratneo-nautilus-model"
+version = "0.57.0"
+dependencies = [
+ "ahash 0.8.12",
+ "alloy-primitives",
+ "anyhow",
+ "arrow 58.3.0",
+ "bon",
+ "cbindgen",
+ "chrono",
+ "criterion",
+ "dashmap",
+ "derive_builder",
+ "enum_dispatch",
+ "iai",
+ "implied-vol",
+ "indexmap 2.14.0",
+ "log",
+ "proptest",
+ "pyo3",
+ "pyo3-stub-gen",
+ "rstest",
+ "rust_decimal",
+ "rust_decimal_macros",
+ "serde",
+ "serde_json",
+ "stratneo-nautilus-core",
+ "strum 0.28.0",
+ "tabled",
+ "thiserror 2.0.18",
+ "ustr",
+]
+
+[[package]]
+name = "stratneo-nautilus-network"
+version = "0.57.0"
+dependencies = [
+ "ahash 0.8.12",
+ "anyhow",
+ "axum",
+ "base64",
+ "bon",
+ "bytes",
+ "criterion",
+ "dashmap",
+ "futures",
+ "futures-util",
+ "http",
+ "log",
+ "madsim",
+ "proptest",
+ "pyo3",
+ "pyo3-async-runtimes",
+ "pyo3-stub-gen",
+ "rand 0.10.1",
+ "reqwest 0.13.3",
+ "rstest",
+ "rustls",
+ "rustls-pemfile",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "sockudo-ws",
+ "stratneo-nautilus-common",
+ "stratneo-nautilus-core",
+ "stratneo-nautilus-cryptography",
+ "strum 0.28.0",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-rustls",
+ "tokio-tungstenite",
+ "tokio-util",
+ "turmoil",
+ "url",
+ "ustr",
+ "webpki-roots 1.0.7",
+]
+
+[[package]]
+name = "stratneo-nautilus-persistence"
+version = "0.57.0"
+dependencies = [
+ "ahash 0.8.12",
+ "anyhow",
+ "arrow 58.3.0",
+ "arrow-row 58.3.0",
+ "chrono",
+ "chrono-tz",
+ "criterion",
+ "datafusion",
+ "futures",
+ "indexmap 2.14.0",
+ "itertools 0.14.0",
+ "log",
+ "nautilus-testkit",
+ "object_store",
+ "parquet 58.3.0",
+ "pretty_assertions",
+ "proptest",
+ "pyo3",
+ "pyo3-stub-gen",
+ "rstest",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "stratneo-nautilus-common",
+ "stratneo-nautilus-core",
+ "stratneo-nautilus-model",
+ "stratneo-nautilus-persistence-macros",
+ "stratneo-nautilus-serialization",
+ "tempfile",
+ "tokio",
+ "unbounded-interval-tree",
+ "url",
+]
+
+[[package]]
+name = "stratneo-nautilus-persistence-macros"
+version = "0.57.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "rstest",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "stratneo-nautilus-portfolio"
+version = "0.57.0"
+dependencies = [
+ "ahash 0.8.12",
+ "bon",
+ "criterion",
+ "indexmap 2.14.0",
+ "log",
+ "pyo3",
+ "pyo3-stub-gen",
+ "rstest",
+ "rust_decimal",
+ "rust_decimal_macros",
+ "serde",
+ "stratneo-nautilus-analysis",
+ "stratneo-nautilus-common",
+ "stratneo-nautilus-core",
+ "stratneo-nautilus-model",
+]
+
+[[package]]
+name = "stratneo-nautilus-risk"
+version = "0.57.0"
+dependencies = [
+ "ahash 0.8.12",
+ "bon",
+ "indexmap 2.14.0",
+ "log",
+ "pyo3",
+ "pyo3-stub-gen",
+ "rstest",
+ "rust_decimal",
+ "rust_decimal_macros",
+ "serde",
+ "stratneo-nautilus-common",
+ "stratneo-nautilus-core",
+ "stratneo-nautilus-execution",
+ "stratneo-nautilus-model",
+ "stratneo-nautilus-portfolio",
+ "ustr",
+]
+
+[[package]]
+name = "stratneo-nautilus-sandbox"
+version = "0.57.0"
+dependencies = [
+ "ahash 0.8.12",
+ "anyhow",
+ "async-trait",
+ "bon",
+ "dotenvy",
+ "log",
+ "nautilus-databento",
+ "nautilus-testkit",
+ "pyo3",
+ "pyo3-stub-gen",
+ "rstest",
+ "rust_decimal",
+ "serde",
+ "stratneo-nautilus-common",
+ "stratneo-nautilus-core",
+ "stratneo-nautilus-execution",
+ "stratneo-nautilus-live",
+ "stratneo-nautilus-model",
+ "stratneo-nautilus-trading",
+ "tokio",
+ "toml 1.1.2+spec-1.1.0",
+ "ustr",
+]
+
+[[package]]
+name = "stratneo-nautilus-serialization"
+version = "0.57.0"
+dependencies = [
+ "anyhow",
+ "arrow 58.3.0",
+ "capnp 0.25.4",
+ "capnpc",
+ "criterion",
+ "indexmap 2.14.0",
+ "pretty_assertions",
+ "pyo3",
+ "pyo3-stub-gen",
+ "rstest",
+ "rust_decimal",
+ "rust_decimal_macros",
+ "serde",
+ "serde_json",
+ "stratneo-nautilus-core",
+ "stratneo-nautilus-model",
+ "thiserror 2.0.18",
+ "ustr",
+ "uuid",
+ "walkdir",
+]
+
+[[package]]
+name = "stratneo-nautilus-system"
+version = "0.57.0"
+dependencies = [
+ "ahash 0.8.12",
+ "anyhow",
+ "async-trait",
+ "bon",
+ "bytes",
+ "indexmap 2.14.0",
+ "log",
+ "pyo3",
+ "rmp-serde",
+ "rstest",
+ "serde",
+ "stratneo-nautilus-common",
+ "stratneo-nautilus-core",
+ "stratneo-nautilus-data",
+ "stratneo-nautilus-execution",
+ "stratneo-nautilus-model",
+ "stratneo-nautilus-persistence",
+ "stratneo-nautilus-portfolio",
+ "stratneo-nautilus-risk",
+ "stratneo-nautilus-trading",
+ "sysinfo",
+ "tempfile",
+ "toml 1.1.2+spec-1.1.0",
+ "ustr",
+]
+
+[[package]]
+name = "stratneo-nautilus-trading"
+version = "0.57.0"
+dependencies = [
+ "ahash 0.8.12",
+ "anyhow",
+ "bon",
+ "chrono",
+ "chrono-tz",
+ "indexmap 2.14.0",
+ "log",
+ "nautilus-indicators",
+ "pyo3",
+ "pyo3-stub-gen",
+ "rstest",
+ "rust_decimal",
+ "rust_decimal_macros",
+ "serde",
+ "serde_json",
+ "stratneo-nautilus-common",
+ "stratneo-nautilus-core",
+ "stratneo-nautilus-execution",
+ "stratneo-nautilus-model",
+ "stratneo-nautilus-portfolio",
+ "strum 0.28.0",
+ "ustr",
+]
+
+[[package]]
 name = "stringprep"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9395,9 +9457,9 @@ dependencies = [
 
 [[package]]
 name = "syn-solidity"
-version = "1.5.7"
+version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "53f425ae0b12e2f5ae65542e00898d500d4d318b4baf09f40fd0d410454e9947"
+checksum = "ec005042c7d952febc1a3ef5b0f6674e9054aa836877a31c90b20e25b3d31744"
 dependencies = [
  "paste",
  "proc-macro2",
@@ -9427,9 +9489,9 @@ dependencies = [
 
 [[package]]
 name = "sysinfo"
-version = "0.39.1"
+version = "0.39.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a4deba334e1190ba7cb498327affa11e5ece10d26a30ab2f27fcf09504b8d8b6"
+checksum = "14311e7e9a03114cd4b65eedd54e8fed2945e17f08586ae97ef53bc0669f9581"
 dependencies = [
  "libc",
  "memchr",
@@ -9811,7 +9873,7 @@ dependencies = [
  "toml_datetime 1.1.1+spec-1.1.0",
  "toml_parser",
  "toml_writer",
- "winnow 1.0.2",
+ "winnow 1.0.3",
 ]
 
 [[package]]
@@ -9841,7 +9903,7 @@ dependencies = [
  "indexmap 2.14.0",
  "toml_datetime 1.1.1+spec-1.1.0",
  "toml_parser",
- "winnow 1.0.2",
+ "winnow 1.0.3",
 ]
 
 [[package]]
@@ -9850,7 +9912,7 @@ version = "1.1.2+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2abe9b86193656635d2411dc43050282ca48aa31c2451210f4202550afb7526"
 dependencies = [
- "winnow 1.0.2",
+ "winnow 1.0.3",
 ]
 
 [[package]]
@@ -9937,9 +9999,9 @@ dependencies = [
 
 [[package]]
 name = "tower-http"
-version = "0.6.10"
+version = "0.6.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "68d6fdd9f81c2819c9a8b0e0cd91660e7746a8e6ea2ba7c6b2b057985f6bcb51"
+checksum = "4cfcf7e2740e6fc6d4d688b4ef00650406bb94adf4731e43c096c3a19fe40840"
 dependencies = [
  "bitflags",
  "bytes",
@@ -10410,9 +10472,9 @@ checksum = "b8dad83b4f25e74f184f64c43b150b91efe7647395b42289f38e50566d82855b"
 
 [[package]]
 name = "wasm-bindgen"
-version = "0.2.121"
+version = "0.2.122"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "49ace1d07c165b0864824eee619580c4689389afa9dc9ed3a4c75040d82e6790"
+checksum = "3ed04576f974d2b2fba0f38c51dbc5518011e38c36bf1143164be765528fd409"
 dependencies = [
  "cfg-if",
  "once_cell",
@@ -10424,9 +10486,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-futures"
-version = "0.4.71"
+version = "0.4.72"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "96492d0d3ffba25305a7dc88720d250b1401d7edca02cc3bcd50633b424673b8"
+checksum = "9473dbd2991ae90b6291c3c32c30c6187ac49aa32f9905d1cce280ec1e110b0f"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
@@ -10434,9 +10496,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-macro"
-version = "0.2.121"
+version = "0.2.122"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8e68e6f4afd367a562002c05637acb8578ff2dea1943df76afb9e83d177c8578"
+checksum = "916151b09da36bd82f6615cbf3a419e2f0ba23a03c6160e8e92eb6bd4aa1dec6"
 dependencies = [
  "quote",
  "wasm-bindgen-macro-support",
@@ -10444,9 +10506,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-macro-support"
-version = "0.2.121"
+version = "0.2.122"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d95a9ec35c64b2a7cb35d3fead40c4238d0940c86d107136999567a4703259f2"
+checksum = "299047362ccbfce148b67ab7e73349f77748e00c8296f9542adfad2ad82c5c5e"
 dependencies = [
  "bumpalo",
  "proc-macro2",
@@ -10457,9 +10519,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-shared"
-version = "0.2.121"
+version = "0.2.122"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c4e0100b01e9f0d03189a92b96772a1fb998639d981193d7dbab487302513441"
+checksum = "9a929b2c61f11ba3e9bc35b50c1f25cb38e0e892c0c231ae2b8cf78d5dad4437"
 dependencies = [
  "unicode-ident",
 ]
@@ -10540,9 +10602,9 @@ dependencies = [
 
 [[package]]
 name = "web-sys"
-version = "0.3.98"
+version = "0.3.99"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4b572dff8bcf38bad0fa19729c89bb5748b2b9b1d8be70cf90df697e3a8f32aa"
+checksum = "6d621441cfc37b84979402712047321980c178f299193a3589d05b99e8763436"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
@@ -10963,15 +11025,12 @@ name = "winnow"
 version = "0.7.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df79d97927682d2fd8adb29682d1140b343be4ac0f08fd68b7765d9c059d3945"
-dependencies = [
- "memchr",
-]
 
 [[package]]
 name = "winnow"
-version = "1.0.2"
+version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ee1708bef14716a11bae175f579062d4554d95be2c6829f518df847b7b3fdd0"
+checksum = "0592e1c9d151f854e6fd382574c3a0855250e1d9b2f99d9281c6e6391af352f1"
 dependencies = [
  "memchr",
 ]
