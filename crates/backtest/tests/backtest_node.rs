@@ -19,7 +19,8 @@ use std::fmt::Debug;
 
 use nautilus_backtest::{
     config::{BacktestDataConfig, BacktestRunConfig, BacktestVenueConfig, NautilusDataType},
-    node::{BacktestDataObserver, BacktestNode},
+    engine::{BacktestEngine, BacktestRunObserver},
+    node::BacktestNode,
 };
 use nautilus_common::actor::DataActor;
 use nautilus_core::UnixNanos;
@@ -153,9 +154,11 @@ struct RecordingDataObserver {
     chunk_lengths: Vec<usize>,
     first_timestamps: Vec<UnixNanos>,
     last_timestamps: Vec<UnixNanos>,
+    processed_timestamps: Vec<UnixNanos>,
+    completed_count: usize,
 }
 
-impl BacktestDataObserver for RecordingDataObserver {
+impl BacktestRunObserver for RecordingDataObserver {
     fn on_data_chunk(&mut self, data: &[Data]) -> anyhow::Result<()> {
         self.chunk_lengths.push(data.len());
         if let Some(first) = data.first() {
@@ -166,11 +169,25 @@ impl BacktestDataObserver for RecordingDataObserver {
         }
         Ok(())
     }
+
+    fn on_timestamp_processed(
+        &mut self,
+        _engine: &BacktestEngine,
+        timestamp: UnixNanos,
+    ) -> anyhow::Result<()> {
+        self.processed_timestamps.push(timestamp);
+        Ok(())
+    }
+
+    fn on_run_completed(&mut self, _engine: &BacktestEngine) -> anyhow::Result<()> {
+        self.completed_count += 1;
+        Ok(())
+    }
 }
 
 struct FailingDataObserver;
 
-impl BacktestDataObserver for FailingDataObserver {
+impl BacktestRunObserver for FailingDataObserver {
     fn on_data_chunk(&mut self, _data: &[Data]) -> anyhow::Result<()> {
         anyhow::bail!("observer failure")
     }
@@ -1107,6 +1124,8 @@ fn test_run_with_data_observer_oneshot_receives_loaded_data(
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].iterations, 7);
     assert_eq!(observer.chunk_lengths, vec![7]);
+    assert_eq!(observer.processed_timestamps.len(), 7);
+    assert_eq!(observer.completed_count, 1);
 }
 
 #[rstest]
@@ -1153,6 +1172,16 @@ fn test_run_with_data_observer_streaming_preserves_timestamp_boundary(
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].iterations, 12);
     assert_eq!(observer.chunk_lengths, vec![6, 6]);
+    assert_eq!(
+        observer.processed_timestamps,
+        vec![
+            UnixNanos::from(base_ts),
+            UnixNanos::from(base_ts + 1_000_000_000),
+            UnixNanos::from(base_ts + 2_000_000_000),
+            UnixNanos::from(base_ts + 3_000_000_000)
+        ]
+    );
+    assert_eq!(observer.completed_count, 1);
     assert_eq!(
         observer.last_timestamps,
         vec![

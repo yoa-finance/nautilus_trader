@@ -104,6 +104,45 @@ pub struct BacktestEngine {
     backtest_end: Option<UnixNanos>,
 }
 
+/// Observes backtest replay progress without changing engine execution ordering.
+pub trait BacktestRunObserver {
+    /// Called with catalog data immediately before it is added to the engine.
+    ///
+    /// # Errors
+    ///
+    /// Returning an error aborts the backtest run.
+    fn on_data_chunk(&mut self, _data: &[Data]) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Called after all data sharing `timestamp` has been processed and engine state settled.
+    ///
+    /// # Errors
+    ///
+    /// Returning an error aborts the backtest run.
+    fn on_timestamp_processed(
+        &mut self,
+        _engine: &BacktestEngine,
+        _timestamp: UnixNanos,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Called after the backtest has been finalized.
+    ///
+    /// # Errors
+    ///
+    /// Returning an error aborts the backtest run.
+    fn on_run_completed(&mut self, _engine: &BacktestEngine) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
+#[derive(Debug, Default)]
+struct NoopBacktestRunObserver;
+
+impl BacktestRunObserver for NoopBacktestRunObserver {}
+
 impl Debug for BacktestEngine {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct(stringify!(BacktestEngine))
@@ -562,7 +601,24 @@ impl BacktestEngine {
         run_config_id: Option<String>,
         streaming: bool,
     ) -> anyhow::Result<()> {
-        self.run_impl(start, end, run_config_id, streaming)?;
+        let mut observer = NoopBacktestRunObserver;
+        self.run_with_observer(start, end, run_config_id, streaming, &mut observer)
+    }
+
+    /// Runs the backtest with replay observer callbacks.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the backtest or observer encounters an unrecoverable state.
+    pub fn run_with_observer(
+        &mut self,
+        start: Option<UnixNanos>,
+        end: Option<UnixNanos>,
+        run_config_id: Option<String>,
+        streaming: bool,
+        observer: &mut dyn BacktestRunObserver,
+    ) -> anyhow::Result<()> {
+        self.run_impl(start, end, run_config_id, streaming, observer)?;
 
         // Finalize on non-streaming runs, or when a shutdown was triggered
         // at any point during the run (including the trailing settle, module,
@@ -570,6 +626,7 @@ impl BacktestEngine {
         // trader and engines actually stop.
         if !streaming || self.force_stop || self.kernel.is_shutdown_requested() {
             self.end();
+            observer.on_run_completed(self)?;
         }
 
         Ok(())
@@ -581,6 +638,7 @@ impl BacktestEngine {
         end: Option<UnixNanos>,
         run_config_id: Option<String>,
         streaming: bool,
+        observer: &mut dyn BacktestRunObserver,
     ) -> anyhow::Result<()> {
         anyhow::ensure!(
             self.sorted,
@@ -745,6 +803,7 @@ impl BacktestEngine {
             if data.is_none() || data.as_ref().unwrap().ts_init() > prev_last_ns {
                 self.flush_accumulator_events(&clocks, prev_last_ns);
                 self.run_venue_modules(prev_last_ns);
+                observer.on_timestamp_processed(self, prev_last_ns)?;
             }
 
             self.iteration += 1;

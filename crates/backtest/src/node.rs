@@ -33,9 +33,11 @@ use nautilus_persistence::backend::{catalog::ParquetDataCatalog, session::QueryR
 
 use crate::{
     config::{BacktestDataConfig, BacktestRunConfig, NautilusDataType, SimulatedVenueConfig},
-    engine::BacktestEngine,
+    engine::{BacktestEngine, BacktestRunObserver},
     result::BacktestResult,
 };
+
+pub use crate::engine::BacktestRunObserver as BacktestDataObserver;
 
 /// Orchestrates catalog-driven backtests from run configurations.
 ///
@@ -55,24 +57,10 @@ pub struct BacktestNode {
     engines: AHashMap<String, BacktestEngine>,
 }
 
-/// Observes catalog data chunks immediately before they are added to a backtest engine.
-pub trait BacktestDataObserver {
-    /// Called with the exact data chunk that will be passed to [`BacktestEngine::add_data`].
-    ///
-    /// # Errors
-    ///
-    /// Returning an error aborts the backtest and propagates the error to the caller.
-    fn on_data_chunk(&mut self, data: &[Data]) -> anyhow::Result<()>;
-}
-
 #[derive(Debug, Default)]
-struct NoopBacktestDataObserver;
+struct NoopBacktestRunObserver;
 
-impl BacktestDataObserver for NoopBacktestDataObserver {
-    fn on_data_chunk(&mut self, _data: &[Data]) -> anyhow::Result<()> {
-        Ok(())
-    }
-}
+impl BacktestRunObserver for NoopBacktestRunObserver {}
 
 impl BacktestNode {
     /// Creates a new [`BacktestNode`] instance.
@@ -250,21 +238,22 @@ impl BacktestNode {
     ///
     /// Returns an error if building, data loading, or engine execution fails.
     pub fn run(&mut self) -> anyhow::Result<Vec<BacktestResult>> {
-        let mut observer = NoopBacktestDataObserver;
-        self.run_with_data_observer(&mut observer)
+        let mut observer = NoopBacktestRunObserver;
+        self.run_with_observer(&mut observer)
     }
 
-    /// Runs all configured backtests and notifies `observer` for every loaded data chunk.
+    /// Runs all configured backtests and notifies `observer` during replay.
     ///
-    /// The observer receives borrowed data immediately before that chunk is handed to
-    /// [`BacktestEngine::add_data`]. The engine execution ordering is unchanged.
+    /// The observer receives borrowed data immediately before each chunk is handed to
+    /// [`BacktestEngine::add_data`], then receives engine-state callbacks after
+    /// each timestamp is fully processed. The engine execution ordering is unchanged.
     ///
     /// # Errors
     ///
     /// Returns an error if building, data loading, observer processing, or engine execution fails.
-    pub fn run_with_data_observer(
+    pub fn run_with_observer(
         &mut self,
-        observer: &mut dyn BacktestDataObserver,
+        observer: &mut dyn BacktestRunObserver,
     ) -> anyhow::Result<Vec<BacktestResult>> {
         // Auto-build if not already done
         if self.engines.is_empty() {
@@ -299,6 +288,20 @@ impl BacktestNode {
         }
 
         Ok(results)
+    }
+
+    /// Runs all configured backtests and notifies `observer` during replay.
+    ///
+    /// Kept for source compatibility with the original data-observer API.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if building, data loading, observer processing, or engine execution fails.
+    pub fn run_with_data_observer(
+        &mut self,
+        observer: &mut dyn BacktestRunObserver,
+    ) -> anyhow::Result<Vec<BacktestResult>> {
+        self.run_with_observer(observer)
     }
 
     /// Creates a [`ParquetDataCatalog`] from a data config.
@@ -409,7 +412,7 @@ fn validate_configs(configs: &[BacktestRunConfig]) -> anyhow::Result<()> {
 fn run_oneshot(
     engine: &mut BacktestEngine,
     config: &BacktestRunConfig,
-    observer: &mut dyn BacktestDataObserver,
+    observer: &mut dyn BacktestRunObserver,
 ) -> anyhow::Result<()> {
     for data_config in config.data() {
         let data = load_data(data_config, config.start(), config.end())?;
@@ -422,11 +425,12 @@ fn run_oneshot(
     }
 
     engine.sort_data();
-    engine.run(
+    engine.run_with_observer(
         config.start(),
         config.end(),
         Some(config.id().to_string()),
         false,
+        observer,
     )
 }
 
@@ -434,7 +438,7 @@ fn run_streaming(
     engine: &mut BacktestEngine,
     config: &BacktestRunConfig,
     chunk_size: usize,
-    observer: &mut dyn BacktestDataObserver,
+    observer: &mut dyn BacktestRunObserver,
 ) -> anyhow::Result<()> {
     let data_configs = config.data();
 
@@ -468,10 +472,11 @@ fn stream_chunks<I: Iterator<Item = Data>>(
     config: &BacktestRunConfig,
     mut iter: Peekable<I>,
     chunk_size: usize,
-    observer: &mut dyn BacktestDataObserver,
+    observer: &mut dyn BacktestRunObserver,
 ) -> anyhow::Result<()> {
     if iter.peek().is_none() {
         engine.end();
+        observer.on_run_completed(engine)?;
         return Ok(());
     }
 
@@ -492,7 +497,13 @@ fn stream_chunks<I: Iterator<Item = Data>>(
 
         observer.on_data_chunk(&chunk)?;
         engine.add_data(chunk, None, false, true)?;
-        engine.run(next_start, end, Some(config.id().to_string()), true)?;
+        engine.run_with_observer(
+            next_start,
+            end,
+            Some(config.id().to_string()),
+            true,
+            observer,
+        )?;
         engine.clear_data();
 
         // A shutdown request during the chunk already triggered end() inside
@@ -507,6 +518,7 @@ fn stream_chunks<I: Iterator<Item = Data>>(
     }
 
     engine.end();
+    observer.on_run_completed(engine)?;
     Ok(())
 }
 
