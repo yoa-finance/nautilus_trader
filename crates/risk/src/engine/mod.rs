@@ -42,8 +42,8 @@ use nautilus_execution::trailing::{
 use nautilus_model::{
     accounts::{Account, AccountAny},
     enums::{
-        OrderSide, OrderStatus, PositionSide, TimeInForce, TradingState, TrailingOffsetType,
-        TriggerType,
+        AggregationSource, OrderSide, OrderStatus, PositionSide, PriceType, TimeInForce,
+        TradingState, TrailingOffsetType, TriggerType,
     },
     events::{OrderDenied, OrderEventAny, OrderModifyRejected, PositionEvent},
     identifiers::{AccountId, InstrumentId},
@@ -1043,40 +1043,28 @@ impl RiskEngine {
             last_px = match order {
                 OrderAny::Market(_) | OrderAny::MarketToLimit(_) => {
                     if last_px.is_none() {
-                        let quote_price = {
-                            let cache = self.cache.borrow();
-                            cache.quote(&instrument.id()).map(|last_quote| {
-                                match order.order_side() {
-                                    OrderSide::Buy => Ok(last_quote.ask_price),
-                                    OrderSide::Sell => Ok(last_quote.bid_price),
-                                    OrderSide::NoOrderSide => Err(format!(
-                                        "invalid `OrderSide`, was {}",
-                                        order.order_side()
-                                    )),
-                                }
-                            })
-                        };
-
-                        if let Some(quote_price) = quote_price {
-                            match quote_price {
-                                Ok(price) => Some(price),
-                                Err(reason) => {
-                                    self.deny_order(order, &reason);
-                                    return false; // Denied
-                                }
-                            }
-                        } else {
-                            let cache = self.cache.borrow();
-                            let last_trade = cache.trade(&instrument.id());
-
-                            if let Some(last_trade) = last_trade {
-                                Some(last_trade.price)
-                            } else {
+                        match self.resolve_market_order_risk_price(instrument, order) {
+                            Ok(Some(price)) => Some(price),
+                            Ok(None) => {
                                 log::warn!(
                                     "Cannot check MARKET order risk: no prices for {}",
                                     instrument.id()
                                 );
+                                if !self.check_cash_spot_sell_base_balance(
+                                    instrument,
+                                    order,
+                                    &account,
+                                    allow_borrowing,
+                                    available_long_qty_raw,
+                                    &mut cum_sell_qty_raw,
+                                ) {
+                                    return false;
+                                }
                                 continue;
+                            }
+                            Err(reason) => {
+                                self.deny_order(order, &reason);
+                                return false; // Denied
                             }
                         }
                     } else {
@@ -1619,9 +1607,10 @@ impl RiskEngine {
                             log::debug!("Cumulative notional SELL: {cum_notional_sell:?}");
                         }
 
+                        let base_free =
+                            base_free.unwrap_or_else(|| Money::from_raw(0, base_currency));
                         if !allow_borrowing
-                            && let (Some(base_free), Some(cum_notional_sell)) =
-                                (base_free, cum_notional_sell)
+                            && let Some(cum_notional_sell) = cum_notional_sell
                             && cum_notional_sell.raw > base_free.raw
                         {
                             self.deny_order(order, &format!("CUM_NOTIONAL_EXCEEDS_FREE_BALANCE: free={base_free}, cum_notional={cum_notional_sell}"));
@@ -1634,6 +1623,129 @@ impl RiskEngine {
 
         // Finally
         true // Passed
+    }
+
+    fn resolve_market_order_risk_price(
+        &self,
+        instrument: &InstrumentAny,
+        order: &OrderAny,
+    ) -> Result<Option<Price>, String> {
+        let cache = self.cache.borrow();
+
+        if let Some(last_quote) = cache.quote(&instrument.id()) {
+            return match order.order_side() {
+                OrderSide::Buy => Ok(Some(last_quote.ask_price)),
+                OrderSide::Sell => Ok(Some(last_quote.bid_price)),
+                OrderSide::NoOrderSide => {
+                    Err(format!("invalid `OrderSide`, was {}", order.order_side()))
+                }
+            };
+        }
+
+        if let Some(last_trade) = cache.trade(&instrument.id()) {
+            return Ok(Some(last_trade.price));
+        }
+
+        Ok(Self::latest_bar_close_for_order(&cache, instrument, order)?)
+    }
+
+    fn latest_bar_close_for_order(
+        cache: &Cache,
+        instrument: &InstrumentAny,
+        order: &OrderAny,
+    ) -> Result<Option<Price>, String> {
+        let preferred_price_types = match order.order_side() {
+            OrderSide::Buy => [PriceType::Ask, PriceType::Last, PriceType::Mid],
+            OrderSide::Sell => [PriceType::Bid, PriceType::Last, PriceType::Mid],
+            OrderSide::NoOrderSide => {
+                return Err(format!("invalid `OrderSide`, was {}", order.order_side()));
+            }
+        };
+
+        for price_type in preferred_price_types {
+            let mut latest = None;
+            for source in [AggregationSource::External, AggregationSource::Internal] {
+                for bar_type in cache.bar_types(Some(&instrument.id()), Some(&price_type), source) {
+                    if let Some(bar) = cache.bar(bar_type)
+                        && latest.is_none_or(|(ts, _)| bar.ts_event > ts)
+                    {
+                        latest = Some((bar.ts_event, bar.close));
+                    }
+                }
+            }
+            if let Some((_, price)) = latest {
+                return Ok(Some(price));
+            }
+        }
+
+        Ok(None)
+    }
+
+    fn check_cash_spot_sell_base_balance(
+        &self,
+        instrument: &InstrumentAny,
+        order: &OrderAny,
+        account: &AccountAny,
+        allow_borrowing: bool,
+        available_long_qty_raw: QuantityRaw,
+        cum_sell_qty_raw: &mut QuantityRaw,
+    ) -> bool {
+        let AccountAny::Cash(cash) = account else {
+            return true;
+        };
+        if allow_borrowing
+            || cash.base_currency.is_some()
+            || !order.is_sell()
+            || order.is_quote_quantity()
+        {
+            return true;
+        }
+
+        let Some(base_currency) = instrument.base_currency() else {
+            return true;
+        };
+
+        let quantity = order.quantity();
+        let is_position_reducing =
+            order.is_reduce_only() || (*cum_sell_qty_raw + quantity.raw) <= available_long_qty_raw;
+        *cum_sell_qty_raw += quantity.raw;
+        if is_position_reducing {
+            if self.config.debug {
+                log::debug!("Position-reducing order skips base balance check");
+            }
+            return true;
+        }
+
+        let cash_value_raw = match (*cum_sell_qty_raw).try_into() {
+            Ok(value) => value,
+            Err(e) => {
+                self.deny_order(order, &format!("Unable to convert Quantity to f64: {e}"));
+                return false;
+            }
+        };
+        let cash_value = Money::from_raw(cash_value_raw, base_currency);
+        let base_free = cash
+            .balance_free(Some(base_currency))
+            .unwrap_or_else(|| Money::from_raw(0, base_currency));
+
+        if self.config.debug {
+            log::debug!("Cash value: {cash_value:?}");
+            log::debug!("Total: {:?}", cash.balance_total(Some(base_currency)));
+            log::debug!("Locked: {:?}", cash.balance_locked(Some(base_currency)));
+            log::debug!("Free: {base_free:?}");
+        }
+
+        if cash_value.raw > base_free.raw {
+            self.deny_order(
+                order,
+                &format!(
+                    "CUM_NOTIONAL_EXCEEDS_FREE_BALANCE: free={base_free}, cum_notional={cash_value}"
+                ),
+            );
+            return false;
+        }
+
+        true
     }
 
     fn check_price(&self, instrument: &InstrumentAny, price: Option<Price>) -> Option<String> {

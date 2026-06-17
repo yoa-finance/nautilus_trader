@@ -174,6 +174,15 @@ impl LiveNodeBuilder {
         self
     }
 
+    /// Configure whether an error log shuts down the system.
+    ///
+    /// Filtered or bypassed error logs still request shutdown.
+    #[must_use]
+    pub const fn with_shutdown_on_error(mut self, shutdown_on_error: bool) -> Self {
+        self.config.shutdown_on_error = shutdown_on_error;
+        self
+    }
+
     /// Set the connection timeout in seconds.
     #[must_use]
     pub const fn with_timeout_connection(mut self, timeout_secs: u64) -> Self {
@@ -508,5 +517,19 @@ impl LiveNodeBuilder {
         log::info!("Built successfully");
 
         Ok(node)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn with_shutdown_on_error_sets_config() {
+        let builder = LiveNodeBuilder::new(TraderId::from("TRADER-001"), Environment::Sandbox)
+            .unwrap()
+            .with_shutdown_on_error(true);
+
+        assert!(builder.config.shutdown_on_error);
     }
 }

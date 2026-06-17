@@ -35,10 +35,11 @@ use nautilus_core::{UUID4, UnixNanos};
 use nautilus_execution::engine::{ExecutionEngine, config::ExecutionEngineConfig};
 use nautilus_model::{
     accounts::{AccountAny, BettingAccount, CashAccount, MarginAccount, stubs::cash_account},
-    data::{QuoteTick, stubs::quote_audusd},
+    data::{Bar, BarSpecification, BarType, QuoteTick, stubs::quote_audusd},
     enums::{
-        AccountType, LiquiditySide, OmsType, OrderSide, OrderType, PositionSide, TimeInForce,
-        TradingState, TrailingOffsetType, TriggerType,
+        AccountType, AggregationSource, BarAggregation, LiquiditySide, OmsType, OrderSide,
+        OrderType, PositionSide, PriceType, TimeInForce, TradingState, TrailingOffsetType,
+        TriggerType,
     },
     events::{
         AccountState, OrderAccepted, OrderEventAny, OrderEventType, OrderFilled, OrderSubmitted,
@@ -479,6 +480,71 @@ pub fn bitmex_cash_account_state_multi() -> AccountState {
         0.into(),
         0.into(),
         None, // multi cash account
+    )
+}
+
+fn bybit_btcusdt_spot() -> InstrumentAny {
+    InstrumentAny::CurrencyPair(CurrencyPair::new(
+        InstrumentId::from("BTCUSDT-SPOT.BYBIT"),
+        Symbol::from("BTCUSDT"),
+        Currency::BTC(),
+        Currency::USDT(),
+        2,
+        8,
+        Price::from("0.01"),
+        Quantity::from("0.00000001"),
+        Some(Quantity::from("1")),
+        Some(Quantity::from("0.00000001")),
+        Some(Quantity::from("1000")),
+        Some(Quantity::from("0.00000001")),
+        Some(Money::from("100000000 USDT")),
+        Some(Money::from("1 USDT")),
+        None,
+        None,
+        Some(dec!(0.0)),
+        Some(dec!(0.0)),
+        Some(dec!(0.0)),
+        Some(dec!(0.0)),
+        None,
+        UnixNanos::default(),
+        UnixNanos::default(),
+    ))
+}
+
+fn bybit_cash_account_state(balances: Vec<AccountBalance>) -> AccountState {
+    AccountState::new(
+        AccountId::from("BYBIT-001"),
+        AccountType::Cash,
+        balances,
+        vec![],
+        true,
+        uuid4(),
+        UnixNanos::from(0),
+        UnixNanos::from(0),
+        None,
+    )
+}
+
+fn submit_order_command(
+    trader_id: TraderId,
+    client_id: ClientId,
+    strategy_id: StrategyId,
+    order: &OrderAny,
+    risk_engine: &RiskEngine,
+) -> SubmitOrder {
+    SubmitOrder::new(
+        trader_id,
+        Some(client_id),
+        strategy_id,
+        order.instrument_id(),
+        order.client_order_id(),
+        order.init_event().clone(),
+        None,
+        None,
+        None,
+        UUID4::new(),
+        risk_engine.clock().borrow().timestamp_ns(),
+        None,
     )
 }
 
@@ -2727,6 +2793,284 @@ fn test_submit_order_list_sells_when_over_free_balance_then_denies(
             "CUM_NOTIONAL_EXCEEDS_FREE_BALANCE: free=1000000.00 USD, cum_notional=1057300.00 USD"
         )
     );
+}
+
+#[rstest]
+fn test_submit_order_cash_spot_sell_market_without_price_and_missing_base_balance_denies(
+    strategy_id_ema_cross: StrategyId,
+    client_id_binance: ClientId,
+    trader_id: TraderId,
+    process_order_event_handler: TypedIntoMessageSavingHandler<OrderEventAny>,
+    mut simple_cache: Cache,
+) {
+    let instrument = bybit_btcusdt_spot();
+    simple_cache.add_instrument(instrument.clone()).unwrap();
+    simple_cache
+        .add_account(AccountAny::Cash(cash_account(bybit_cash_account_state(
+            vec![AccountBalance::new(
+                Money::from("1000000 USDT"),
+                Money::from("0 USDT"),
+                Money::from("1000000 USDT"),
+            )],
+        ))))
+        .unwrap();
+
+    let mut risk_engine =
+        get_risk_engine(Some(Rc::new(RefCell::new(simple_cache))), None, None, false);
+    let order = OrderTestBuilder::new(OrderType::Market)
+        .instrument_id(instrument.id())
+        .side(OrderSide::Sell)
+        .quantity(Quantity::from("0.0001"))
+        .build();
+    risk_engine
+        .cache()
+        .borrow_mut()
+        .add_order(order.clone(), None, Some(client_id_binance), false)
+        .unwrap();
+
+    risk_engine.execute(TradingCommand::SubmitOrder(submit_order_command(
+        trader_id,
+        client_id_binance,
+        strategy_id_ema_cross,
+        &order,
+        &risk_engine,
+    )));
+
+    let saved_process_messages =
+        get_process_order_event_handler_messages(&process_order_event_handler);
+    assert_eq!(saved_process_messages.len(), 1);
+    assert_eq!(
+        saved_process_messages.first().unwrap().event_type(),
+        OrderEventType::Denied
+    );
+    let message = saved_process_messages
+        .first()
+        .unwrap()
+        .message()
+        .unwrap()
+        .to_string();
+    assert!(message.contains("CUM_NOTIONAL_EXCEEDS_FREE_BALANCE"));
+    assert!(message.contains("BTC"));
+}
+
+#[rstest]
+fn test_submit_order_cash_spot_sell_market_without_price_and_sufficient_base_balance_accepts(
+    strategy_id_ema_cross: StrategyId,
+    client_id_binance: ClientId,
+    trader_id: TraderId,
+    process_order_event_handler: TypedIntoMessageSavingHandler<OrderEventAny>,
+    execute_order_event_handler: TypedIntoMessageSavingHandler<TradingCommand>,
+    mut simple_cache: Cache,
+) {
+    let instrument = bybit_btcusdt_spot();
+    simple_cache.add_instrument(instrument.clone()).unwrap();
+    simple_cache
+        .add_account(AccountAny::Cash(cash_account(bybit_cash_account_state(
+            vec![
+                AccountBalance::new(
+                    Money::from("1 BTC"),
+                    Money::from("0 BTC"),
+                    Money::from("1 BTC"),
+                ),
+                AccountBalance::new(
+                    Money::from("1000000 USDT"),
+                    Money::from("0 USDT"),
+                    Money::from("1000000 USDT"),
+                ),
+            ],
+        ))))
+        .unwrap();
+
+    let mut risk_engine =
+        get_risk_engine(Some(Rc::new(RefCell::new(simple_cache))), None, None, false);
+    let order = OrderTestBuilder::new(OrderType::Market)
+        .instrument_id(instrument.id())
+        .side(OrderSide::Sell)
+        .quantity(Quantity::from("0.0001"))
+        .build();
+    risk_engine
+        .cache()
+        .borrow_mut()
+        .add_order(order.clone(), None, Some(client_id_binance), false)
+        .unwrap();
+
+    risk_engine.execute(TradingCommand::SubmitOrder(submit_order_command(
+        trader_id,
+        client_id_binance,
+        strategy_id_ema_cross,
+        &order,
+        &risk_engine,
+    )));
+
+    let saved_process_messages =
+        get_process_order_event_handler_messages(&process_order_event_handler);
+    assert!(saved_process_messages.is_empty());
+    let saved_execute_messages =
+        get_execute_order_event_handler_messages(&execute_order_event_handler);
+    assert_eq!(saved_execute_messages.len(), 1);
+}
+
+#[rstest]
+fn test_submit_order_list_cash_spot_sells_without_price_when_cumulative_base_exceeds_free_then_denies(
+    strategy_id_ema_cross: StrategyId,
+    client_id_binance: ClientId,
+    trader_id: TraderId,
+    process_order_event_handler: TypedIntoMessageSavingHandler<OrderEventAny>,
+    mut simple_cache: Cache,
+) {
+    let instrument = bybit_btcusdt_spot();
+    simple_cache.add_instrument(instrument.clone()).unwrap();
+    simple_cache
+        .add_account(AccountAny::Cash(cash_account(bybit_cash_account_state(
+            vec![AccountBalance::new(
+                Money::from("1 BTC"),
+                Money::from("0 BTC"),
+                Money::from("1 BTC"),
+            )],
+        ))))
+        .unwrap();
+
+    let order1 = OrderTestBuilder::new(OrderType::Market)
+        .instrument_id(instrument.id())
+        .client_order_id(ClientOrderId::from("O-SPOT-SELL-1"))
+        .side(OrderSide::Sell)
+        .quantity(Quantity::from("0.6"))
+        .build();
+    let order2 = OrderTestBuilder::new(OrderType::Market)
+        .instrument_id(instrument.id())
+        .client_order_id(ClientOrderId::from("O-SPOT-SELL-2"))
+        .side(OrderSide::Sell)
+        .quantity(Quantity::from("0.6"))
+        .build();
+
+    simple_cache
+        .add_order(order1.clone(), None, Some(client_id_binance), true)
+        .unwrap();
+    simple_cache
+        .add_order(order2.clone(), None, Some(client_id_binance), true)
+        .unwrap();
+
+    let mut risk_engine =
+        get_risk_engine(Some(Rc::new(RefCell::new(simple_cache))), None, None, false);
+    let orders = [order1, order2];
+    let order_list = OrderList::new(
+        OrderListId::new("SPOT-SELL-LIST"),
+        instrument.id(),
+        strategy_id_ema_cross,
+        vec![orders[0].client_order_id(), orders[1].client_order_id()],
+        risk_engine.clock().borrow().timestamp_ns(),
+    );
+    let submit_order = SubmitOrderList::new(
+        trader_id,
+        Some(client_id_binance),
+        strategy_id_ema_cross,
+        order_list,
+        orders
+            .iter()
+            .map(|order| order.init_event().clone())
+            .collect(),
+        None,
+        None,
+        None,
+        UUID4::new(),
+        risk_engine.clock().borrow().timestamp_ns(),
+        None,
+    );
+
+    risk_engine.execute(TradingCommand::SubmitOrderList(submit_order));
+
+    let saved_process_messages =
+        get_process_order_event_handler_messages(&process_order_event_handler);
+    assert_eq!(saved_process_messages.len(), 3);
+    for event in &saved_process_messages {
+        assert_eq!(event.event_type(), OrderEventType::Denied);
+    }
+    let message = saved_process_messages
+        .first()
+        .unwrap()
+        .message()
+        .unwrap()
+        .to_string();
+    assert!(message.contains("CUM_NOTIONAL_EXCEEDS_FREE_BALANCE"));
+    assert!(message.contains("1.00000000 BTC"));
+    assert!(message.contains("1.20000000 BTC"));
+}
+
+#[rstest]
+fn test_submit_order_cash_spot_buy_market_uses_bar_price_for_balance_check(
+    strategy_id_ema_cross: StrategyId,
+    client_id_binance: ClientId,
+    trader_id: TraderId,
+    process_order_event_handler: TypedIntoMessageSavingHandler<OrderEventAny>,
+    mut simple_cache: Cache,
+) {
+    let instrument = bybit_btcusdt_spot();
+    simple_cache.add_instrument(instrument.clone()).unwrap();
+    simple_cache
+        .add_account(AccountAny::Cash(cash_account(bybit_cash_account_state(
+            vec![AccountBalance::new(
+                Money::from("100 USDT"),
+                Money::from("0 USDT"),
+                Money::from("100 USDT"),
+            )],
+        ))))
+        .unwrap();
+
+    let bar_type = BarType::new(
+        instrument.id(),
+        BarSpecification::new(1, BarAggregation::Minute, PriceType::Last),
+        AggregationSource::External,
+    );
+    simple_cache
+        .add_bar(Bar::new(
+            bar_type,
+            Price::from("100000.00"),
+            Price::from("100000.00"),
+            Price::from("100000.00"),
+            Price::from("100000.00"),
+            Quantity::from("1"),
+            UnixNanos::from(1),
+            UnixNanos::from(1),
+        ))
+        .unwrap();
+
+    let mut risk_engine =
+        get_risk_engine(Some(Rc::new(RefCell::new(simple_cache))), None, None, false);
+    let order = OrderTestBuilder::new(OrderType::Market)
+        .instrument_id(instrument.id())
+        .side(OrderSide::Buy)
+        .quantity(Quantity::from("0.01"))
+        .build();
+    risk_engine
+        .cache()
+        .borrow_mut()
+        .add_order(order.clone(), None, Some(client_id_binance), false)
+        .unwrap();
+
+    risk_engine.execute(TradingCommand::SubmitOrder(submit_order_command(
+        trader_id,
+        client_id_binance,
+        strategy_id_ema_cross,
+        &order,
+        &risk_engine,
+    )));
+
+    let saved_process_messages =
+        get_process_order_event_handler_messages(&process_order_event_handler);
+    assert_eq!(saved_process_messages.len(), 1);
+    assert_eq!(
+        saved_process_messages.first().unwrap().event_type(),
+        OrderEventType::Denied
+    );
+    let message = saved_process_messages
+        .first()
+        .unwrap()
+        .message()
+        .unwrap()
+        .to_string();
+    assert!(message.contains("NOTIONAL_EXCEEDS_FREE_BALANCE"));
+    assert!(message.contains("100.00000000, USDT"));
+    assert!(message.contains("1000.00000000, USDT"));
 }
 
 #[rstest]
