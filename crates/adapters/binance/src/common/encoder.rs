@@ -131,7 +131,7 @@ const O_FORMAT_B62_LEN: usize = 13;
 const UUID_B62_LEN: usize = 22;
 
 /// Maximum `newClientOrderId` length allowed by the Binance API.
-const MAX_CLIENT_ORDER_ID_LEN: usize = 36;
+pub const MAX_CLIENT_ORDER_ID_LEN: usize = 36;
 
 const SIGNAL_O_HYPHENS: u8 = b'T';
 const SIGNAL_O_NO_HYPHENS: u8 = b't';
@@ -184,10 +184,39 @@ pub fn encode_broker_id(client_order_id: &ClientOrderId, broker_id: &str) -> Str
     }
 
     log::warn!(
-        "ClientOrderId '{id_str}' ({} chars) exceeds broker ID encoding budget ({budget} chars), sending without prefix",
+        "ClientOrderId '{id_str}' ({} chars) cannot be encoded with broker ID prefix budget ({budget} chars), sending without prefix",
         id_str.len(),
     );
     id_str.to_string()
+}
+
+/// Encodes and validates a `ClientOrderId` for Binance client order ID fields.
+pub fn encode_binance_client_order_id(
+    client_order_id: &ClientOrderId,
+    broker_id: &str,
+) -> anyhow::Result<String> {
+    let encoded = encode_broker_id(client_order_id, broker_id);
+    validate_binance_client_order_id(&encoded)?;
+    Ok(encoded)
+}
+
+pub fn validate_binance_client_order_id(value: &str) -> anyhow::Result<()> {
+    if is_valid_binance_client_order_id(value) {
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "Binance client order id `{value}` must match ^[A-Za-z0-9_-]{{1,{MAX_CLIENT_ORDER_ID_LEN}}}$"
+    );
+}
+
+#[must_use]
+pub fn is_valid_binance_client_order_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_CLIENT_ORDER_ID_LEN
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 /// Decodes an encoded string back to the original `ClientOrderId` value.
@@ -664,6 +693,34 @@ mod tests {
     }
 
     #[rstest]
+    fn test_encode_binance_client_order_id_rejects_too_long_passthrough() {
+        let coid = ClientOrderId::from("this-is-a-very-long-order-id-that-exceeds-everything");
+
+        let error = encode_binance_client_order_id(&coid, TEST_BROKER_ID).unwrap_err();
+
+        assert!(error.to_string().contains("must match"));
+    }
+
+    #[rstest]
+    fn test_encode_binance_client_order_id_rejects_invalid_raw_chars() {
+        let coid = ClientOrderId::from("order.with.dot");
+
+        let error = encode_binance_client_order_id(&coid, TEST_BROKER_ID).unwrap_err();
+
+        assert!(error.to_string().contains("must match"));
+    }
+
+    #[rstest]
+    fn test_encode_binance_client_order_id_accepts_36_char_encoded_raw() {
+        let coid = ClientOrderId::from("abcdefghijklmnopqrstuvwx");
+
+        let encoded = encode_binance_client_order_id(&coid, TEST_BROKER_ID).unwrap();
+
+        assert_eq!(encoded.len(), MAX_CLIENT_ORDER_ID_LEN);
+        assert!(is_valid_binance_client_order_id(&encoded));
+    }
+
+    #[rstest]
     fn test_o_format_always_25_chars() {
         let test_cases = [
             "O-20200101-000000-000-000-0",
@@ -699,10 +756,6 @@ mod tests {
 
     #[rstest]
     fn test_encoded_chars_are_binance_valid() {
-        let valid = |c: char| {
-            c.is_ascii_alphanumeric() || c == '.' || c == ':' || c == '/' || c == '_' || c == '-'
-        };
-
         let ids = [
             "O-20260131-174827-001-001-1",
             "550e8400-e29b-41d4-a716-446655440000",
@@ -713,7 +766,7 @@ mod tests {
             let coid = ClientOrderId::from(id_str);
             let encoded = encode_broker_id(&coid, TEST_BROKER_ID);
             assert!(
-                encoded.chars().all(valid),
+                is_valid_binance_client_order_id(&encoded),
                 "'{encoded}' contains invalid Binance characters"
             );
         }

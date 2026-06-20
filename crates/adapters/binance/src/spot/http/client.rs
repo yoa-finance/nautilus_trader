@@ -77,7 +77,7 @@ use crate::{
             BINANCE_SPOT_RATE_LIMITS, BinanceRateLimitQuota,
         },
         credential::SigningCredential,
-        encoder::{decode_broker_id, encode_broker_id},
+        encoder::{decode_broker_id, encode_binance_client_order_id},
         enums::{
             BinanceEnvironment, BinanceProductType, BinanceRateLimitInterval, BinanceRateLimitType,
             BinanceSide, BinanceTimeInForce,
@@ -1759,8 +1759,9 @@ impl BinanceSpotHttpClient {
             .transpose()
             .map_err(|_| anyhow::anyhow!("Invalid venue order ID"))?;
 
-        let client_id_str =
-            client_order_id.map(|id| encode_broker_id(&id, BINANCE_NAUTILUS_SPOT_BROKER_ID));
+        let client_id_str = client_order_id
+            .map(|id| encode_binance_client_order_id(&id, BINANCE_NAUTILUS_SPOT_BROKER_ID))
+            .transpose()?;
 
         let order = match self
             .inner
@@ -1983,7 +1984,8 @@ impl BinanceSpotHttpClient {
         let price_str = price.map(|p| p.to_string());
         let stop_price_str = trigger_price.map(|p| p.to_string());
         let iceberg_qty_str = display_qty.map(|q| q.to_string());
-        let client_id_str = encode_broker_id(&client_order_id, BINANCE_NAUTILUS_SPOT_BROKER_ID);
+        let client_id_str =
+            encode_binance_client_order_id(&client_order_id, BINANCE_NAUTILUS_SPOT_BROKER_ID)?;
 
         if quote_quantity && binance_order_type != BinanceSpotOrderType::Market {
             return Err(Self::command_validation_error(
@@ -2089,7 +2091,8 @@ impl BinanceSpotHttpClient {
 
         let qty_str = quantity.to_string();
         let price_str = price.map(|p| p.to_string());
-        let client_id_str = encode_broker_id(&client_order_id, BINANCE_NAUTILUS_SPOT_BROKER_ID);
+        let client_id_str =
+            encode_binance_client_order_id(&client_order_id, BINANCE_NAUTILUS_SPOT_BROKER_ID)?;
 
         let response = self
             .inner
@@ -2150,8 +2153,9 @@ impl BinanceSpotHttpClient {
             None => None,
         };
 
-        let client_id_str =
-            client_order_id.map(|id| encode_broker_id(&id, BINANCE_NAUTILUS_SPOT_BROKER_ID));
+        let client_id_str = client_order_id
+            .map(|id| encode_binance_client_order_id(&id, BINANCE_NAUTILUS_SPOT_BROKER_ID))
+            .transpose()?;
 
         let response = self
             .inner

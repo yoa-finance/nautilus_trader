@@ -81,7 +81,7 @@ use crate::{
             OrderIdentity, PendingOperation, PendingRequest, WsDispatchState,
             ensure_accepted_emitted,
         },
-        encoder::{decode_broker_id, encode_broker_id},
+        encoder::{decode_broker_id, encode_binance_client_order_id},
         enums::{BinanceSide, BinanceTimeInForce},
         parse::{
             parse_required_decimal, parse_required_price_at_precision,
@@ -372,7 +372,7 @@ impl BinanceSpotExecutionClient {
         Ok(())
     }
 
-    fn cancel_order_internal(&self, cmd: &CancelOrder) {
+    fn cancel_order_internal(&self, cmd: &CancelOrder) -> anyhow::Result<()> {
         let event_emitter = self.emitter.clone();
         let trader_id = self.core.trader_id;
         let account_id = self.core.account_id;
@@ -382,7 +382,7 @@ impl BinanceSpotExecutionClient {
         if self.ws_trading_active() {
             let ws_client = self.ws_trading_client.as_ref().unwrap().clone();
             let dispatch_state = self.dispatch_state.clone();
-            let params = build_cancel_order_params(&command);
+            let params = build_cancel_order_params(&command)?;
 
             // Pre-register before sending to avoid response racing the insert
             let request_id = ws_client.next_request_id();
@@ -476,6 +476,8 @@ impl BinanceSpotExecutionClient {
                 Ok(())
             });
         }
+
+        Ok(())
     }
 
     fn spawn_task<F>(&self, description: &'static str, fut: F)
@@ -944,14 +946,16 @@ impl ExecutionClient for BinanceSpotExecutionClient {
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
 
-        let params = build_oco_order_list_params(cmd.params.as_ref(), &orders)?;
-
         for order in &orders {
             if order.is_closed() {
                 let client_order_id = order.client_order_id();
                 anyhow::bail!("Cannot submit closed order list child {client_order_id}");
             }
+        }
 
+        let params = build_oco_order_list_params(cmd.params.as_ref(), &orders)?;
+
+        for order in &orders {
             log::debug!("OrderSubmitted client_order_id={}", order.client_order_id());
             self.emitter.emit_order_submitted(order);
 
@@ -1211,8 +1215,7 @@ impl ExecutionClient for BinanceSpotExecutionClient {
     }
 
     fn cancel_order(&self, cmd: CancelOrder) -> anyhow::Result<()> {
-        self.cancel_order_internal(&cmd);
-        Ok(())
+        self.cancel_order_internal(&cmd)
     }
 
     fn cancel_all_orders(&self, cmd: CancelAllOrders) -> anyhow::Result<()> {
@@ -1304,30 +1307,32 @@ impl ExecutionClient for BinanceSpotExecutionClient {
                         if let Some(venue_order_id) = cancel.venue_order_id {
                             let order_id = venue_order_id.inner().parse::<i64>().unwrap_or(0);
                             if order_id != 0 {
-                                BatchCancelItem::by_order_id(
+                                Ok(BatchCancelItem::by_order_id(
                                     command.instrument_id.symbol.to_string(),
                                     order_id,
-                                )
+                                ))
                             } else {
-                                BatchCancelItem::by_client_order_id(
-                                    command.instrument_id.symbol.to_string(),
-                                    encode_broker_id(
-                                        &cancel.client_order_id,
-                                        BINANCE_NAUTILUS_SPOT_BROKER_ID,
-                                    ),
-                                )
-                            }
-                        } else {
-                            BatchCancelItem::by_client_order_id(
-                                command.instrument_id.symbol.to_string(),
-                                encode_broker_id(
+                                let client_order_id = encode_binance_client_order_id(
                                     &cancel.client_order_id,
                                     BINANCE_NAUTILUS_SPOT_BROKER_ID,
-                                ),
-                            )
+                                )?;
+                                Ok(BatchCancelItem::by_client_order_id(
+                                    command.instrument_id.symbol.to_string(),
+                                    client_order_id,
+                                ))
+                            }
+                        } else {
+                            let client_order_id = encode_binance_client_order_id(
+                                &cancel.client_order_id,
+                                BINANCE_NAUTILUS_SPOT_BROKER_ID,
+                            )?;
+                            Ok(BatchCancelItem::by_client_order_id(
+                                command.instrument_id.symbol.to_string(),
+                                client_order_id,
+                            ))
                         }
                     })
-                    .collect();
+                    .collect::<anyhow::Result<_>>()?;
 
                 match http_client.batch_cancel_orders(&batch_items).await {
                     Ok(results) => {
@@ -1681,7 +1686,8 @@ fn build_new_order_params(
         (Some(qty_str), None)
     };
 
-    let client_id_str = encode_broker_id(&client_order_id, BINANCE_NAUTILUS_SPOT_BROKER_ID);
+    let client_id_str =
+        encode_binance_client_order_id(&client_order_id, BINANCE_NAUTILUS_SPOT_BROKER_ID)?;
 
     Ok(NewOrderParams {
         symbol: order.instrument_id().symbol.to_string(),
@@ -1783,8 +1789,9 @@ fn build_oco_order_list_params(
     let side = BinanceSide::try_from(first.order_side())?;
     let quantity = first.quantity().to_string();
     let target_client_id =
-        encode_broker_id(&target.client_order_id(), BINANCE_NAUTILUS_SPOT_BROKER_ID);
-    let stop_client_id = encode_broker_id(&stop.client_order_id(), BINANCE_NAUTILUS_SPOT_BROKER_ID);
+        encode_binance_client_order_id(&target.client_order_id(), BINANCE_NAUTILUS_SPOT_BROKER_ID)?;
+    let stop_client_id =
+        encode_binance_client_order_id(&stop.client_order_id(), BINANCE_NAUTILUS_SPOT_BROKER_ID)?;
     let stop_type = match stop.order_type() {
         OrderType::StopMarket => BinanceSpotOrderType::StopLoss,
         OrderType::StopLimit => BinanceSpotOrderType::StopLossLimit,
@@ -1845,16 +1852,23 @@ fn has_oco_contingency_param(params: Option<&nautilus_core::params::Params>) -> 
         .is_some_and(|value| value.eq_ignore_ascii_case(OCO_CONTINGENCY_TYPE_VALUE))
 }
 
-fn build_cancel_order_params(cmd: &CancelOrder) -> CancelOrderParams {
+fn build_cancel_order_params(cmd: &CancelOrder) -> anyhow::Result<CancelOrderParams> {
     let order_id = cmd
         .venue_order_id
         .and_then(|id| id.inner().parse::<i64>().ok());
 
     if let Some(order_id) = order_id {
-        CancelOrderParams::by_order_id(cmd.instrument_id.symbol.to_string(), order_id)
+        Ok(CancelOrderParams::by_order_id(
+            cmd.instrument_id.symbol.to_string(),
+            order_id,
+        ))
     } else {
-        let client_id_str = encode_broker_id(&cmd.client_order_id, BINANCE_NAUTILUS_SPOT_BROKER_ID);
-        CancelOrderParams::by_client_order_id(cmd.instrument_id.symbol.to_string(), client_id_str)
+        let client_id_str =
+            encode_binance_client_order_id(&cmd.client_order_id, BINANCE_NAUTILUS_SPOT_BROKER_ID)?;
+        Ok(CancelOrderParams::by_client_order_id(
+            cmd.instrument_id.symbol.to_string(),
+            client_id_str,
+        ))
     }
 }
 
@@ -1876,7 +1890,8 @@ fn build_cancel_replace_params(
         })
         .transpose()?;
 
-    let client_id_str = encode_broker_id(&cmd.client_order_id, BINANCE_NAUTILUS_SPOT_BROKER_ID);
+    let client_id_str =
+        encode_binance_client_order_id(&cmd.client_order_id, BINANCE_NAUTILUS_SPOT_BROKER_ID)?;
 
     Ok(CancelReplaceOrderParams {
         symbol: cmd.instrument_id.symbol.to_string(),
@@ -2413,7 +2428,7 @@ mod tests {
     use serde_json::Value;
 
     use super::*;
-    use crate::common::enums::BinanceEnvironment;
+    use crate::common::{encoder::encode_broker_id, enums::BinanceEnvironment};
 
     #[rstest]
     fn test_build_oco_order_list_params_maps_sell_target_above_stop_below() {
@@ -2538,6 +2553,89 @@ mod tests {
         let error = build_oco_order_list_params(Some(&params), &orders).unwrap_err();
 
         assert!(error.to_string().contains("post-only LIMIT target"));
+    }
+
+    #[rstest]
+    fn test_build_new_order_params_rejects_invalid_client_order_id_before_http() {
+        let order = test_order(
+            OrderType::Limit,
+            "order.with.dot",
+            OrderSide::Buy,
+            "0.001",
+            Some("95.00"),
+            None,
+            false,
+        );
+
+        let error =
+            build_new_order_params(&order, order.client_order_id(), false, false).unwrap_err();
+
+        assert!(error.to_string().contains("Binance client order id"));
+    }
+
+    #[rstest]
+    fn test_build_oco_order_list_params_rejects_too_long_child_client_order_id_before_http() {
+        let params = oco_order_list_params();
+        let orders = vec![
+            test_order(
+                OrderType::Limit,
+                "G-r8dc659b0e9f9-n_exit_plan-target-1-2",
+                OrderSide::Sell,
+                "0.001",
+                Some("120.00"),
+                None,
+                true,
+            ),
+            test_order(
+                OrderType::StopMarket,
+                "G-r8dc659b0e9f9-n_exit_plan-stop-3",
+                OrderSide::Sell,
+                "0.001",
+                None,
+                Some("95.00"),
+                false,
+            ),
+        ];
+
+        let error = build_oco_order_list_params(Some(&params), &orders).unwrap_err();
+
+        assert!(error.to_string().contains("Binance client order id"));
+    }
+
+    #[rstest]
+    fn test_build_oco_order_list_params_accepts_max_raw_child_client_order_ids() {
+        let params = oco_order_list_params();
+        let orders = vec![
+            test_order(
+                OrderType::Limit,
+                "abcdefghijklmnopqrstuvwx",
+                OrderSide::Sell,
+                "0.001",
+                Some("120.00"),
+                None,
+                true,
+            ),
+            test_order(
+                OrderType::StopMarket,
+                "abcdefghijklmnopqrstuvw1",
+                OrderSide::Sell,
+                "0.001",
+                None,
+                Some("95.00"),
+                false,
+            ),
+        ];
+
+        let request = build_oco_order_list_params(Some(&params), &orders).unwrap();
+
+        assert_eq!(
+            request.above_client_order_id.as_deref().map(str::len),
+            Some(36)
+        );
+        assert_eq!(
+            request.below_client_order_id.as_deref().map(str::len),
+            Some(36)
+        );
     }
 
     #[rstest]
