@@ -8877,7 +8877,7 @@ dependencies = [
 
 [[package]]
 name = "stratneo-nautilus-binance"
-version = "0.58.0"
+version = "0.58.1"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",

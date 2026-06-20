@@ -59,15 +59,15 @@ use super::{
     models::{
         AvgPrice, BatchCancelResult, BatchOrderResult, BinanceAccountInfo, BinanceAccountTrade,
         BinanceCancelOrderResponse, BinanceDepth, BinanceKlines, BinanceNewOrderResponse,
-        BinanceOrderResponse, BinanceTrades, BookTicker, ListenKeyResponse, Ticker24hr,
-        TickerPrice, TradeFee,
+        BinanceOrderListResponse, BinanceOrderResponse, BinanceTrades, BookTicker,
+        ListenKeyResponse, Ticker24hr, TickerPrice, TradeFee,
     },
     parse,
     query::{
         AccountInfoParams, AccountTradesParams, AllOrdersParams, AvgPriceParams, BatchCancelItem,
         BatchOrderItem, CancelOpenOrdersParams, CancelOrderParams, CancelReplaceOrderParams,
-        DepthParams, KlinesParams, ListenKeyParams, NewOrderParams, OpenOrdersParams,
-        QueryOrderParams, TickerParams, TradeFeeParams, TradesParams,
+        DepthParams, KlinesParams, ListenKeyParams, NewOrderListOcoParams, NewOrderParams,
+        OpenOrdersParams, QueryOrderParams, TickerParams, TradeFeeParams, TradesParams,
     },
 };
 use crate::{
@@ -133,6 +133,7 @@ struct RateLimitConfig {
 #[derive(Debug, Clone)]
 pub struct BinanceRawSpotHttpClient {
     client: HttpClient,
+    json_client: HttpClient,
     base_url: String,
     credential: Option<SigningCredential>,
     recv_window: Option<u64>,
@@ -175,6 +176,15 @@ impl BinanceRawSpotHttpClient {
         let client = HttpClient::new(
             headers,
             vec![BINANCE_API_KEY_HEADER.to_string()],
+            keyed_quotas.clone(),
+            default_quota,
+            timeout_secs,
+            proxy_url.clone(),
+        )?;
+
+        let json_client = HttpClient::new(
+            Self::json_headers(&credential),
+            vec![BINANCE_API_KEY_HEADER.to_string()],
             keyed_quotas,
             default_quota,
             timeout_secs,
@@ -183,6 +193,7 @@ impl BinanceRawSpotHttpClient {
 
         Ok(Self {
             client,
+            json_client,
             base_url,
             credential,
             recv_window,
@@ -244,6 +255,23 @@ impl BinanceRawSpotHttpClient {
         P: Serialize + ?Sized,
     {
         self.request(Method::POST, path, params, true, true).await
+    }
+
+    /// Performs a signed POST request and expects a JSON response.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if credentials are missing or the request fails.
+    pub async fn post_signed_json<P>(
+        &self,
+        path: &str,
+        params: Option<&P>,
+    ) -> BinanceSpotHttpResult<Vec<u8>>
+    where
+        P: Serialize + ?Sized,
+    {
+        self.request_json(Method::POST, path, params, true, true)
+            .await
     }
 
     /// Performs a signed DELETE request and returns raw response bytes.
@@ -311,6 +339,73 @@ impl BinanceRawSpotHttpClient {
 
         let response = self
             .client
+            .request(
+                method,
+                url,
+                None::<&HashMap<String, Vec<String>>>,
+                Some(headers),
+                None,
+                None,
+                Some(keys),
+            )
+            .await?;
+
+        if !response.status.is_success() {
+            return self.parse_error_response(&response);
+        }
+
+        Ok(response.body.to_vec())
+    }
+
+    async fn request_json<P>(
+        &self,
+        method: Method,
+        path: &str,
+        params: Option<&P>,
+        signed: bool,
+        use_order_quota: bool,
+    ) -> BinanceSpotHttpResult<Vec<u8>>
+    where
+        P: Serialize + ?Sized,
+    {
+        let mut query = params
+            .map(serde_urlencoded::to_string)
+            .transpose()
+            .map_err(|e| BinanceSpotHttpError::ValidationError(e.to_string()))?
+            .unwrap_or_default();
+
+        let mut headers = HashMap::new();
+
+        if signed {
+            let cred = self
+                .credential
+                .as_ref()
+                .ok_or(BinanceSpotHttpError::MissingCredentials)?;
+
+            if !query.is_empty() {
+                query.push('&');
+            }
+
+            let timestamp = Utc::now().timestamp_millis();
+            query.push_str(&format!("timestamp={timestamp}"));
+
+            if let Some(recv_window) = self.recv_window {
+                query.push_str(&format!("&recvWindow={recv_window}"));
+            }
+
+            let signature = Self::percent_encode(&cred.sign(&query));
+            query.push_str(&format!("&signature={signature}"));
+            headers.insert(
+                BINANCE_API_KEY_HEADER.to_string(),
+                cred.api_key().to_string(),
+            );
+        }
+
+        let url = self.build_url(path, &query);
+        let keys = self.rate_limit_keys(use_order_quota);
+
+        let response = self
+            .json_client
             .request(
                 method,
                 url,
@@ -418,6 +513,20 @@ impl BinanceRawSpotHttpClient {
         headers.insert("User-Agent".to_string(), NAUTILUS_USER_AGENT.to_string());
         headers.insert("Accept".to_string(), "application/sbe".to_string());
         headers.insert("X-MBX-SBE".to_string(), SBE_SCHEMA_HEADER.to_string());
+
+        if let Some(cred) = credential {
+            headers.insert(
+                BINANCE_API_KEY_HEADER.to_string(),
+                cred.api_key().to_string(),
+            );
+        }
+        headers
+    }
+
+    fn json_headers(credential: &Option<SigningCredential>) -> HashMap<String, String> {
+        let mut headers = HashMap::new();
+        headers.insert("User-Agent".to_string(), NAUTILUS_USER_AGENT.to_string());
+        headers.insert("Accept".to_string(), "application/json".to_string());
 
         if let Some(cred) = credential {
             headers.insert(
@@ -846,6 +955,21 @@ impl BinanceRawSpotHttpClient {
             .map_err(|e| BinanceSpotHttpError::JsonError(e.to_string()))?;
 
         Ok(results)
+    }
+
+    /// Submits a native Spot OCO order list.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if credentials are missing, the request fails, or
+    /// JSON parsing fails.
+    pub async fn submit_oco_order_list(
+        &self,
+        params: &NewOrderListOcoParams,
+    ) -> BinanceSpotHttpResult<BinanceOrderListResponse> {
+        let bytes = self.post_signed_json("orderList/oco", Some(params)).await?;
+
+        serde_json::from_slice(&bytes).map_err(|e| BinanceSpotHttpError::JsonError(e.to_string()))
     }
 
     /// Cancels multiple orders in a single request (up to 5 orders).
@@ -1911,6 +2035,18 @@ impl BinanceSpotHttpClient {
         orders: &[BatchOrderItem],
     ) -> BinanceSpotHttpResult<Vec<BatchOrderResult>> {
         self.inner.batch_submit_orders(orders).await
+    }
+
+    /// Submits a native Spot OCO order list.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request fails or JSON parsing fails.
+    pub async fn submit_oco_order_list(
+        &self,
+        params: &NewOrderListOcoParams,
+    ) -> BinanceSpotHttpResult<BinanceOrderListResponse> {
+        self.inner.submit_oco_order_list(params).await
     }
 
     /// Modifies an existing order (cancel and replace atomically).

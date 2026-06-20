@@ -43,7 +43,7 @@ use nautilus_core::{
 use nautilus_live::{ExecutionClientCore, ExecutionEventEmitter};
 use nautilus_model::{
     accounts::AccountAny,
-    enums::{LiquiditySide, OmsType, OrderType},
+    enums::{LiquiditySide, OmsType, OrderSide, OrderType},
     events::{
         AccountState, OrderAccepted, OrderCancelRejected, OrderCanceled, OrderEventAny,
         OrderFilled, OrderModifyRejected, OrderRejected, OrderUpdated,
@@ -98,10 +98,16 @@ use crate::{
             client::BinanceSpotHttpClient,
             error::BinanceSpotHttpError,
             models::BatchCancelResult,
-            query::{BatchCancelItem, CancelOrderParams, CancelReplaceOrderParams, NewOrderParams},
+            query::{
+                BatchCancelItem, CancelOrderParams, CancelReplaceOrderParams,
+                NewOrderListOcoParams, NewOrderParams,
+            },
         },
     },
 };
+
+const OCO_CONTINGENCY_TYPE_PARAM: &str = "contingency_type";
+const OCO_CONTINGENCY_TYPE_VALUE: &str = "OCO";
 
 /// Live execution client for Binance Spot trading.
 ///
@@ -925,10 +931,123 @@ impl ExecutionClient for BinanceSpotExecutionClient {
     }
 
     fn submit_order_list(&self, cmd: SubmitOrderList) -> anyhow::Result<()> {
-        log::warn!(
-            "submit_order_list not yet implemented for Binance Spot execution client (received {} orders)",
-            cmd.order_list.client_order_ids.len()
-        );
+        let orders = cmd
+            .order_list
+            .client_order_ids
+            .iter()
+            .map(|client_order_id| {
+                self.core
+                    .cache()
+                    .order(client_order_id)
+                    .map(|o| o.clone())
+                    .ok_or_else(|| anyhow::anyhow!("Order not found: {client_order_id}"))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+
+        let params = build_oco_order_list_params(cmd.params.as_ref(), &orders)?;
+
+        for order in &orders {
+            if order.is_closed() {
+                let client_order_id = order.client_order_id();
+                anyhow::bail!("Cannot submit closed order list child {client_order_id}");
+            }
+
+            log::debug!("OrderSubmitted client_order_id={}", order.client_order_id());
+            self.emitter.emit_order_submitted(order);
+
+            self.dispatch_state.order_identities.insert(
+                order.client_order_id(),
+                OrderIdentity {
+                    instrument_id: order.instrument_id(),
+                    strategy_id: order.strategy_id(),
+                    order_side: order.order_side(),
+                    order_type: order.order_type(),
+                    price: order.price(),
+                    quantity: order.quantity(),
+                },
+            );
+        }
+
+        let event_emitter = self.emitter.clone();
+        let http_client = self.http_client.clone();
+        let dispatch_state = self.dispatch_state.clone();
+        let clock = self.clock;
+        let mut orders_by_client_id = AHashMap::new();
+        for order in orders {
+            orders_by_client_id.insert(order.client_order_id(), order);
+        }
+
+        self.spawn_task("submit_oco_order_list_http", async move {
+            match http_client.submit_oco_order_list(&params).await {
+                Ok(response) => {
+                    let mut accepted_ids = Vec::new();
+                    for report in &response.order_reports {
+                        let decoded_id = ClientOrderId::from(decode_broker_id(
+                            &report.client_order_id,
+                            BINANCE_NAUTILUS_SPOT_BROKER_ID,
+                        ));
+
+                        let Some(order) = orders_by_client_id.get(&decoded_id) else {
+                            log::warn!(
+                                "No cached OCO child order for accepted client_order_id={decoded_id}"
+                            );
+                            continue;
+                        };
+
+                        let ts_event = report
+                            .transact_time
+                            .or(response.transaction_time)
+                            .map(|millis| UnixNanos::from_millis(millis as u64))
+                            .unwrap_or_else(|| clock.get_time_ns());
+                        let venue_order_id = VenueOrderId::new(report.order_id.to_string());
+                        event_emitter.emit_order_accepted(order, venue_order_id, ts_event);
+                        dispatch_state.insert_accepted(decoded_id);
+                        accepted_ids.push(decoded_id);
+                    }
+
+                    if accepted_ids.is_empty() {
+                        let ts_event = response
+                            .transaction_time
+                            .map(|millis| UnixNanos::from_millis(millis as u64))
+                            .unwrap_or_else(|| clock.get_time_ns());
+                        for order_ref in &response.orders {
+                            let decoded_id = ClientOrderId::from(decode_broker_id(
+                                &order_ref.client_order_id,
+                                BINANCE_NAUTILUS_SPOT_BROKER_ID,
+                            ));
+
+                            let Some(order) = orders_by_client_id.get(&decoded_id) else {
+                                log::warn!(
+                                    "No cached OCO child order for accepted client_order_id={decoded_id}"
+                                );
+                                continue;
+                            };
+
+                            let venue_order_id = VenueOrderId::new(order_ref.order_id.to_string());
+                            event_emitter.emit_order_accepted(order, venue_order_id, ts_event);
+                            dispatch_state.insert_accepted(decoded_id);
+                        }
+                    }
+                }
+                Err(err) => {
+                    let reason = err.to_string();
+                    let due_post_only = is_spot_post_only_rejection(&err);
+                    let ts_event = clock.get_time_ns();
+                    for order in orders_by_client_id.values() {
+                        let client_order_id = order.client_order_id();
+                        dispatch_state.cleanup_terminal(client_order_id);
+                        event_emitter.emit_order_rejected(
+                            order,
+                            &reason,
+                            ts_event,
+                            due_post_only,
+                        );
+                    }
+                }
+            }
+            Ok(())
+        });
+
         Ok(())
     }
 
@@ -1583,6 +1702,149 @@ fn build_new_order_params(
     })
 }
 
+fn build_oco_order_list_params(
+    command_params: Option<&nautilus_core::params::Params>,
+    orders: &[nautilus_model::orders::OrderAny],
+) -> anyhow::Result<NewOrderListOcoParams> {
+    if !has_oco_contingency_param(command_params) {
+        anyhow::bail!(
+            "Binance Spot submit_order_list only supports params.{OCO_CONTINGENCY_TYPE_PARAM}=\
+             {OCO_CONTINGENCY_TYPE_VALUE}"
+        );
+    }
+
+    if orders.len() != 2 {
+        anyhow::bail!(
+            "Binance Spot OCO order list requires exactly 2 child orders, received {}",
+            orders.len()
+        );
+    }
+
+    let first = &orders[0];
+    let second = &orders[1];
+    if first.instrument_id() != second.instrument_id() {
+        anyhow::bail!("Binance Spot OCO child orders must use the same instrument");
+    }
+    if first.order_side() != second.order_side() {
+        anyhow::bail!("Binance Spot OCO child orders must use the same side");
+    }
+    if first.quantity() != second.quantity() {
+        anyhow::bail!("Binance Spot OCO child orders must use the same quantity");
+    }
+    if first.is_quote_quantity() || second.is_quote_quantity() {
+        anyhow::bail!("Binance Spot OCO does not support quoteOrderQty child orders");
+    }
+
+    let target = orders
+        .iter()
+        .find(|order| order.order_type() == OrderType::Limit && order.is_post_only())
+        .ok_or_else(|| anyhow::anyhow!("Binance Spot OCO requires one post-only LIMIT target"))?;
+    let stop = orders
+        .iter()
+        .find(|order| {
+            matches!(
+                order.order_type(),
+                OrderType::StopMarket | OrderType::StopLimit
+            )
+        })
+        .ok_or_else(|| {
+            anyhow::anyhow!("Binance Spot OCO requires one STOP_LOSS or STOP_LOSS_LIMIT child")
+        })?;
+
+    if target.client_order_id() == stop.client_order_id() {
+        anyhow::bail!("Binance Spot OCO child orders must be distinct");
+    }
+
+    let target_price = target
+        .price()
+        .ok_or_else(|| anyhow::anyhow!("Binance Spot OCO target LIMIT_MAKER requires price"))?
+        .to_string();
+    let stop_trigger_price = stop
+        .trigger_price()
+        .ok_or_else(|| anyhow::anyhow!("Binance Spot OCO stop child requires trigger price"))?
+        .to_string();
+    let stop_limit_price = match stop.order_type() {
+        OrderType::StopMarket => None,
+        OrderType::StopLimit => Some(
+            stop.price()
+                .ok_or_else(|| {
+                    anyhow::anyhow!("Binance Spot OCO STOP_LOSS_LIMIT child requires price")
+                })?
+                .to_string(),
+        ),
+        _ => unreachable!("stop order type filtered above"),
+    };
+    let stop_time_in_force = if stop.order_type() == OrderType::StopLimit {
+        Some(time_in_force_to_binance_spot(stop.time_in_force())?)
+    } else {
+        None
+    };
+
+    let side = BinanceSide::try_from(first.order_side())?;
+    let quantity = first.quantity().to_string();
+    let target_client_id =
+        encode_broker_id(&target.client_order_id(), BINANCE_NAUTILUS_SPOT_BROKER_ID);
+    let stop_client_id = encode_broker_id(&stop.client_order_id(), BINANCE_NAUTILUS_SPOT_BROKER_ID);
+    let stop_type = match stop.order_type() {
+        OrderType::StopMarket => BinanceSpotOrderType::StopLoss,
+        OrderType::StopLimit => BinanceSpotOrderType::StopLossLimit,
+        _ => unreachable!("stop order type filtered above"),
+    };
+
+    let mut params = NewOrderListOcoParams {
+        symbol: first.instrument_id().symbol.to_string(),
+        side,
+        quantity,
+        list_client_order_id: None,
+        above_type: BinanceSpotOrderType::LimitMaker,
+        above_client_order_id: None,
+        above_price: None,
+        above_stop_price: None,
+        above_time_in_force: None,
+        below_type: BinanceSpotOrderType::StopLoss,
+        below_client_order_id: None,
+        below_price: None,
+        below_stop_price: None,
+        below_time_in_force: None,
+        new_order_resp_type: Some(BinanceOrderResponseType::Full),
+        self_trade_prevention_mode: None,
+    };
+
+    match first.order_side() {
+        OrderSide::Sell => {
+            params.above_type = BinanceSpotOrderType::LimitMaker;
+            params.above_client_order_id = Some(target_client_id);
+            params.above_price = Some(target_price);
+
+            params.below_type = stop_type;
+            params.below_client_order_id = Some(stop_client_id);
+            params.below_price = stop_limit_price;
+            params.below_stop_price = Some(stop_trigger_price);
+            params.below_time_in_force = stop_time_in_force;
+        }
+        OrderSide::Buy => {
+            params.above_type = stop_type;
+            params.above_client_order_id = Some(stop_client_id);
+            params.above_price = stop_limit_price;
+            params.above_stop_price = Some(stop_trigger_price);
+            params.above_time_in_force = stop_time_in_force;
+
+            params.below_type = BinanceSpotOrderType::LimitMaker;
+            params.below_client_order_id = Some(target_client_id);
+            params.below_price = Some(target_price);
+        }
+        side => anyhow::bail!("Unsupported Binance Spot OCO order side: {side:?}"),
+    }
+
+    Ok(params)
+}
+
+fn has_oco_contingency_param(params: Option<&nautilus_core::params::Params>) -> bool {
+    params
+        .and_then(|params| params.get_str(OCO_CONTINGENCY_TYPE_PARAM))
+        .is_some_and(|value| value.eq_ignore_ascii_case(OCO_CONTINGENCY_TYPE_VALUE))
+}
+
 fn build_cancel_order_params(cmd: &CancelOrder) -> CancelOrderParams {
     let order_id = cmd
         .venue_order_id
@@ -2140,15 +2402,143 @@ fn is_local_http_command_failure(err: &BinanceSpotHttpError) -> bool {
 #[cfg(test)]
 mod tests {
     use nautilus_common::messages::ExecutionEvent;
-    use nautilus_core::time::get_atomic_clock_realtime;
+    use nautilus_core::{params::Params, time::get_atomic_clock_realtime};
     use nautilus_model::{
-        enums::{AccountType, LiquiditySide, OrderSide},
+        enums::{AccountType, LiquiditySide, OrderSide, OrderType},
         identifiers::{StrategyId, TraderId},
+        orders::{OrderAny, OrderTestBuilder},
+        types::{Price, Quantity},
     };
     use rstest::rstest;
+    use serde_json::Value;
 
     use super::*;
     use crate::common::enums::BinanceEnvironment;
+
+    #[rstest]
+    fn test_build_oco_order_list_params_maps_sell_target_above_stop_below() {
+        let params = oco_order_list_params();
+        let orders = vec![
+            test_order(
+                OrderType::Limit,
+                "TARGET",
+                OrderSide::Sell,
+                "0.001",
+                Some("120.00"),
+                None,
+                true,
+            ),
+            test_order(
+                OrderType::StopMarket,
+                "STOP",
+                OrderSide::Sell,
+                "0.001",
+                None,
+                Some("95.00"),
+                false,
+            ),
+        ];
+
+        let request = build_oco_order_list_params(Some(&params), &orders).unwrap();
+
+        assert_eq!(request.side, BinanceSide::Sell);
+        assert_eq!(request.quantity, "0.001");
+        assert_eq!(request.above_type, BinanceSpotOrderType::LimitMaker);
+        assert_eq!(request.above_price.as_deref(), Some("120.00"));
+        assert!(request.above_stop_price.is_none());
+        assert_eq!(request.below_type, BinanceSpotOrderType::StopLoss);
+        assert_eq!(request.below_stop_price.as_deref(), Some("95.00"));
+        assert!(request.below_price.is_none());
+        assert!(request.above_client_order_id.is_some());
+        assert!(request.below_client_order_id.is_some());
+    }
+
+    #[rstest]
+    fn test_build_oco_order_list_params_maps_buy_stop_above_target_below() {
+        let params = oco_order_list_params();
+        let orders = vec![
+            test_order(
+                OrderType::Limit,
+                "TARGET",
+                OrderSide::Buy,
+                "0.001",
+                Some("95.00"),
+                None,
+                true,
+            ),
+            test_order(
+                OrderType::StopMarket,
+                "STOP",
+                OrderSide::Buy,
+                "0.001",
+                None,
+                Some("120.00"),
+                false,
+            ),
+        ];
+
+        let request = build_oco_order_list_params(Some(&params), &orders).unwrap();
+
+        assert_eq!(request.side, BinanceSide::Buy);
+        assert_eq!(request.above_type, BinanceSpotOrderType::StopLoss);
+        assert_eq!(request.above_stop_price.as_deref(), Some("120.00"));
+        assert!(request.above_price.is_none());
+        assert_eq!(request.below_type, BinanceSpotOrderType::LimitMaker);
+        assert_eq!(request.below_price.as_deref(), Some("95.00"));
+        assert!(request.below_stop_price.is_none());
+    }
+
+    #[rstest]
+    fn test_build_oco_order_list_params_rejects_missing_oco_param() {
+        let orders = sell_oco_orders("0.001", "0.001");
+
+        let error = build_oco_order_list_params(None, &orders).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("only supports params.contingency_type=OCO")
+        );
+    }
+
+    #[rstest]
+    fn test_build_oco_order_list_params_rejects_mismatched_quantity() {
+        let params = oco_order_list_params();
+        let orders = sell_oco_orders("0.001", "0.002");
+
+        let error = build_oco_order_list_params(Some(&params), &orders).unwrap_err();
+
+        assert!(error.to_string().contains("same quantity"));
+    }
+
+    #[rstest]
+    fn test_build_oco_order_list_params_rejects_non_post_only_target() {
+        let params = oco_order_list_params();
+        let orders = vec![
+            test_order(
+                OrderType::Limit,
+                "TARGET",
+                OrderSide::Sell,
+                "0.001",
+                Some("120.00"),
+                None,
+                false,
+            ),
+            test_order(
+                OrderType::StopMarket,
+                "STOP",
+                OrderSide::Sell,
+                "0.001",
+                None,
+                Some("95.00"),
+                false,
+            ),
+        ];
+
+        let error = build_oco_order_list_params(Some(&params), &orders).unwrap_err();
+
+        assert!(error.to_string().contains("post-only LIMIT target"));
+    }
 
     #[rstest]
     fn test_dispatch_ws_trading_message_emits_cancel_rejected_and_clears_pending_request() {
@@ -2363,6 +2753,65 @@ mod tests {
             }
             other => panic!("Expected ModifyRejected event, was {other:?}"),
         }
+    }
+
+    fn oco_order_list_params() -> Params {
+        let mut params = Params::new();
+        params.insert(
+            OCO_CONTINGENCY_TYPE_PARAM.to_string(),
+            Value::String(OCO_CONTINGENCY_TYPE_VALUE.to_string()),
+        );
+        params
+    }
+
+    fn sell_oco_orders(target_qty: &str, stop_qty: &str) -> Vec<OrderAny> {
+        vec![
+            test_order(
+                OrderType::Limit,
+                "TARGET",
+                OrderSide::Sell,
+                target_qty,
+                Some("120.00"),
+                None,
+                true,
+            ),
+            test_order(
+                OrderType::StopMarket,
+                "STOP",
+                OrderSide::Sell,
+                stop_qty,
+                None,
+                Some("95.00"),
+                false,
+            ),
+        ]
+    }
+
+    fn test_order(
+        order_type: OrderType,
+        client_order_id: &str,
+        side: OrderSide,
+        quantity: &str,
+        price: Option<&str>,
+        trigger_price: Option<&str>,
+        post_only: bool,
+    ) -> OrderAny {
+        let mut builder = OrderTestBuilder::new(order_type);
+        builder
+            .instrument_id(InstrumentId::from("BTCUSDT.BINANCE"))
+            .client_order_id(ClientOrderId::from(client_order_id))
+            .side(side)
+            .quantity(Quantity::from(quantity))
+            .post_only(post_only);
+
+        if let Some(price) = price {
+            builder.price(Price::from(price));
+        }
+        if let Some(trigger_price) = trigger_price {
+            builder.trigger_price(Price::from(trigger_price));
+        }
+
+        builder.build()
     }
 
     fn create_test_emitter(

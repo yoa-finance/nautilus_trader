@@ -525,6 +525,62 @@ impl NewOcoOrderParams {
     }
 }
 
+/// Query parameters for new OCO order list.
+///
+/// Uses Binance Spot's current `POST /api/v3/orderList/oco` endpoint. This is
+/// separate from the deprecated `POST /api/v3/order/oco` shape above.
+#[derive(Debug, Clone, Serialize)]
+pub struct NewOrderListOcoParams {
+    /// Trading pair symbol.
+    pub symbol: String,
+    /// Order side shared by both legs.
+    pub side: BinanceSide,
+    /// Quantity shared by both legs.
+    pub quantity: String,
+    /// Optional client order ID for the OCO list.
+    #[serde(skip_serializing_if = "Option::is_none", rename = "listClientOrderId")]
+    pub list_client_order_id: Option<String>,
+    /// Above leg order type.
+    #[serde(rename = "aboveType")]
+    pub above_type: BinanceSpotOrderType,
+    /// Above leg client order ID.
+    #[serde(skip_serializing_if = "Option::is_none", rename = "aboveClientOrderId")]
+    pub above_client_order_id: Option<String>,
+    /// Above leg limit price.
+    #[serde(skip_serializing_if = "Option::is_none", rename = "abovePrice")]
+    pub above_price: Option<String>,
+    /// Above leg stop trigger price.
+    #[serde(skip_serializing_if = "Option::is_none", rename = "aboveStopPrice")]
+    pub above_stop_price: Option<String>,
+    /// Above leg time-in-force.
+    #[serde(skip_serializing_if = "Option::is_none", rename = "aboveTimeInForce")]
+    pub above_time_in_force: Option<BinanceTimeInForce>,
+    /// Below leg order type.
+    #[serde(rename = "belowType")]
+    pub below_type: BinanceSpotOrderType,
+    /// Below leg client order ID.
+    #[serde(skip_serializing_if = "Option::is_none", rename = "belowClientOrderId")]
+    pub below_client_order_id: Option<String>,
+    /// Below leg limit price.
+    #[serde(skip_serializing_if = "Option::is_none", rename = "belowPrice")]
+    pub below_price: Option<String>,
+    /// Below leg stop trigger price.
+    #[serde(skip_serializing_if = "Option::is_none", rename = "belowStopPrice")]
+    pub below_stop_price: Option<String>,
+    /// Below leg time-in-force.
+    #[serde(skip_serializing_if = "Option::is_none", rename = "belowTimeInForce")]
+    pub below_time_in_force: Option<BinanceTimeInForce>,
+    /// Response type.
+    #[serde(skip_serializing_if = "Option::is_none", rename = "newOrderRespType")]
+    pub new_order_resp_type: Option<BinanceOrderResponseType>,
+    /// Self-trade prevention mode.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        rename = "selfTradePreventionMode"
+    )]
+    pub self_trade_prevention_mode: Option<BinanceSelfTradePreventionMode>,
+}
+
 /// Query parameters for canceling an order list (OCO).
 #[derive(Debug, Clone, Serialize)]
 pub struct CancelOrderListParams {

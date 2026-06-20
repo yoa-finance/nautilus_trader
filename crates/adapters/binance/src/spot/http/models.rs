@@ -25,6 +25,7 @@ use nautilus_model::{
     types::{AccountBalance, Currency, Money},
 };
 use rust_decimal::Decimal;
+use serde::Deserialize;
 
 use crate::{
     common::enums::{
@@ -150,6 +151,55 @@ pub struct BinanceNewOrderResponse {
     pub fills: Vec<BinanceOrderFill>,
     /// Expiry reason (schema 3:4; `None` when null/absent).
     pub expiry_reason: Option<u8>,
+}
+
+/// Binance order-list response from JSON endpoints such as `orderList/oco`.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BinanceOrderListResponse {
+    pub order_list_id: i64,
+    pub contingency_type: String,
+    pub list_status_type: String,
+    pub list_order_status: String,
+    pub list_client_order_id: String,
+    pub transaction_time: Option<i64>,
+    pub symbol: String,
+    #[serde(default)]
+    pub orders: Vec<BinanceOrderListOrder>,
+    #[serde(default)]
+    pub order_reports: Vec<BinanceOrderListOrderReport>,
+}
+
+/// Child order reference in a Binance order-list response.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BinanceOrderListOrder {
+    pub symbol: String,
+    pub order_id: i64,
+    pub client_order_id: String,
+}
+
+/// Child order report in a Binance order-list response.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BinanceOrderListOrderReport {
+    pub symbol: String,
+    pub order_id: i64,
+    pub order_list_id: i64,
+    pub client_order_id: String,
+    pub transact_time: Option<i64>,
+    pub price: Option<String>,
+    pub orig_qty: Option<String>,
+    pub executed_qty: Option<String>,
+    pub cummulative_quote_qty: Option<String>,
+    pub status: Option<String>,
+    #[serde(rename = "type")]
+    pub order_type: Option<String>,
+    pub side: Option<BinanceSide>,
+    pub time_in_force: Option<BinanceTimeInForce>,
+    pub stop_price: Option<String>,
+    pub working_time: Option<i64>,
+    pub self_trade_prevention_mode: Option<BinanceSelfTradePreventionMode>,
 }
 
 /// Cancel order response.
