@@ -88,7 +88,6 @@ pub struct NautilusKernel {
     /// The UNIX timestamp (nanoseconds) when the kernel was last shutdown.
     pub ts_shutdown: Option<UnixNanos>,
     shutdown_requested: Rc<Cell<bool>>,
-    last_shutdown_system: Rc<RefCell<Option<ShutdownSystem>>>,
     event_store: Option<Box<dyn KernelEventStore>>,
     event_store_replay: bool,
 }
@@ -205,12 +204,7 @@ impl NautilusKernel {
         ExecutionEngine::register_msgbus_handlers(&exec_engine);
 
         let shutdown_requested = Rc::new(Cell::new(false));
-        let last_shutdown_system = Rc::new(RefCell::new(None));
-        Self::register_shutdown_handler(
-            config.trader_id(),
-            shutdown_requested.clone(),
-            last_shutdown_system.clone(),
-        );
+        Self::register_shutdown_handler(config.trader_id(), shutdown_requested.clone());
 
         let trader = Rc::new(RefCell::new(Trader::new(
             config.trader_id(),
@@ -242,16 +236,11 @@ impl NautilusKernel {
             ts_started: None,
             ts_shutdown: None,
             shutdown_requested,
-            last_shutdown_system,
             event_store_replay: false,
         })
     }
 
-    fn register_shutdown_handler(
-        trader_id: TraderId,
-        shutdown_requested: Rc<Cell<bool>>,
-        last_shutdown_system: Rc<RefCell<Option<ShutdownSystem>>>,
-    ) {
+    fn register_shutdown_handler(trader_id: TraderId, shutdown_requested: Rc<Cell<bool>>) {
         let handler = ShareableMessageHandler::from_typed(move |cmd: &ShutdownSystem| {
             if cmd.trader_id != trader_id {
                 log::warn!("Received {cmd} not for this trader {trader_id}, ignoring",);
@@ -264,7 +253,6 @@ impl NautilusKernel {
             }
 
             log::info!("Received {cmd}, requesting shutdown");
-            *last_shutdown_system.borrow_mut() = Some(cmd.clone());
             shutdown_requested.set(true);
         });
         let topic = MessagingSwitchboard::shutdown_system_topic();
@@ -424,13 +412,6 @@ impl NautilusKernel {
     /// command does not abort it.
     pub fn reset_shutdown_flag(&self) {
         self.shutdown_requested.set(false);
-        self.last_shutdown_system.borrow_mut().take();
-    }
-
-    /// Returns the first [`ShutdownSystem`] command accepted by this kernel, if any.
-    #[must_use]
-    pub fn last_shutdown_system(&self) -> Option<ShutdownSystem> {
-        self.last_shutdown_system.borrow().clone()
     }
 
     /// Returns a shared handle to the shutdown flag for async runtimes
@@ -806,7 +787,7 @@ impl NautilusKernel {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "python"))]
 mod tests {
     use nautilus_common::messages::system::ShutdownSystem;
     use nautilus_core::UUID4;
@@ -835,22 +816,20 @@ mod tests {
             command.as_any(),
         );
         assert!(kernel.is_shutdown_requested());
-        assert_eq!(kernel.last_shutdown_system(), Some(command));
 
         kernel.reset_shutdown_flag();
         assert!(!kernel.is_shutdown_requested());
-        assert_eq!(kernel.last_shutdown_system(), None);
     }
 
     #[rstest]
     fn test_shutdown_system_idempotent() {
         let kernel = NautilusKernelBuilder::default().build().unwrap();
 
-        let make_cmd = |reason: &str| {
+        let make_cmd = || {
             ShutdownSystem::new(
                 kernel.trader_id(),
                 Ustr::from("TestComponent"),
-                Some(reason.to_string()),
+                None,
                 UUID4::new(),
                 kernel.generate_timestamp_ns(),
                 None, // correlation_id
@@ -858,28 +837,17 @@ mod tests {
         };
 
         let topic = MessagingSwitchboard::shutdown_system_topic();
-        let first = make_cmd("first");
-        let second = make_cmd("second");
-        msgbus::publish_any(topic, first.as_any());
+        msgbus::publish_any(topic, make_cmd().as_any());
         assert!(kernel.is_shutdown_requested());
-        assert_eq!(kernel.last_shutdown_system(), Some(first));
 
-        msgbus::publish_any(topic, second.as_any());
+        msgbus::publish_any(topic, make_cmd().as_any());
         assert!(kernel.is_shutdown_requested());
-        assert_eq!(
-            kernel
-                .last_shutdown_system()
-                .and_then(|command| command.reason),
-            Some("first".to_string())
-        );
 
         kernel.reset_shutdown_flag();
         assert!(!kernel.is_shutdown_requested());
-        assert_eq!(kernel.last_shutdown_system(), None);
 
-        msgbus::publish_any(topic, second.as_any());
+        msgbus::publish_any(topic, make_cmd().as_any());
         assert!(kernel.is_shutdown_requested());
-        assert_eq!(kernel.last_shutdown_system(), Some(second));
     }
 
     #[rstest]
@@ -900,6 +868,5 @@ mod tests {
             command.as_any(),
         );
         assert!(!kernel.is_shutdown_requested());
-        assert_eq!(kernel.last_shutdown_system(), None);
     }
 }
