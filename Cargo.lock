@@ -9099,7 +9099,7 @@ dependencies = [
 
 [[package]]
 name = "stratneo-nautilus-live"
-version = "0.58.1"
+version = "0.58.2"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
@@ -9364,7 +9364,7 @@ dependencies = [
 
 [[package]]
 name = "stratneo-nautilus-system"
-version = "0.58.1"
+version = "0.58.2"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
