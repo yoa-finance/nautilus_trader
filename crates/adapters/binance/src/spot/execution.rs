@@ -21,7 +21,7 @@ use std::{
     time::Duration,
 };
 
-use ahash::AHashMap;
+use ahash::{AHashMap, AHashSet};
 use anyhow::Context;
 use async_trait::async_trait;
 use nautilus_common::{
@@ -67,7 +67,7 @@ use super::websocket::trading::{
         parse_spot_account_position, parse_spot_exec_report_to_fill,
         parse_spot_exec_report_to_order_status,
     },
-    user_data::{BinanceSpotExecutionReport, BinanceSpotExecutionType},
+    user_data::{BinanceSpotExecutionReport, BinanceSpotExecutionType, BinanceSpotListStatusMsg},
 };
 use crate::{
     common::{
@@ -97,12 +97,13 @@ use crate::{
         http::{
             client::BinanceSpotHttpClient,
             error::BinanceSpotHttpError,
-            models::BatchCancelResult,
+            models::{BatchCancelResult, BinanceOrderListResponse},
             query::{
                 BatchCancelItem, CancelOrderParams, CancelReplaceOrderParams,
                 NewOrderListOcoParams, NewOrderParams,
             },
         },
+        sbe::spot::list_order_status::ListOrderStatus,
     },
 };
 
@@ -984,53 +985,26 @@ impl ExecutionClient for BinanceSpotExecutionClient {
         self.spawn_task("submit_oco_order_list_http", async move {
             match http_client.submit_oco_order_list(&params).await {
                 Ok(response) => {
-                    let mut accepted_ids = Vec::new();
-                    for report in &response.order_reports {
-                        let decoded_id = ClientOrderId::from(decode_broker_id(
-                            &report.client_order_id,
-                            BINANCE_NAUTILUS_SPOT_BROKER_ID,
-                        ));
-
-                        let Some(order) = orders_by_client_id.get(&decoded_id) else {
+                    for acceptance in oco_child_acceptances(&response) {
+                        let Some(order) = orders_by_client_id.get(&acceptance.client_order_id)
+                        else {
                             log::warn!(
-                                "No cached OCO child order for accepted client_order_id={decoded_id}"
+                                "No cached OCO child order for accepted client_order_id={}",
+                                acceptance.client_order_id
                             );
                             continue;
                         };
 
-                        let ts_event = report
+                        let ts_event = acceptance
                             .transact_time
-                            .or(response.transaction_time)
                             .map(|millis| UnixNanos::from_millis(millis as u64))
                             .unwrap_or_else(|| clock.get_time_ns());
-                        let venue_order_id = VenueOrderId::new(report.order_id.to_string());
-                        event_emitter.emit_order_accepted(order, venue_order_id, ts_event);
-                        dispatch_state.insert_accepted(decoded_id);
-                        accepted_ids.push(decoded_id);
-                    }
-
-                    if accepted_ids.is_empty() {
-                        let ts_event = response
-                            .transaction_time
-                            .map(|millis| UnixNanos::from_millis(millis as u64))
-                            .unwrap_or_else(|| clock.get_time_ns());
-                        for order_ref in &response.orders {
-                            let decoded_id = ClientOrderId::from(decode_broker_id(
-                                &order_ref.client_order_id,
-                                BINANCE_NAUTILUS_SPOT_BROKER_ID,
-                            ));
-
-                            let Some(order) = orders_by_client_id.get(&decoded_id) else {
-                                log::warn!(
-                                    "No cached OCO child order for accepted client_order_id={decoded_id}"
-                                );
-                                continue;
-                            };
-
-                            let venue_order_id = VenueOrderId::new(order_ref.order_id.to_string());
-                            event_emitter.emit_order_accepted(order, venue_order_id, ts_event);
-                            dispatch_state.insert_accepted(decoded_id);
-                        }
+                        event_emitter.emit_order_accepted(
+                            order,
+                            acceptance.venue_order_id,
+                            ts_event,
+                        );
+                        dispatch_state.insert_accepted(acceptance.client_order_id);
                     }
                 }
                 Err(err) => {
@@ -1040,12 +1014,7 @@ impl ExecutionClient for BinanceSpotExecutionClient {
                     for order in orders_by_client_id.values() {
                         let client_order_id = order.client_order_id();
                         dispatch_state.cleanup_terminal(client_order_id);
-                        event_emitter.emit_order_rejected(
-                            order,
-                            &reason,
-                            ts_event,
-                            due_post_only,
-                        );
+                        event_emitter.emit_order_rejected(order, &reason, ts_event, due_post_only);
                     }
                 }
             }
@@ -1408,6 +1377,50 @@ impl ExecutionClient for BinanceSpotExecutionClient {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OcoChildAcceptance {
+    client_order_id: ClientOrderId,
+    venue_order_id: VenueOrderId,
+    transact_time: Option<i64>,
+}
+
+fn oco_child_acceptances(response: &BinanceOrderListResponse) -> Vec<OcoChildAcceptance> {
+    let mut seen = AHashSet::new();
+    let mut acceptances =
+        Vec::with_capacity(response.order_reports.len().max(response.orders.len()));
+
+    for report in &response.order_reports {
+        let client_order_id = ClientOrderId::from(decode_broker_id(
+            &report.client_order_id,
+            BINANCE_NAUTILUS_SPOT_BROKER_ID,
+        ));
+        seen.insert(client_order_id);
+        acceptances.push(OcoChildAcceptance {
+            client_order_id,
+            venue_order_id: VenueOrderId::new(report.order_id.to_string()),
+            transact_time: report.transact_time.or(response.transaction_time),
+        });
+    }
+
+    for order_ref in &response.orders {
+        let client_order_id = ClientOrderId::from(decode_broker_id(
+            &order_ref.client_order_id,
+            BINANCE_NAUTILUS_SPOT_BROKER_ID,
+        ));
+        if !seen.insert(client_order_id) {
+            continue;
+        }
+
+        acceptances.push(OcoChildAcceptance {
+            client_order_id,
+            venue_order_id: VenueOrderId::new(order_ref.order_id.to_string()),
+            transact_time: response.transaction_time,
+        });
+    }
+
+    acceptances
+}
+
 #[expect(clippy::too_many_arguments)]
 fn dispatch_ws_trading_message(
     msg: BinanceSpotWsTradingMessage,
@@ -1625,6 +1638,9 @@ fn dispatch_ws_trading_message(
                 }
             });
         }
+        BinanceSpotWsTradingMessage::ListStatus(list_status) => {
+            dispatch_list_status(&list_status, emitter, account_id, dispatch_state, clock);
+        }
         BinanceSpotWsTradingMessage::Connected => {
             log::info!("WS trading API connected");
         }
@@ -1643,6 +1659,90 @@ fn dispatch_ws_trading_message(
         BinanceSpotWsTradingMessage::Error(err) => {
             log::error!("WS trading API error: {err}");
         }
+    }
+}
+
+fn dispatch_list_status(
+    list_status: &BinanceSpotListStatusMsg,
+    emitter: &ExecutionEventEmitter,
+    account_id: AccountId,
+    dispatch_state: &WsDispatchState,
+    clock: &'static AtomicTime,
+) {
+    log::debug!(
+        "WS list status: symbol={}, order_list_id={}, list_client_order_id={}, status_type={:?}, order_status={:?}, child_count={}",
+        list_status.symbol,
+        list_status.order_list_id,
+        list_status.list_client_order_id,
+        list_status.list_status_type,
+        list_status.list_order_status,
+        list_status.orders.len(),
+    );
+
+    let ts_event = UnixNanos::from_millis(list_status.event_time as u64);
+    let ts_init = clock.get_time_ns();
+    let is_rejected = list_status.list_order_status == ListOrderStatus::Reject
+        || !list_status.reject_reason.is_empty();
+    let reject_reason = if list_status.reject_reason.is_empty() {
+        "Order list rejected by venue"
+    } else {
+        list_status.reject_reason.as_str()
+    };
+
+    for child in &list_status.orders {
+        let client_order_id = ClientOrderId::from(decode_broker_id(
+            &child.client_order_id,
+            BINANCE_NAUTILUS_SPOT_BROKER_ID,
+        ));
+
+        let Some(identity) = dispatch_state
+            .order_identities
+            .get(&client_order_id)
+            .map(|entry| entry.clone())
+        else {
+            log::debug!(
+                "Ignoring untracked list status child client_order_id={client_order_id}, order_id={}",
+                child.order_id
+            );
+            continue;
+        };
+
+        if is_rejected {
+            if !dispatch_state.has_emitted_accepted(&client_order_id)
+                && !dispatch_state.has_filled(&client_order_id)
+            {
+                emitter.emit_order_rejected_event(
+                    identity.strategy_id,
+                    identity.instrument_id,
+                    client_order_id,
+                    reject_reason,
+                    ts_init,
+                    false,
+                );
+                dispatch_state.cleanup_terminal(client_order_id);
+            }
+            continue;
+        }
+
+        if dispatch_state.has_emitted_accepted(&client_order_id) {
+            continue;
+        }
+
+        let venue_order_id = VenueOrderId::new(child.order_id.to_string());
+        dispatch_state.insert_accepted(client_order_id);
+        let accepted = OrderAccepted::new(
+            emitter.trader_id(),
+            identity.strategy_id,
+            identity.instrument_id,
+            client_order_id,
+            venue_order_id,
+            account_id,
+            UUID4::new(),
+            ts_event,
+            ts_init,
+            false,
+        );
+        emitter.send_order_event(OrderEventAny::Accepted(accepted));
     }
 }
 
@@ -2428,7 +2528,14 @@ mod tests {
     use serde_json::Value;
 
     use super::*;
-    use crate::common::{encoder::encode_broker_id, enums::BinanceEnvironment};
+    use crate::{
+        common::{encoder::encode_broker_id, enums::BinanceEnvironment},
+        spot::{
+            http::models::{BinanceOrderListOrder, BinanceOrderListOrderReport},
+            sbe::spot::{contingency_type::ContingencyType, list_status_type::ListStatusType},
+            websocket::trading::user_data::BinanceSpotListStatusOrder,
+        },
+    };
 
     #[rstest]
     fn test_build_oco_order_list_params_maps_sell_target_above_stop_below() {
@@ -2961,6 +3068,169 @@ mod tests {
             },
         );
         dispatch_state
+    }
+
+    #[rstest]
+    fn test_oco_child_acceptances_merge_partial_order_reports_with_orders() {
+        let target_id = ClientOrderId::from("TARGET");
+        let stop_id = ClientOrderId::from("STOP");
+        let target_wire = encode_broker_id(&target_id, BINANCE_NAUTILUS_SPOT_BROKER_ID);
+        let stop_wire = encode_broker_id(&stop_id, BINANCE_NAUTILUS_SPOT_BROKER_ID);
+        let response = BinanceOrderListResponse {
+            order_list_id: 42,
+            contingency_type: "OCO".to_string(),
+            list_status_type: "EXEC_STARTED".to_string(),
+            list_order_status: "EXECUTING".to_string(),
+            list_client_order_id: "LIST".to_string(),
+            transaction_time: Some(1_709_654_400_124),
+            symbol: "BTCUSDT".to_string(),
+            orders: vec![
+                BinanceOrderListOrder {
+                    symbol: "BTCUSDT".to_string(),
+                    order_id: 1001,
+                    client_order_id: target_wire.clone(),
+                },
+                BinanceOrderListOrder {
+                    symbol: "BTCUSDT".to_string(),
+                    order_id: 1002,
+                    client_order_id: stop_wire,
+                },
+            ],
+            order_reports: vec![BinanceOrderListOrderReport {
+                symbol: "BTCUSDT".to_string(),
+                order_id: 1001,
+                order_list_id: 42,
+                client_order_id: target_wire,
+                transact_time: Some(1_709_654_400_125),
+                price: None,
+                orig_qty: None,
+                executed_qty: None,
+                cummulative_quote_qty: None,
+                status: None,
+                order_type: None,
+                side: None,
+                time_in_force: None,
+                stop_price: None,
+                working_time: None,
+                self_trade_prevention_mode: None,
+            }],
+        };
+
+        let acceptances = oco_child_acceptances(&response);
+
+        assert_eq!(acceptances.len(), 2);
+        assert_eq!(acceptances[0].client_order_id, target_id);
+        assert_eq!(acceptances[0].venue_order_id, VenueOrderId::new("1001"));
+        assert_eq!(acceptances[0].transact_time, Some(1_709_654_400_125));
+        assert_eq!(acceptances[1].client_order_id, stop_id);
+        assert_eq!(acceptances[1].venue_order_id, VenueOrderId::new("1002"));
+        assert_eq!(acceptances[1].transact_time, Some(1_709_654_400_124));
+    }
+
+    #[rstest]
+    fn test_dispatch_list_status_emits_missing_accepted_once() {
+        let clock = get_atomic_clock_realtime();
+        let (emitter, mut rx) = create_test_emitter(clock);
+        let client_order_id = ClientOrderId::from("TARGET");
+        let dispatch_state =
+            create_tracked_dispatch_state(client_order_id, InstrumentId::from("BTCUSDT.BINANCE"));
+        let msg = BinanceSpotListStatusMsg {
+            event_time: 1_709_654_400_123,
+            transact_time: 1_709_654_400_124,
+            order_list_id: 42,
+            contingency_type: ContingencyType::Oco,
+            list_status_type: ListStatusType::ExecStarted,
+            list_order_status: ListOrderStatus::Executing,
+            subscription_id: None,
+            symbol: Ustr::from("BTCUSDT"),
+            list_client_order_id: "LIST".to_string(),
+            reject_reason: String::new(),
+            orders: vec![BinanceSpotListStatusOrder {
+                order_id: 1001,
+                symbol: Ustr::from("BTCUSDT"),
+                client_order_id: encode_broker_id(
+                    &client_order_id,
+                    BINANCE_NAUTILUS_SPOT_BROKER_ID,
+                ),
+            }],
+        };
+
+        dispatch_list_status(
+            &msg,
+            &emitter,
+            AccountId::from("BINANCE-001"),
+            &dispatch_state,
+            clock,
+        );
+        dispatch_list_status(
+            &msg,
+            &emitter,
+            AccountId::from("BINANCE-001"),
+            &dispatch_state,
+            clock,
+        );
+
+        match rx.try_recv().expect("OrderAccepted event expected") {
+            ExecutionEvent::Order(OrderEventAny::Accepted(event)) => {
+                assert_eq!(event.client_order_id, client_order_id);
+                assert_eq!(event.venue_order_id, VenueOrderId::new("1001"));
+                assert_eq!(event.account_id, AccountId::from("BINANCE-001"));
+            }
+            other => panic!("Expected OrderAccepted event, was {other:?}"),
+        }
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[rstest]
+    fn test_dispatch_list_status_reject_emits_order_rejected() {
+        let clock = get_atomic_clock_realtime();
+        let (emitter, mut rx) = create_test_emitter(clock);
+        let client_order_id = ClientOrderId::from("TARGET");
+        let dispatch_state =
+            create_tracked_dispatch_state(client_order_id, InstrumentId::from("BTCUSDT.BINANCE"));
+        let msg = BinanceSpotListStatusMsg {
+            event_time: 1_709_654_400_123,
+            transact_time: 1_709_654_400_124,
+            order_list_id: 42,
+            contingency_type: ContingencyType::Oco,
+            list_status_type: ListStatusType::Response,
+            list_order_status: ListOrderStatus::Reject,
+            subscription_id: None,
+            symbol: Ustr::from("BTCUSDT"),
+            list_client_order_id: "LIST".to_string(),
+            reject_reason: "INSUFFICIENT_BALANCE".to_string(),
+            orders: vec![BinanceSpotListStatusOrder {
+                order_id: 1001,
+                symbol: Ustr::from("BTCUSDT"),
+                client_order_id: encode_broker_id(
+                    &client_order_id,
+                    BINANCE_NAUTILUS_SPOT_BROKER_ID,
+                ),
+            }],
+        };
+
+        dispatch_list_status(
+            &msg,
+            &emitter,
+            AccountId::from("BINANCE-001"),
+            &dispatch_state,
+            clock,
+        );
+
+        match rx.try_recv().expect("OrderRejected event expected") {
+            ExecutionEvent::Order(OrderEventAny::Rejected(event)) => {
+                assert_eq!(event.client_order_id, client_order_id);
+                assert_eq!(event.account_id, AccountId::from("BINANCE-001"));
+                assert_eq!(event.reason.as_str(), "INSUFFICIENT_BALANCE");
+            }
+            other => panic!("Expected OrderRejected event, was {other:?}"),
+        }
+        assert!(
+            dispatch_state
+                .order_identities
+                .get(&client_order_id)
+                .is_none()
+        );
     }
 
     #[rstest]

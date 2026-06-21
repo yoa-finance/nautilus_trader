@@ -568,13 +568,25 @@ impl BinanceSpotWsTradingHandler {
                     }
                 }
                 606 => {
-                    log::debug!(
-                        "Received SBE ListStatusEvent ({} bytes), not yet decoded",
-                        data.len()
-                    );
-                    return Ok(BinanceSpotWsTradingMessage::Error(
-                        "SBE ListStatusEvent decoding not yet implemented".to_string(),
-                    ));
+                    log::debug!("Received SBE ListStatusEvent ({} bytes)", data.len());
+                    match super::decode_sbe::decode_list_status(data) {
+                        Ok(msg) => {
+                            log::debug!(
+                                "SBE list status: symbol={}, order_list_id={}, status_type={:?}, order_status={:?}",
+                                msg.symbol,
+                                msg.order_list_id,
+                                msg.list_status_type,
+                                msg.list_order_status
+                            );
+                            return Ok(BinanceSpotWsTradingMessage::ListStatus(msg));
+                        }
+                        Err(e) => {
+                            log::error!("Failed to decode SBE ListStatusEvent: {e}");
+                            return Ok(BinanceSpotWsTradingMessage::Error(format!(
+                                "SBE ListStatusEvent decode failed: {e}"
+                            )));
+                        }
+                    }
                 }
                 607 => {
                     log::debug!(
@@ -911,6 +923,76 @@ mod tests {
     use rstest::rstest;
 
     use super::*;
+    use crate::spot::sbe::spot::{
+        WriteBuf, contingency_type::ContingencyType, list_order_status::ListOrderStatus,
+        list_status_event_codec, list_status_type::ListStatusType,
+    };
+
+    fn encode_list_status() -> Vec<u8> {
+        let symbol = "BTCUSDT";
+        let list_client_order_id = "list-client-1";
+        let orders = [
+            (63562212148_i64, "BTCUSDT", "target-client"),
+            (63562212149_i64, "BTCUSDT", "stop-client"),
+        ];
+        let orders_var_len: usize = orders
+            .iter()
+            .map(|(_, symbol, client_id)| 1 + symbol.len() + 1 + client_id.len())
+            .sum();
+        let parent_var_len = 1 + symbol.len() + 1 + list_client_order_id.len() + 1;
+        let total = message_header_codec::ENCODED_LENGTH
+            + list_status_event_codec::SBE_BLOCK_LENGTH as usize
+            + 4
+            + (orders.len() * 8)
+            + orders_var_len
+            + parent_var_len;
+        let mut buf_vec = vec![0u8; total];
+
+        let buf = WriteBuf::new(buf_vec.as_mut_slice());
+        let enc = list_status_event_codec::ListStatusEventEncoder::default()
+            .wrap(buf, message_header_codec::ENCODED_LENGTH);
+        let mut header = enc.header(0);
+        let mut enc = header.parent().unwrap();
+
+        enc.event_time(1_709_654_400_123_000);
+        enc.transact_time(1_709_654_400_124_000);
+        enc.order_list_id(42);
+        enc.contingency_type(ContingencyType::Oco);
+        enc.list_status_type(ListStatusType::ExecStarted);
+        enc.list_order_status(ListOrderStatus::Executing);
+        enc.subscription_id(0xFFFF);
+
+        let orders_enc = list_status_event_codec::encoder::OrdersEncoder::default();
+        let mut orders_enc = enc.orders_encoder(orders.len() as u16, orders_enc);
+        for (order_id, order_symbol, client_order_id) in orders {
+            orders_enc.advance().unwrap();
+            orders_enc.order_id(order_id);
+            orders_enc.symbol(order_symbol);
+            orders_enc.client_order_id(client_order_id);
+        }
+        let mut enc = orders_enc.parent().unwrap();
+        enc.symbol(symbol);
+        enc.list_client_order_id(list_client_order_id);
+        enc.reject_reason("");
+
+        buf_vec
+    }
+
+    fn create_test_handler() -> BinanceSpotWsTradingHandler {
+        let (_cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (_raw_tx, raw_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (out_tx, _out_rx) = tokio::sync::mpsc::unbounded_channel();
+        BinanceSpotWsTradingHandler::new(
+            Arc::new(AtomicBool::new(false)),
+            cmd_rx,
+            raw_rx,
+            out_tx,
+            Arc::new(SigningCredential::new(
+                "test_key".to_string(),
+                "test_secret".to_string(),
+            )),
+        )
+    }
 
     #[rstest]
     #[case::microseconds_converted_to_ms(1_700_000_000_000_000_i64, 1_700_000_000_000_i64)]
@@ -959,5 +1041,24 @@ mod tests {
     fn test_classify_user_data_event_unknown_returns_none() {
         let event = serde_json::json!({"e": "somethingElse"});
         assert!(classify_user_data_event(&event).is_none());
+    }
+
+    #[rstest]
+    fn test_decode_ws_api_response_template_606_emits_list_status() {
+        let mut handler = create_test_handler();
+        let msg = handler
+            .decode_ws_api_response(&encode_list_status())
+            .expect("template 606 should decode");
+
+        match msg {
+            BinanceSpotWsTradingMessage::ListStatus(list_status) => {
+                assert_eq!(list_status.order_list_id, 42);
+                assert_eq!(list_status.orders.len(), 2);
+            }
+            BinanceSpotWsTradingMessage::Error(err) => {
+                panic!("template 606 must not emit Error: {err}");
+            }
+            other => panic!("expected ListStatus variant, was {other:?}"),
+        }
     }
 }

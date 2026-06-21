@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 
 use super::user_data::{
     BinanceSpotAccountPositionMsg, BinanceSpotBalanceUpdateMsg, BinanceSpotExecutionReport,
+    BinanceSpotListStatusMsg,
 };
 use crate::spot::http::{
     models::{BinanceCancelOrderResponse, BinanceNewOrderResponse},
@@ -166,6 +167,8 @@ pub enum BinanceSpotWsTradingMessage {
     AccountPosition(BinanceSpotAccountPositionMsg),
     /// Balance update from user data stream.
     BalanceUpdate(BinanceSpotBalanceUpdateMsg),
+    /// Order-list lifecycle update from user data stream.
+    ListStatus(BinanceSpotListStatusMsg),
     /// Server shutdown notice (sent ~10 minutes before disconnection).
     ServerShutdown {
         /// Event time in milliseconds.

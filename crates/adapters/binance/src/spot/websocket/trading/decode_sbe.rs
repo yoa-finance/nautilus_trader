@@ -25,14 +25,15 @@ use ustr::Ustr;
 
 use super::user_data::{
     BinanceSpotAccountPositionMsg, BinanceSpotBalanceEntry, BinanceSpotBalanceUpdateMsg,
-    BinanceSpotExecutionReport, BinanceSpotExecutionType,
+    BinanceSpotExecutionReport, BinanceSpotExecutionType, BinanceSpotListStatusMsg,
+    BinanceSpotListStatusOrder,
 };
 use crate::{
     common::enums::{BinanceOrderStatus, BinanceSide, BinanceTimeInForce},
     spot::sbe::spot::{
         ReadBuf, balance_update_event_codec, bool_enum, execution_report_event_codec,
-        execution_type, message_header_codec, order_side, order_status, order_type,
-        outbound_account_position_event_codec, time_in_force,
+        execution_type, list_status_event_codec, message_header_codec, order_side, order_status,
+        order_type, outbound_account_position_event_codec, time_in_force,
     },
 };
 
@@ -267,6 +268,122 @@ pub fn decode_account_position(data: &[u8]) -> anyhow::Result<BinanceSpotAccount
     })
 }
 
+/// Decodes an SBE ListStatusEvent (template 606) into a [`BinanceSpotListStatusMsg`].
+///
+/// The input buffer must include the 8-byte SBE message header.
+///
+/// # Errors
+///
+/// Returns error if the buffer is too short, the template ID is wrong,
+/// or the schema ID does not match.
+pub fn decode_list_status(data: &[u8]) -> anyhow::Result<BinanceSpotListStatusMsg> {
+    if data.len() < HEADER_LEN {
+        anyhow::bail!(
+            "Buffer too short for SBE header: expected {HEADER_LEN}, was {}",
+            data.len()
+        );
+    }
+
+    let buf = ReadBuf::new(data);
+    let block_length = buf.get_u16_at(0);
+    let template_id = buf.get_u16_at(2);
+    let schema_id = buf.get_u16_at(4);
+    let version = buf.get_u16_at(6);
+
+    if template_id != list_status_event_codec::SBE_TEMPLATE_ID {
+        anyhow::bail!(
+            "Wrong template ID: expected {}, received {template_id}",
+            list_status_event_codec::SBE_TEMPLATE_ID
+        );
+    }
+
+    if schema_id != crate::spot::sbe::spot::SBE_SCHEMA_ID {
+        anyhow::bail!(
+            "Wrong schema ID: expected {}, received {schema_id}",
+            crate::spot::sbe::spot::SBE_SCHEMA_ID
+        );
+    }
+
+    let min_len = HEADER_LEN + block_length as usize;
+    if data.len() < min_len {
+        anyhow::bail!(
+            "Buffer too short for fixed block: expected {min_len}, was {}",
+            data.len()
+        );
+    }
+
+    let dec = list_status_event_codec::ListStatusEventDecoder::default().wrap(
+        buf,
+        HEADER_LEN,
+        block_length,
+        version,
+    );
+
+    let event_time = us_to_ms(dec.event_time());
+    let transact_time = us_to_ms(dec.transact_time());
+    let order_list_id = dec.order_list_id();
+    let contingency_type = dec.contingency_type();
+    let list_status_type = dec.list_status_type();
+    let list_order_status = dec.list_order_status();
+    let subscription_id = dec.subscription_id();
+
+    let mut orders_dec = dec.orders_decoder();
+    let order_count = orders_dec.count() as usize;
+    let mut orders = Vec::with_capacity(order_count);
+
+    while let Some(_idx) = orders_dec
+        .advance()
+        .map_err(|e| anyhow::anyhow!("Failed to advance list status orders group: {e:?}"))?
+    {
+        let order_id = orders_dec.order_id();
+        let symbol = {
+            let coords = orders_dec.symbol_decoder();
+            let bytes = orders_dec.symbol_slice(coords);
+            Ustr::from(&String::from_utf8_lossy(bytes))
+        };
+        let client_order_id = {
+            let coords = orders_dec.client_order_id_decoder();
+            String::from_utf8_lossy(orders_dec.client_order_id_slice(coords)).into_owned()
+        };
+        orders.push(BinanceSpotListStatusOrder {
+            order_id,
+            symbol,
+            client_order_id,
+        });
+    }
+
+    let mut dec = orders_dec
+        .parent()
+        .map_err(|e| anyhow::anyhow!("Failed to finish list status orders group: {e:?}"))?;
+    let symbol = {
+        let coords = dec.symbol_decoder();
+        let bytes = dec.symbol_slice(coords);
+        Ustr::from(&String::from_utf8_lossy(bytes))
+    };
+    let list_client_order_id = {
+        let coords = dec.list_client_order_id_decoder();
+        String::from_utf8_lossy(dec.list_client_order_id_slice(coords)).into_owned()
+    };
+    let reject_reason = {
+        let coords = dec.reject_reason_decoder();
+        String::from_utf8_lossy(dec.reject_reason_slice(coords)).into_owned()
+    };
+
+    Ok(BinanceSpotListStatusMsg {
+        event_time,
+        transact_time,
+        order_list_id,
+        contingency_type,
+        list_status_type,
+        list_order_status,
+        subscription_id,
+        symbol,
+        list_client_order_id,
+        reject_reason,
+        orders,
+    })
+}
+
 /// Decodes an SBE BalanceUpdateEvent (template 601) into a [`BinanceSpotBalanceUpdateMsg`].
 ///
 /// The input buffer must include the 8-byte SBE message header.
@@ -471,10 +588,12 @@ mod tests {
 
     use super::*;
     use crate::spot::sbe::spot::{
-        WriteBuf, bool_enum::BoolEnum, execution_type::ExecutionType, floor, match_type,
-        order_capacity, order_side::OrderSide, order_status::OrderStatus,
-        order_type::OrderType as SbeOrderType, peg_offset_type, peg_price_type,
-        self_trade_prevention_mode::SelfTradePreventionMode, time_in_force::TimeInForce as SbeTif,
+        WriteBuf, bool_enum::BoolEnum, contingency_type::ContingencyType,
+        execution_type::ExecutionType, floor, list_order_status::ListOrderStatus,
+        list_status_event_codec, list_status_type::ListStatusType, match_type, order_capacity,
+        order_side::OrderSide, order_status::OrderStatus, order_type::OrderType as SbeOrderType,
+        peg_offset_type, peg_price_type, self_trade_prevention_mode::SelfTradePreventionMode,
+        time_in_force::TimeInForce as SbeTif,
     };
 
     #[expect(clippy::too_many_arguments)]
@@ -622,6 +741,118 @@ mod tests {
         }
 
         buf_vec
+    }
+
+    fn encode_list_status(
+        symbol: &str,
+        list_client_order_id: &str,
+        order_list_id: i64,
+        list_status_type: ListStatusType,
+        list_order_status: ListOrderStatus,
+        reject_reason: &str,
+        orders: &[(i64, &str, &str)],
+        event_time_us: i64,
+        transact_time_us: i64,
+    ) -> Vec<u8> {
+        let orders_var_len: usize = orders
+            .iter()
+            .map(|(_, symbol, client_id)| 1 + symbol.len() + 1 + client_id.len())
+            .sum();
+        let parent_var_len =
+            1 + symbol.len() + 1 + list_client_order_id.len() + 1 + reject_reason.len();
+        let total = HEADER_LEN
+            + list_status_event_codec::SBE_BLOCK_LENGTH as usize
+            + 4
+            + (orders.len() * 8)
+            + orders_var_len
+            + parent_var_len;
+        let mut buf_vec = vec![0u8; total];
+
+        let buf = WriteBuf::new(buf_vec.as_mut_slice());
+        let enc = list_status_event_codec::ListStatusEventEncoder::default().wrap(buf, HEADER_LEN);
+        let mut header = enc.header(0);
+        let mut enc = header.parent().unwrap();
+
+        enc.event_time(event_time_us);
+        enc.transact_time(transact_time_us);
+        enc.order_list_id(order_list_id);
+        enc.contingency_type(ContingencyType::Oco);
+        enc.list_status_type(list_status_type);
+        enc.list_order_status(list_order_status);
+        enc.subscription_id(0xFFFF);
+
+        let orders_enc = list_status_event_codec::encoder::OrdersEncoder::default();
+        let mut orders_enc = enc.orders_encoder(orders.len() as u16, orders_enc);
+        for (order_id, order_symbol, client_order_id) in orders {
+            orders_enc.advance().unwrap();
+            orders_enc.order_id(*order_id);
+            orders_enc.symbol(order_symbol);
+            orders_enc.client_order_id(client_order_id);
+        }
+
+        let mut enc = orders_enc.parent().unwrap();
+        enc.symbol(symbol);
+        enc.list_client_order_id(list_client_order_id);
+        enc.reject_reason(reject_reason);
+
+        buf_vec
+    }
+
+    #[rstest]
+    fn test_decode_list_status_event_oco_two_orders() {
+        let data = encode_list_status(
+            "BTCUSDT",
+            "list-client-1",
+            42,
+            ListStatusType::ExecStarted,
+            ListOrderStatus::Executing,
+            "",
+            &[
+                (63562212148, "BTCUSDT", "target-client"),
+                (63562212149, "BTCUSDT", "stop-client"),
+            ],
+            1_709_654_400_123_000,
+            1_709_654_400_124_000,
+        );
+
+        let msg = decode_list_status(&data).expect("ListStatusEvent should decode");
+
+        assert_eq!(msg.event_time, 1_709_654_400_123);
+        assert_eq!(msg.transact_time, 1_709_654_400_124);
+        assert_eq!(msg.order_list_id, 42);
+        assert_eq!(msg.contingency_type, ContingencyType::Oco);
+        assert_eq!(msg.list_status_type, ListStatusType::ExecStarted);
+        assert_eq!(msg.list_order_status, ListOrderStatus::Executing);
+        assert_eq!(msg.subscription_id, None);
+        assert_eq!(msg.symbol.as_str(), "BTCUSDT");
+        assert_eq!(msg.list_client_order_id, "list-client-1");
+        assert_eq!(msg.reject_reason, "");
+        assert_eq!(msg.orders.len(), 2);
+        assert_eq!(msg.orders[0].order_id, 63562212148);
+        assert_eq!(msg.orders[0].symbol.as_str(), "BTCUSDT");
+        assert_eq!(msg.orders[0].client_order_id, "target-client");
+        assert_eq!(msg.orders[1].order_id, 63562212149);
+        assert_eq!(msg.orders[1].client_order_id, "stop-client");
+    }
+
+    #[rstest]
+    fn test_decode_list_status_rejects_wrong_template() {
+        let mut data = encode_list_status(
+            "BTCUSDT",
+            "list-client-1",
+            42,
+            ListStatusType::ExecStarted,
+            ListOrderStatus::Executing,
+            "",
+            &[(63562212149, "BTCUSDT", "stop-client")],
+            1_709_654_400_123_000,
+            1_709_654_400_124_000,
+        );
+        data[2..4].copy_from_slice(&603u16.to_le_bytes());
+
+        let err = decode_list_status(&data).expect_err("wrong template should fail");
+
+        assert!(err.to_string().contains("Wrong template ID"));
     }
 
     #[rstest]
