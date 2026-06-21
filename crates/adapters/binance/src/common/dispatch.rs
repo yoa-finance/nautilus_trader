@@ -78,6 +78,7 @@ pub struct WsDispatchState {
     pub order_identities: DashMap<ClientOrderId, OrderIdentity>,
     pub pending_requests: DashMap<String, PendingRequest>,
     emitted_accepted: Mutex<FifoCache<ClientOrderId, 10_000>>,
+    pending_updates: Mutex<FifoCache<ClientOrderId, 10_000>>,
     filled_orders: Mutex<FifoCache<ClientOrderId, 10_000>>,
 }
 
@@ -87,6 +88,7 @@ impl Default for WsDispatchState {
             order_identities: DashMap::new(),
             pending_requests: DashMap::new(),
             emitted_accepted: Mutex::new(FifoCache::new()),
+            pending_updates: Mutex::new(FifoCache::new()),
             filled_orders: Mutex::new(FifoCache::new()),
         }
     }
@@ -106,6 +108,17 @@ impl WsDispatchState {
         self.emitted_accepted.lock().expect(MUTEX_POISONED).add(cid);
     }
 
+    pub fn insert_pending_update(&self, cid: ClientOrderId) {
+        self.pending_updates.lock().expect(MUTEX_POISONED).add(cid);
+    }
+
+    pub fn remove_pending_update(&self, cid: &ClientOrderId) -> bool {
+        let mut pending_updates = self.pending_updates.lock().expect(MUTEX_POISONED);
+        let existed = pending_updates.contains(cid);
+        pending_updates.remove(cid);
+        existed
+    }
+
     pub fn has_filled(&self, cid: &ClientOrderId) -> bool {
         self.filled_orders
             .lock()
@@ -122,6 +135,10 @@ impl WsDispatchState {
     pub fn cleanup_terminal(&self, cid: ClientOrderId) {
         self.order_identities.remove(&cid);
         self.emitted_accepted
+            .lock()
+            .expect(MUTEX_POISONED)
+            .remove(&cid);
+        self.pending_updates
             .lock()
             .expect(MUTEX_POISONED)
             .remove(&cid);

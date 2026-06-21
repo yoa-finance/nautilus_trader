@@ -1543,7 +1543,11 @@ fn dispatch_ws_trading_message(
             cancel_response,
             new_order_response,
         } => {
-            dispatch_state.pending_requests.remove(&request_id);
+            if let Some((_, pending)) = dispatch_state.pending_requests.remove(&request_id)
+                && matches!(pending.operation, PendingOperation::Modify)
+            {
+                dispatch_state.insert_pending_update(pending.client_order_id);
+            }
             log::debug!(
                 "WS cancel-replace accepted: request_id={request_id}, \
                  canceled_id={}, new_id={}",
@@ -2101,15 +2105,11 @@ fn dispatch_tracked_execution_report(
             }
 
             if state.has_emitted_accepted(&client_order_id) {
-                // Already accepted: this New is a cancel-replace result
-                let Some(price) = parse_spot_execution_report_price(
-                    report,
-                    &report.price,
-                    price_precision,
-                    "price",
-                ) else {
+                if !state.remove_pending_update(&client_order_id) {
+                    log::debug!("Skipping duplicate New for already-accepted {client_order_id}");
                     return;
-                };
+                }
+
                 let Some(quantity) = parse_spot_execution_report_quantity(
                     report,
                     &report.original_qty,
@@ -2118,24 +2118,13 @@ fn dispatch_tracked_execution_report(
                 ) else {
                     return;
                 };
-                let Some(stop_price) =
-                    parse_spot_execution_report_decimal(report, &report.stop_price, "stop_price")
+
+                let Some((price, trigger)) =
+                    parse_order_update_prices(report, identity.order_type, price_precision)
                 else {
                     return;
                 };
-                let trigger = if stop_price > Decimal::ZERO {
-                    let Some(trigger_price) = parse_spot_execution_report_price(
-                        report,
-                        &report.stop_price,
-                        price_precision,
-                        "stop_price",
-                    ) else {
-                        return;
-                    };
-                    Some(trigger_price)
-                } else {
-                    None
-                };
+
                 let updated = OrderUpdated::new(
                     emitter.trader_id(),
                     identity.strategy_id,
@@ -2148,7 +2137,7 @@ fn dispatch_tracked_execution_report(
                     false,
                     Some(venue_order_id),
                     Some(account_id),
-                    Some(price),
+                    price,
                     trigger,
                     None,  // protection_price
                     false, // is_quote_quantity
@@ -2336,6 +2325,65 @@ fn dispatch_tracked_execution_report(
             );
         }
     }
+}
+
+fn parse_order_update_prices(
+    report: &BinanceSpotExecutionReport,
+    order_type: OrderType,
+    price_precision: u8,
+) -> Option<(Option<Price>, Option<Price>)> {
+    let price = if order_type_accepts_update_price(order_type) {
+        Some(parse_spot_execution_report_price(
+            report,
+            &report.price,
+            price_precision,
+            "price",
+        )?)
+    } else {
+        None
+    };
+
+    let trigger = if order_type_accepts_update_trigger(order_type) {
+        let stop_price =
+            parse_spot_execution_report_decimal(report, &report.stop_price, "stop_price")?;
+        if stop_price > Decimal::ZERO {
+            Some(parse_spot_execution_report_price(
+                report,
+                &report.stop_price,
+                price_precision,
+                "stop_price",
+            )?)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    Some((price, trigger))
+}
+
+fn order_type_accepts_update_price(order_type: OrderType) -> bool {
+    matches!(
+        order_type,
+        OrderType::Limit
+            | OrderType::StopLimit
+            | OrderType::MarketToLimit
+            | OrderType::LimitIfTouched
+            | OrderType::TrailingStopLimit
+    )
+}
+
+fn order_type_accepts_update_trigger(order_type: OrderType) -> bool {
+    matches!(
+        order_type,
+        OrderType::StopMarket
+            | OrderType::StopLimit
+            | OrderType::MarketIfTouched
+            | OrderType::LimitIfTouched
+            | OrderType::TrailingStopMarket
+            | OrderType::TrailingStopLimit
+    )
 }
 
 fn parse_spot_execution_report_quantity(
@@ -3055,6 +3103,18 @@ mod tests {
         client_order_id: ClientOrderId,
         instrument_id: InstrumentId,
     ) -> WsDispatchState {
+        create_tracked_dispatch_state_with_order_type(
+            client_order_id,
+            instrument_id,
+            OrderType::Limit,
+        )
+    }
+
+    fn create_tracked_dispatch_state_with_order_type(
+        client_order_id: ClientOrderId,
+        instrument_id: InstrumentId,
+        order_type: OrderType,
+    ) -> WsDispatchState {
         let dispatch_state = WsDispatchState::default();
         dispatch_state.order_identities.insert(
             client_order_id,
@@ -3062,12 +3122,33 @@ mod tests {
                 instrument_id,
                 strategy_id: StrategyId::from("TEST-STRATEGY"),
                 order_side: OrderSide::Buy,
-                order_type: OrderType::Limit,
+                order_type,
                 price: None,
                 quantity: Quantity::from("1"),
             },
         );
         dispatch_state
+    }
+
+    fn execution_report_new(
+        client_order_id: ClientOrderId,
+        order_type: &str,
+        price: &str,
+        stop_price: &str,
+    ) -> BinanceSpotExecutionReport {
+        let encoded = encode_broker_id(&client_order_id, BINANCE_NAUTILUS_SPOT_BROKER_ID);
+        serde_json::from_str(&format!(
+            r#"{{
+                "e":"executionReport","E":1709654400000,"s":"BTCUSDT",
+                "c":"{encoded}","S":"SELL","o":"{order_type}","f":"GTC",
+                "q":"0.00100000","p":"{price}","P":"{stop_price}",
+                "x":"NEW","X":"NEW","r":"NONE","i":12345678,
+                "l":"0.00000000","z":"0.00000000","L":"0.00000000",
+                "n":"0","N":null,"T":1709654400000,"t":-1,"w":true,"m":false,
+                "O":1709654400000,"Z":"0.00000000","C":""
+            }}"#,
+        ))
+        .expect("valid executionReport NEW fixture")
     }
 
     #[rstest]
@@ -3231,6 +3312,147 @@ mod tests {
                 .get(&client_order_id)
                 .is_none()
         );
+    }
+
+    #[rstest]
+    fn test_duplicate_new_after_list_status_accepted_is_ignored() {
+        let clock = get_atomic_clock_realtime();
+        let (emitter, mut rx) = create_test_emitter(clock);
+        let http_client = create_test_http_client(clock);
+        let client_order_id = ClientOrderId::from("STOP");
+        let dispatch_state = create_tracked_dispatch_state_with_order_type(
+            client_order_id,
+            InstrumentId::from("BTCUSDT.BINANCE"),
+            OrderType::StopMarket,
+        );
+        let ws_authenticated = tokio::sync::Notify::new();
+        let seen_trade_ids = Arc::new(Mutex::new(FifoCache::new()));
+        let list_status = BinanceSpotListStatusMsg {
+            event_time: 1_709_654_400_123,
+            transact_time: 1_709_654_400_124,
+            order_list_id: 42,
+            contingency_type: ContingencyType::Oco,
+            list_status_type: ListStatusType::ExecStarted,
+            list_order_status: ListOrderStatus::Executing,
+            subscription_id: None,
+            symbol: Ustr::from("BTCUSDT"),
+            list_client_order_id: "LIST".to_string(),
+            reject_reason: String::new(),
+            orders: vec![BinanceSpotListStatusOrder {
+                order_id: 1001,
+                symbol: Ustr::from("BTCUSDT"),
+                client_order_id: encode_broker_id(
+                    &client_order_id,
+                    BINANCE_NAUTILUS_SPOT_BROKER_ID,
+                ),
+            }],
+        };
+
+        dispatch_list_status(
+            &list_status,
+            &emitter,
+            AccountId::from("BINANCE-001"),
+            &dispatch_state,
+            clock,
+        );
+
+        match rx.try_recv().expect("OrderAccepted event expected") {
+            ExecutionEvent::Order(OrderEventAny::Accepted(event)) => {
+                assert_eq!(event.client_order_id, client_order_id);
+            }
+            other => panic!("Expected OrderAccepted event, was {other:?}"),
+        }
+
+        let report =
+            execution_report_new(client_order_id, "STOP_LOSS", "0.00000000", "90000.00000000");
+        dispatch_ws_trading_message(
+            BinanceSpotWsTradingMessage::ExecutionReport(Box::new(report)),
+            &emitter,
+            &http_client,
+            AccountId::from("BINANCE-001"),
+            clock,
+            &dispatch_state,
+            &ws_authenticated,
+            &seen_trade_ids,
+        );
+
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[rstest]
+    fn test_pending_modify_new_emits_limit_order_updated() {
+        let clock = get_atomic_clock_realtime();
+        let (emitter, mut rx) = create_test_emitter(clock);
+        let http_client = create_test_http_client(clock);
+        let client_order_id = ClientOrderId::from("LIMIT");
+        let dispatch_state =
+            create_tracked_dispatch_state(client_order_id, InstrumentId::from("BTCUSDT.BINANCE"));
+        let ws_authenticated = tokio::sync::Notify::new();
+        let seen_trade_ids = Arc::new(Mutex::new(FifoCache::new()));
+
+        dispatch_state.insert_accepted(client_order_id);
+        dispatch_state.insert_pending_update(client_order_id);
+        let report = execution_report_new(client_order_id, "LIMIT", "90123.45000000", "0.00000000");
+
+        dispatch_ws_trading_message(
+            BinanceSpotWsTradingMessage::ExecutionReport(Box::new(report)),
+            &emitter,
+            &http_client,
+            AccountId::from("BINANCE-001"),
+            clock,
+            &dispatch_state,
+            &ws_authenticated,
+            &seen_trade_ids,
+        );
+
+        match rx.try_recv().expect("OrderUpdated event expected") {
+            ExecutionEvent::Order(OrderEventAny::Updated(event)) => {
+                assert_eq!(event.client_order_id, client_order_id);
+                assert_eq!(event.price, Some(Price::from("90123.45")));
+                assert_eq!(event.trigger_price, None);
+            }
+            other => panic!("Expected OrderUpdated event, was {other:?}"),
+        }
+    }
+
+    #[rstest]
+    fn test_pending_modify_new_emits_valid_stop_market_update_shape() {
+        let clock = get_atomic_clock_realtime();
+        let (emitter, mut rx) = create_test_emitter(clock);
+        let http_client = create_test_http_client(clock);
+        let client_order_id = ClientOrderId::from("STOP");
+        let dispatch_state = create_tracked_dispatch_state_with_order_type(
+            client_order_id,
+            InstrumentId::from("BTCUSDT.BINANCE"),
+            OrderType::StopMarket,
+        );
+        let ws_authenticated = tokio::sync::Notify::new();
+        let seen_trade_ids = Arc::new(Mutex::new(FifoCache::new()));
+
+        dispatch_state.insert_accepted(client_order_id);
+        dispatch_state.insert_pending_update(client_order_id);
+        let report =
+            execution_report_new(client_order_id, "STOP_LOSS", "0.00000000", "90000.00000000");
+
+        dispatch_ws_trading_message(
+            BinanceSpotWsTradingMessage::ExecutionReport(Box::new(report)),
+            &emitter,
+            &http_client,
+            AccountId::from("BINANCE-001"),
+            clock,
+            &dispatch_state,
+            &ws_authenticated,
+            &seen_trade_ids,
+        );
+
+        match rx.try_recv().expect("OrderUpdated event expected") {
+            ExecutionEvent::Order(OrderEventAny::Updated(event)) => {
+                assert_eq!(event.client_order_id, client_order_id);
+                assert_eq!(event.price, None);
+                assert_eq!(event.trigger_price, Some(Price::from("90000")));
+            }
+            other => panic!("Expected OrderUpdated event, was {other:?}"),
+        }
     }
 
     #[rstest]
