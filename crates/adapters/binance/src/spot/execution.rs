@@ -934,7 +934,7 @@ impl ExecutionClient for BinanceSpotExecutionClient {
     }
 
     fn submit_order_list(&self, cmd: SubmitOrderList) -> anyhow::Result<()> {
-        log::debug!(
+        log::info!(
             "Binance Spot submit_order_list entered child_count={}",
             cmd.order_list.client_order_ids.len()
         );
@@ -972,7 +972,7 @@ impl ExecutionClient for BinanceSpotExecutionClient {
         };
 
         for order in &orders {
-            log::debug!(
+            log::info!(
                 "Binance Spot submit_order_list child_submitted_emitted client_order_id={}",
                 order.client_order_id()
             );
@@ -1003,7 +1003,7 @@ impl ExecutionClient for BinanceSpotExecutionClient {
         self.spawn_task("submit_oco_order_list_http", async move {
             match http_client.submit_oco_order_list(&params).await {
                 Ok(response) => {
-                    log::debug!(
+                    log::info!(
                         "Binance Spot submit_order_list http_result=ok order_list_id={}",
                         response.order_list_id
                     );
@@ -1841,7 +1841,7 @@ fn emit_order_list_denied(
     reason: &str,
 ) {
     for order in orders {
-        log::debug!(
+        log::info!(
             "Binance Spot submit_order_list child_denied_emitted client_order_id={}",
             order.client_order_id()
         );
