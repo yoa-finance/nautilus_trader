@@ -934,6 +934,10 @@ impl ExecutionClient for BinanceSpotExecutionClient {
     }
 
     fn submit_order_list(&self, cmd: SubmitOrderList) -> anyhow::Result<()> {
+        log::debug!(
+            "Binance Spot submit_order_list entered child_count={}",
+            cmd.order_list.client_order_ids.len()
+        );
         let orders = cmd
             .order_list
             .client_order_ids
@@ -950,14 +954,28 @@ impl ExecutionClient for BinanceSpotExecutionClient {
         for order in &orders {
             if order.is_closed() {
                 let client_order_id = order.client_order_id();
-                anyhow::bail!("Cannot submit closed order list child {client_order_id}");
+                let reason = format!("Cannot submit closed order list child {client_order_id}");
+                log::warn!("Binance Spot submit_order_list validation_failed: {reason}");
+                emit_order_list_denied(&self.emitter, &orders, &reason);
+                return Ok(());
             }
         }
 
-        let params = build_oco_order_list_params(cmd.params.as_ref(), &orders)?;
+        let params = match build_oco_order_list_params(cmd.params.as_ref(), &orders) {
+            Ok(params) => params,
+            Err(err) => {
+                let reason = err.to_string();
+                log::warn!("Binance Spot submit_order_list validation_failed: {reason}");
+                emit_order_list_denied(&self.emitter, &orders, &reason);
+                return Ok(());
+            }
+        };
 
         for order in &orders {
-            log::debug!("OrderSubmitted client_order_id={}", order.client_order_id());
+            log::debug!(
+                "Binance Spot submit_order_list child_submitted_emitted client_order_id={}",
+                order.client_order_id()
+            );
             self.emitter.emit_order_submitted(order);
 
             self.dispatch_state.order_identities.insert(
@@ -985,6 +1003,10 @@ impl ExecutionClient for BinanceSpotExecutionClient {
         self.spawn_task("submit_oco_order_list_http", async move {
             match http_client.submit_oco_order_list(&params).await {
                 Ok(response) => {
+                    log::debug!(
+                        "Binance Spot submit_order_list http_result=ok order_list_id={}",
+                        response.order_list_id
+                    );
                     for acceptance in oco_child_acceptances(&response) {
                         let Some(order) = orders_by_client_id.get(&acceptance.client_order_id)
                         else {
@@ -1009,6 +1031,7 @@ impl ExecutionClient for BinanceSpotExecutionClient {
                 }
                 Err(err) => {
                     let reason = err.to_string();
+                    log::warn!("Binance Spot submit_order_list http_result=err reason={reason}");
                     let due_post_only = is_spot_post_only_rejection(&err);
                     let ts_event = clock.get_time_ns();
                     for order in orders_by_client_id.values() {
@@ -1810,6 +1833,20 @@ fn build_new_order_params(
         strategy_id: None,
         strategy_type: None,
     })
+}
+
+fn emit_order_list_denied(
+    emitter: &ExecutionEventEmitter,
+    orders: &[nautilus_model::orders::OrderAny],
+    reason: &str,
+) {
+    for order in orders {
+        log::debug!(
+            "Binance Spot submit_order_list child_denied_emitted client_order_id={}",
+            order.client_order_id()
+        );
+        emitter.emit_order_denied(order, reason);
+    }
 }
 
 fn build_oco_order_list_params(
@@ -3083,6 +3120,27 @@ mod tests {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         emitter.set_sender(tx);
         (emitter, rx)
+    }
+
+    #[rstest]
+    fn test_emit_order_list_denied_emits_denied_for_each_child() {
+        let clock = get_atomic_clock_realtime();
+        let (emitter, mut rx) = create_test_emitter(clock);
+        let orders = sell_oco_orders("0.001", "0.001");
+        let reason = "Binance Spot OCO requires one post-only LIMIT target";
+
+        emit_order_list_denied(&emitter, &orders, reason);
+
+        for expected_id in [ClientOrderId::from("TARGET"), ClientOrderId::from("STOP")] {
+            match rx.try_recv().expect("OrderDenied event expected") {
+                ExecutionEvent::Order(OrderEventAny::Denied(event)) => {
+                    assert_eq!(event.client_order_id, expected_id);
+                    assert_eq!(event.reason.as_str(), reason);
+                }
+                other => panic!("Expected OrderDenied event, was {other:?}"),
+            }
+        }
+        assert!(rx.try_recv().is_err());
     }
 
     fn create_test_http_client(clock: &'static AtomicTime) -> BinanceSpotHttpClient {
