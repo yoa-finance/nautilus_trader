@@ -95,12 +95,13 @@ use crate::{
             order_type_to_binance_spot, time_in_force_to_binance_spot,
         },
         http::{
+            BinanceSpotHttpResult,
             client::BinanceSpotHttpClient,
             error::BinanceSpotHttpError,
             models::{BatchCancelResult, BinanceOrderListResponse},
             query::{
                 BatchCancelItem, CancelOrderParams, CancelReplaceOrderParams,
-                NewOrderListOcoParams, NewOrderParams,
+                NewOrderListOcoParams, NewOrderListOpocoParams, NewOrderParams,
             },
         },
         sbe::spot::list_order_status::ListOrderStatus,
@@ -109,6 +110,7 @@ use crate::{
 
 const OCO_CONTINGENCY_TYPE_PARAM: &str = "contingency_type";
 const OCO_CONTINGENCY_TYPE_VALUE: &str = "OCO";
+const OPOCO_CONTINGENCY_TYPE_VALUE: &str = "OPOCO";
 
 /// Live execution client for Binance Spot trading.
 ///
@@ -961,7 +963,7 @@ impl ExecutionClient for BinanceSpotExecutionClient {
             }
         }
 
-        let params = match build_oco_order_list_params(cmd.params.as_ref(), &orders) {
+        let params = match build_spot_order_list_params(cmd.params.as_ref(), &orders) {
             Ok(params) => params,
             Err(err) => {
                 let reason = err.to_string();
@@ -1000,8 +1002,9 @@ impl ExecutionClient for BinanceSpotExecutionClient {
             orders_by_client_id.insert(order.client_order_id(), order);
         }
 
-        self.spawn_task("submit_oco_order_list_http", async move {
-            match http_client.submit_oco_order_list(&params).await {
+        let task_name = params.task_name();
+        self.spawn_task(task_name, async move {
+            match params.submit(&http_client).await {
                 Ok(response) => {
                     log::info!(
                         "Binance Spot submit_order_list http_result=ok order_list_id={}",
@@ -1011,7 +1014,7 @@ impl ExecutionClient for BinanceSpotExecutionClient {
                         let Some(order) = orders_by_client_id.get(&acceptance.client_order_id)
                         else {
                             log::warn!(
-                                "No cached OCO child order for accepted client_order_id={}",
+                                "No cached order-list child order for accepted client_order_id={}",
                                 acceptance.client_order_id
                             );
                             continue;
@@ -1849,6 +1852,52 @@ fn emit_order_list_denied(
     }
 }
 
+#[derive(Debug)]
+enum BinanceSpotOrderListParams {
+    Oco(NewOrderListOcoParams),
+    Opoco(NewOrderListOpocoParams),
+}
+
+impl BinanceSpotOrderListParams {
+    const fn task_name(&self) -> &'static str {
+        match self {
+            Self::Oco(_) => "submit_oco_order_list_http",
+            Self::Opoco(_) => "submit_opoco_order_list_http",
+        }
+    }
+
+    async fn submit(
+        self,
+        http_client: &BinanceSpotHttpClient,
+    ) -> BinanceSpotHttpResult<BinanceOrderListResponse> {
+        match self {
+            Self::Oco(params) => http_client.submit_oco_order_list(&params).await,
+            Self::Opoco(params) => http_client.submit_opoco_order_list(&params).await,
+        }
+    }
+}
+
+fn build_spot_order_list_params(
+    command_params: Option<&nautilus_core::params::Params>,
+    orders: &[nautilus_model::orders::OrderAny],
+) -> anyhow::Result<BinanceSpotOrderListParams> {
+    match order_list_contingency_type(command_params) {
+        Some(value) if value.eq_ignore_ascii_case(OCO_CONTINGENCY_TYPE_VALUE) => {
+            build_oco_order_list_params(command_params, orders).map(BinanceSpotOrderListParams::Oco)
+        }
+        Some(value) if value.eq_ignore_ascii_case(OPOCO_CONTINGENCY_TYPE_VALUE) => {
+            build_opoco_order_list_params(command_params, orders)
+                .map(BinanceSpotOrderListParams::Opoco)
+        }
+        Some(value) => anyhow::bail!(
+            "Binance Spot submit_order_list does not support params.{OCO_CONTINGENCY_TYPE_PARAM}={value}; supported values are OCO and OPOCO"
+        ),
+        None => anyhow::bail!(
+            "Binance Spot submit_order_list requires params.{OCO_CONTINGENCY_TYPE_PARAM}=OCO or OPOCO"
+        ),
+    }
+}
+
 fn build_oco_order_list_params(
     command_params: Option<&nautilus_core::params::Params>,
     orders: &[nautilus_model::orders::OrderAny],
@@ -1987,10 +2036,219 @@ fn build_oco_order_list_params(
     Ok(params)
 }
 
+fn build_opoco_order_list_params(
+    command_params: Option<&nautilus_core::params::Params>,
+    orders: &[nautilus_model::orders::OrderAny],
+) -> anyhow::Result<NewOrderListOpocoParams> {
+    if !has_opoco_contingency_param(command_params) {
+        anyhow::bail!(
+            "Binance Spot submit_order_list only supports params.{OCO_CONTINGENCY_TYPE_PARAM}=\
+             {OPOCO_CONTINGENCY_TYPE_VALUE} for native OPOCO"
+        );
+    }
+
+    if orders.len() != 3 {
+        anyhow::bail!(
+            "Binance Spot OPOCO order list requires exactly 3 child orders, received {}",
+            orders.len()
+        );
+    }
+
+    let first = &orders[0];
+    if orders
+        .iter()
+        .any(|order| order.instrument_id() != first.instrument_id())
+    {
+        anyhow::bail!("Binance Spot OPOCO child orders must use the same instrument");
+    }
+    if orders
+        .iter()
+        .any(|order| order.quantity() != first.quantity())
+    {
+        anyhow::bail!("Binance Spot OPOCO child orders must use the same quantity");
+    }
+    if orders.iter().any(|order| order.is_quote_quantity()) {
+        anyhow::bail!("Binance Spot OPOCO does not support quoteOrderQty child orders");
+    }
+
+    let buy_count = orders
+        .iter()
+        .filter(|order| order.order_side() == OrderSide::Buy)
+        .count();
+    let sell_count = orders
+        .iter()
+        .filter(|order| order.order_side() == OrderSide::Sell)
+        .count();
+    if buy_count + sell_count != orders.len() {
+        anyhow::bail!("Binance Spot OPOCO child orders must use BUY or SELL sides");
+    }
+    let (working_side, pending_side) = match (buy_count, sell_count) {
+        (1, 2) => (OrderSide::Buy, OrderSide::Sell),
+        (2, 1) => (OrderSide::Sell, OrderSide::Buy),
+        _ => anyhow::bail!(
+            "Binance Spot OPOCO requires exactly one working-side child and two pending-side children"
+        ),
+    };
+    let working = orders
+        .iter()
+        .find(|order| order.order_side() == working_side)
+        .ok_or_else(|| anyhow::anyhow!("Binance Spot OPOCO requires one working order"))?;
+    if working.order_type() != OrderType::Limit {
+        anyhow::bail!("Binance Spot OPOCO requires one LIMIT or LIMIT_MAKER working order");
+    }
+    let pending: Vec<_> = orders
+        .iter()
+        .filter(|order| order.client_order_id() != working.client_order_id())
+        .collect();
+    if pending.len() != 2
+        || pending
+            .iter()
+            .any(|order| order.order_side() != pending_side)
+    {
+        anyhow::bail!("Binance Spot OPOCO pending child orders must use the opposite working side");
+    }
+    let target = pending
+        .iter()
+        .copied()
+        .find(|order| order.order_type() == OrderType::Limit && order.is_post_only())
+        .ok_or_else(|| anyhow::anyhow!("Binance Spot OPOCO requires one post-only LIMIT target"))?;
+    let stop = pending
+        .iter()
+        .copied()
+        .find(|order| {
+            matches!(
+                order.order_type(),
+                OrderType::StopMarket | OrderType::StopLimit
+            )
+        })
+        .ok_or_else(|| {
+            anyhow::anyhow!("Binance Spot OPOCO requires one STOP_LOSS or STOP_LOSS_LIMIT child")
+        })?;
+    if working.client_order_id() == target.client_order_id()
+        || working.client_order_id() == stop.client_order_id()
+        || target.client_order_id() == stop.client_order_id()
+    {
+        anyhow::bail!("Binance Spot OPOCO child orders must be distinct");
+    }
+
+    let working_price = working
+        .price()
+        .ok_or_else(|| anyhow::anyhow!("Binance Spot OPOCO working order requires price"))?
+        .to_string();
+    let target_price = target
+        .price()
+        .ok_or_else(|| anyhow::anyhow!("Binance Spot OPOCO target LIMIT_MAKER requires price"))?
+        .to_string();
+    let stop_trigger_price = stop
+        .trigger_price()
+        .ok_or_else(|| anyhow::anyhow!("Binance Spot OPOCO stop child requires trigger price"))?
+        .to_string();
+    let stop_limit_price = match stop.order_type() {
+        OrderType::StopMarket => None,
+        OrderType::StopLimit => Some(
+            stop.price()
+                .ok_or_else(|| {
+                    anyhow::anyhow!("Binance Spot OPOCO STOP_LOSS_LIMIT child requires price")
+                })?
+                .to_string(),
+        ),
+        _ => unreachable!("stop order type filtered above"),
+    };
+    let stop_time_in_force = if stop.order_type() == OrderType::StopLimit {
+        Some(time_in_force_to_binance_spot(stop.time_in_force())?)
+    } else {
+        None
+    };
+
+    let working_type = if working.is_post_only() {
+        BinanceSpotOrderType::LimitMaker
+    } else {
+        BinanceSpotOrderType::Limit
+    };
+    let working_time_in_force = if working_type == BinanceSpotOrderType::Limit {
+        Some(time_in_force_to_binance_spot(working.time_in_force())?)
+    } else {
+        None
+    };
+    let stop_type = match stop.order_type() {
+        OrderType::StopMarket => BinanceSpotOrderType::StopLoss,
+        OrderType::StopLimit => BinanceSpotOrderType::StopLossLimit,
+        _ => unreachable!("stop order type filtered above"),
+    };
+    let working_client_id = encode_binance_client_order_id(
+        &working.client_order_id(),
+        BINANCE_NAUTILUS_SPOT_BROKER_ID,
+    )?;
+    let target_client_id =
+        encode_binance_client_order_id(&target.client_order_id(), BINANCE_NAUTILUS_SPOT_BROKER_ID)?;
+    let stop_client_id =
+        encode_binance_client_order_id(&stop.client_order_id(), BINANCE_NAUTILUS_SPOT_BROKER_ID)?;
+
+    let mut params = NewOrderListOpocoParams {
+        symbol: first.instrument_id().symbol.to_string(),
+        list_client_order_id: None,
+        working_type,
+        working_side: BinanceSide::try_from(working.order_side())?,
+        working_client_order_id: Some(working_client_id),
+        working_price,
+        working_quantity: working.quantity().to_string(),
+        working_time_in_force,
+        pending_side: BinanceSide::try_from(pending_side)?,
+        pending_above_type: BinanceSpotOrderType::LimitMaker,
+        pending_above_client_order_id: None,
+        pending_above_price: None,
+        pending_above_stop_price: None,
+        pending_above_time_in_force: None,
+        pending_below_type: None,
+        pending_below_client_order_id: None,
+        pending_below_price: None,
+        pending_below_stop_price: None,
+        pending_below_time_in_force: None,
+        new_order_resp_type: Some(BinanceOrderResponseType::Full),
+        self_trade_prevention_mode: None,
+    };
+
+    match pending_side {
+        OrderSide::Sell => {
+            params.pending_above_type = BinanceSpotOrderType::LimitMaker;
+            params.pending_above_client_order_id = Some(target_client_id);
+            params.pending_above_price = Some(target_price);
+
+            params.pending_below_type = Some(stop_type);
+            params.pending_below_client_order_id = Some(stop_client_id);
+            params.pending_below_price = stop_limit_price;
+            params.pending_below_stop_price = Some(stop_trigger_price);
+            params.pending_below_time_in_force = stop_time_in_force;
+        }
+        OrderSide::Buy => {
+            params.pending_above_type = stop_type;
+            params.pending_above_client_order_id = Some(stop_client_id);
+            params.pending_above_price = stop_limit_price;
+            params.pending_above_stop_price = Some(stop_trigger_price);
+            params.pending_above_time_in_force = stop_time_in_force;
+
+            params.pending_below_type = Some(BinanceSpotOrderType::LimitMaker);
+            params.pending_below_client_order_id = Some(target_client_id);
+            params.pending_below_price = Some(target_price);
+        }
+        side => anyhow::bail!("Unsupported Binance Spot OPOCO pending order side: {side:?}"),
+    }
+
+    Ok(params)
+}
+
 fn has_oco_contingency_param(params: Option<&nautilus_core::params::Params>) -> bool {
-    params
-        .and_then(|params| params.get_str(OCO_CONTINGENCY_TYPE_PARAM))
+    order_list_contingency_type(params)
         .is_some_and(|value| value.eq_ignore_ascii_case(OCO_CONTINGENCY_TYPE_VALUE))
+}
+
+fn has_opoco_contingency_param(params: Option<&nautilus_core::params::Params>) -> bool {
+    order_list_contingency_type(params)
+        .is_some_and(|value| value.eq_ignore_ascii_case(OPOCO_CONTINGENCY_TYPE_VALUE))
+}
+
+fn order_list_contingency_type(params: Option<&nautilus_core::params::Params>) -> Option<&str> {
+    params.and_then(|params| params.get_str(OCO_CONTINGENCY_TYPE_PARAM))
 }
 
 fn build_cancel_order_params(cmd: &CancelOrder) -> anyhow::Result<CancelOrderParams> {
@@ -2831,6 +3089,152 @@ mod tests {
     }
 
     #[rstest]
+    fn test_build_spot_order_list_params_dispatches_opoco_and_maps_buy_working_sell_pending() {
+        let params = opoco_order_list_params();
+        let orders = vec![
+            test_order(
+                OrderType::Limit,
+                "TARGET",
+                OrderSide::Sell,
+                "0.001",
+                Some("120.00"),
+                None,
+                true,
+            ),
+            test_order(
+                OrderType::StopMarket,
+                "STOP",
+                OrderSide::Sell,
+                "0.001",
+                None,
+                Some("95.00"),
+                false,
+            ),
+            test_order(
+                OrderType::Limit,
+                "ENTRY",
+                OrderSide::Buy,
+                "0.001",
+                Some("100.00"),
+                None,
+                false,
+            ),
+        ];
+
+        let request = match build_spot_order_list_params(Some(&params), &orders).unwrap() {
+            BinanceSpotOrderListParams::Opoco(request) => request,
+            BinanceSpotOrderListParams::Oco(_) => panic!("expected OPOCO params"),
+        };
+
+        assert_eq!(request.symbol, "BTCUSDT");
+        assert_eq!(request.working_side, BinanceSide::Buy);
+        assert_eq!(request.working_type, BinanceSpotOrderType::Limit);
+        assert_eq!(request.working_price, "100.00");
+        assert_eq!(request.working_quantity, "0.001");
+        assert!(request.working_time_in_force.is_some());
+        assert_eq!(request.pending_side, BinanceSide::Sell);
+        assert_eq!(request.pending_above_type, BinanceSpotOrderType::LimitMaker);
+        assert_eq!(request.pending_above_price.as_deref(), Some("120.00"));
+        assert!(request.pending_above_stop_price.is_none());
+        assert_eq!(
+            request.pending_below_type,
+            Some(BinanceSpotOrderType::StopLoss)
+        );
+        assert_eq!(request.pending_below_stop_price.as_deref(), Some("95.00"));
+        assert!(request.pending_below_price.is_none());
+        assert!(request.working_client_order_id.is_some());
+        assert!(request.pending_above_client_order_id.is_some());
+        assert!(request.pending_below_client_order_id.is_some());
+    }
+
+    #[rstest]
+    fn test_build_opoco_order_list_params_maps_sell_working_buy_stop_limit_pending() {
+        let params = opoco_order_list_params();
+        let orders = vec![
+            test_order(
+                OrderType::Limit,
+                "ENTRY",
+                OrderSide::Sell,
+                "0.001",
+                Some("100.00"),
+                None,
+                true,
+            ),
+            test_order(
+                OrderType::Limit,
+                "TARGET",
+                OrderSide::Buy,
+                "0.001",
+                Some("90.00"),
+                None,
+                true,
+            ),
+            test_order(
+                OrderType::StopLimit,
+                "STOP",
+                OrderSide::Buy,
+                "0.001",
+                Some("105.50"),
+                Some("105.00"),
+                false,
+            ),
+        ];
+
+        let request = build_opoco_order_list_params(Some(&params), &orders).unwrap();
+
+        assert_eq!(request.working_side, BinanceSide::Sell);
+        assert_eq!(request.working_type, BinanceSpotOrderType::LimitMaker);
+        assert_eq!(request.working_price, "100.00");
+        assert!(request.working_time_in_force.is_none());
+        assert_eq!(request.pending_side, BinanceSide::Buy);
+        assert_eq!(
+            request.pending_above_type,
+            BinanceSpotOrderType::StopLossLimit
+        );
+        assert_eq!(request.pending_above_stop_price.as_deref(), Some("105.00"));
+        assert_eq!(request.pending_above_price.as_deref(), Some("105.50"));
+        assert!(request.pending_above_time_in_force.is_some());
+        assert_eq!(
+            request.pending_below_type,
+            Some(BinanceSpotOrderType::LimitMaker)
+        );
+        assert_eq!(request.pending_below_price.as_deref(), Some("90.00"));
+        assert!(request.pending_below_stop_price.is_none());
+    }
+
+    #[rstest]
+    fn test_build_opoco_order_list_params_rejects_two_children() {
+        let params = opoco_order_list_params();
+        let orders = sell_oco_orders("0.001", "0.001");
+
+        let error = build_opoco_order_list_params(Some(&params), &orders).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("requires exactly 3 child orders")
+        );
+    }
+
+    #[rstest]
+    fn test_build_spot_order_list_params_rejects_unknown_contingency_type() {
+        let mut params = Params::new();
+        params.insert(
+            OCO_CONTINGENCY_TYPE_PARAM.to_string(),
+            Value::String("OTOCO".to_string()),
+        );
+        let orders = sell_oco_orders("0.001", "0.001");
+
+        let error = build_spot_order_list_params(Some(&params), &orders).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("supported values are OCO and OPOCO")
+        );
+    }
+
+    #[rstest]
     fn test_dispatch_ws_trading_message_emits_cancel_rejected_and_clears_pending_request() {
         let clock = get_atomic_clock_realtime();
         let (emitter, mut rx) = create_test_emitter(clock);
@@ -3050,6 +3454,15 @@ mod tests {
         params.insert(
             OCO_CONTINGENCY_TYPE_PARAM.to_string(),
             Value::String(OCO_CONTINGENCY_TYPE_VALUE.to_string()),
+        );
+        params
+    }
+
+    fn opoco_order_list_params() -> Params {
+        let mut params = Params::new();
+        params.insert(
+            OCO_CONTINGENCY_TYPE_PARAM.to_string(),
+            Value::String(OPOCO_CONTINGENCY_TYPE_VALUE.to_string()),
         );
         params
     }
