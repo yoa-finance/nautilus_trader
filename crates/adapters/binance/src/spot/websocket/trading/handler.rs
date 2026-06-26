@@ -52,7 +52,7 @@ use crate::{
         enums::BinanceSpotUserDataEventType,
         http::{models::BinanceCancelOrderResponse, parse},
         sbe::spot::{
-            ReadBuf,
+            ReadBuf, cancel_order_list_response_codec,
             error_response_codec::ErrorResponseDecoder,
             message_header_codec,
             web_socket_response_codec::{SBE_TEMPLATE_ID, WebSocketResponseDecoder},
@@ -400,7 +400,9 @@ impl BinanceSpotWsTradingHandler {
             Ok(response) => self.emit(response),
             Err(e) => {
                 log::error!("Failed to decode WebSocket API response: {e}");
-                self.emit(BinanceSpotWsTradingMessage::Error(e.to_string()));
+                self.emit(BinanceSpotWsTradingMessage::FatalError {
+                    reason: e.to_string(),
+                });
             }
         }
     }
@@ -613,6 +615,28 @@ impl BinanceSpotWsTradingHandler {
                         "Binance server shutdown notice (SBE, event_time={event_time}); disconnect expected within ~10 minutes",
                     );
                     return Ok(BinanceSpotWsTradingMessage::ServerShutdown { event_time });
+                }
+                cancel_order_list_response_codec::SBE_TEMPLATE_ID => {
+                    log::warn!(
+                        "Received direct SBE CancelOrderListResponse ({} bytes); reconciliation required",
+                        data.len()
+                    );
+                    let response = super::decode_sbe::decode_cancel_order_list_response(data)
+                        .map_err(|e| {
+                            BinanceWsApiError::ClientError(format!(
+                                "SBE CancelOrderListResponse decode failed: {e}"
+                            ))
+                        })?;
+                    return Ok(BinanceSpotWsTradingMessage::OrderListReconciliationRequired {
+                        response,
+                        reason: "direct Binance SBE order-list response requires broker reconciliation before terminalizing live run".to_string(),
+                    });
+                }
+                _ if is_direct_ws_api_response_template(template_id) => {
+                    return Err(BinanceWsApiError::UnsupportedDirectResponse {
+                        template_id,
+                        msg: "direct Binance SBE WebSocket API response requires explicit decoder support and reconciliation handling".to_string(),
+                    });
                 }
                 _ => {} // Fall through to WebSocketResponse parsing
             }
@@ -918,14 +942,31 @@ pub(crate) fn parse_server_shutdown_event_time_ms(data: &[u8]) -> i64 {
     buf.get_i64_at(message_header_codec::ENCODED_LENGTH) / 1_000
 }
 
+fn is_direct_ws_api_response_template(template_id: u16) -> bool {
+    matches!(
+        template_id,
+        51 | 52
+            | 53
+            | 100
+            | 101
+            | 300..=315
+            | 400..=403
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use rstest::rstest;
 
     use super::*;
+    use crate::common::consts::{
+        BINANCE_SPOT_SBE_WS_API_DEMO_URL, BINANCE_SPOT_SBE_WS_API_TESTNET_URL,
+        BINANCE_SPOT_SBE_WS_API_URL,
+    };
     use crate::spot::sbe::spot::{
-        WriteBuf, contingency_type::ContingencyType, list_order_status::ListOrderStatus,
-        list_status_event_codec, list_status_type::ListStatusType,
+        Encoder, WriteBuf, cancel_order_list_response_codec, contingency_type::ContingencyType,
+        list_order_status::ListOrderStatus, list_status_event_codec,
+        list_status_type::ListStatusType,
     };
 
     fn encode_list_status() -> Vec<u8> {
@@ -978,20 +1019,93 @@ mod tests {
         buf_vec
     }
 
+    fn encode_cancel_order_list_response() -> Vec<u8> {
+        let mut buf_vec = vec![0u8; 256];
+        let buf = WriteBuf::new(buf_vec.as_mut_slice());
+        let enc = cancel_order_list_response_codec::CancelOrderListResponseEncoder::default()
+            .wrap(buf, message_header_codec::ENCODED_LENGTH);
+        let mut header = enc.header(0);
+        let mut enc = header.parent().unwrap();
+
+        enc.order_list_id(42);
+        enc.contingency_type(ContingencyType::Oco);
+        enc.list_status_type(ListStatusType::AllDone);
+        enc.list_order_status(ListOrderStatus::AllDone);
+        enc.transaction_time(1_709_654_400_124_000);
+        enc.price_exponent(-2);
+        enc.qty_exponent(-8);
+
+        let orders_enc = cancel_order_list_response_codec::encoder::OrdersEncoder::default();
+        let mut orders_enc = enc.orders_encoder(1, orders_enc);
+        orders_enc.advance().unwrap();
+        orders_enc.order_id(63562212148_i64);
+        orders_enc.symbol("BTCUSDT");
+        orders_enc.client_order_id("target-client");
+        let enc = orders_enc.parent().unwrap();
+
+        let reports_enc = cancel_order_list_response_codec::encoder::OrderReportsEncoder::default();
+        let mut reports_enc = enc.order_reports_encoder(0, reports_enc);
+        let mut enc = reports_enc.parent().unwrap();
+
+        enc.list_client_order_id("list-client-1");
+        enc.symbol("BTCUSDT");
+        let encoded_len = enc.get_limit();
+        buf_vec.truncate(encoded_len);
+        buf_vec
+    }
+
+    fn encode_direct_template_header(template_id: u16) -> Vec<u8> {
+        let mut buf_vec = vec![0u8; message_header_codec::ENCODED_LENGTH];
+        buf_vec[0..2].copy_from_slice(&0u16.to_le_bytes());
+        buf_vec[2..4].copy_from_slice(&template_id.to_le_bytes());
+        buf_vec[4..6].copy_from_slice(&crate::spot::sbe::spot::SBE_SCHEMA_ID.to_le_bytes());
+        buf_vec[6..8].copy_from_slice(&crate::spot::sbe::spot::SBE_SCHEMA_VERSION.to_le_bytes());
+        buf_vec
+    }
+
     fn create_test_handler() -> BinanceSpotWsTradingHandler {
+        create_test_handler_with_rx().0
+    }
+
+    fn create_test_handler_with_rx() -> (
+        BinanceSpotWsTradingHandler,
+        tokio::sync::mpsc::UnboundedReceiver<BinanceSpotWsTradingMessage>,
+    ) {
         let (_cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
         let (_raw_tx, raw_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (out_tx, _out_rx) = tokio::sync::mpsc::unbounded_channel();
-        BinanceSpotWsTradingHandler::new(
-            Arc::new(AtomicBool::new(false)),
-            cmd_rx,
-            raw_rx,
-            out_tx,
-            Arc::new(SigningCredential::new(
-                "test_key".to_string(),
-                "test_secret".to_string(),
-            )),
+        let (out_tx, out_rx) = tokio::sync::mpsc::unbounded_channel();
+        (
+            BinanceSpotWsTradingHandler::new(
+                Arc::new(AtomicBool::new(false)),
+                cmd_rx,
+                raw_rx,
+                out_tx,
+                Arc::new(SigningCredential::new(
+                    "test_key".to_string(),
+                    "test_secret".to_string(),
+                )),
+            ),
+            out_rx,
         )
+    }
+
+    #[rstest]
+    fn test_spot_sbe_ws_api_urls_match_generated_schema_version() {
+        let schema_query = format!(
+            "sbeSchemaId={}&sbeSchemaVersion={}",
+            crate::spot::sbe::spot::SBE_SCHEMA_ID,
+            crate::spot::sbe::spot::SBE_SCHEMA_VERSION
+        );
+        for url in [
+            BINANCE_SPOT_SBE_WS_API_URL,
+            BINANCE_SPOT_SBE_WS_API_TESTNET_URL,
+            BINANCE_SPOT_SBE_WS_API_DEMO_URL,
+        ] {
+            assert!(
+                url.contains(&schema_query),
+                "SBE WS API URL must match generated codec schema: {url}"
+            );
+        }
     }
 
     #[rstest]
@@ -1059,6 +1173,59 @@ mod tests {
                 panic!("template 606 must not emit Error: {err}");
             }
             other => panic!("expected ListStatus variant, was {other:?}"),
+        }
+    }
+
+    #[rstest]
+    fn test_decode_ws_api_response_template_312_requires_reconciliation() {
+        let mut handler = create_test_handler();
+        let msg = handler
+            .decode_ws_api_response(&encode_cancel_order_list_response())
+            .expect("template 312 should decode");
+
+        match msg {
+            BinanceSpotWsTradingMessage::OrderListReconciliationRequired { response, reason } => {
+                assert_eq!(response.template_id, 312);
+                assert_eq!(response.order_list_id, 42);
+                assert_eq!(response.list_client_order_id, "list-client-1");
+                assert_eq!(response.symbol, "BTCUSDT");
+                assert_eq!(response.orders.len(), 1);
+                assert_eq!(response.orders[0].client_order_id, "target-client");
+                assert!(reason.contains("reconciliation"));
+            }
+            BinanceSpotWsTradingMessage::Error(err) => {
+                panic!("template 312 must not emit generic Error: {err}");
+            }
+            other => panic!("expected OrderListReconciliationRequired variant, was {other:?}"),
+        }
+    }
+
+    #[rstest]
+    fn test_decode_ws_api_response_unsupported_direct_template_is_typed_error() {
+        let mut handler = create_test_handler();
+        let err = handler
+            .decode_ws_api_response(&encode_direct_template_header(309))
+            .expect_err("unsupported direct template should fail before envelope parsing");
+
+        match err {
+            BinanceWsApiError::UnsupportedDirectResponse { template_id, .. } => {
+                assert_eq!(template_id, 309);
+            }
+            other => panic!("expected UnsupportedDirectResponse, was {other:?}"),
+        }
+    }
+
+    #[rstest]
+    fn test_handle_binary_response_unsupported_direct_template_emits_fatal_error() {
+        let (mut handler, mut out_rx) = create_test_handler_with_rx();
+
+        handler.handle_binary_response(&encode_direct_template_header(309));
+
+        match out_rx.try_recv().expect("fatal error message expected") {
+            BinanceSpotWsTradingMessage::FatalError { reason } => {
+                assert!(reason.contains("Unsupported direct SBE WebSocket API response"));
+            }
+            other => panic!("expected FatalError, was {other:?}"),
         }
     }
 }

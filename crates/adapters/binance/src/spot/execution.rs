@@ -28,12 +28,17 @@ use nautilus_common::{
     cache::fifo::FifoCache,
     clients::ExecutionClient,
     live::{get_runtime, runner::get_exec_event_sender},
-    messages::execution::{
-        BatchCancelOrders, CancelAllOrders, CancelOrder, GenerateFillReports,
-        GenerateOrderStatusReport, GenerateOrderStatusReports, GenerateOrderStatusReportsBuilder,
-        GeneratePositionStatusReports, GeneratePositionStatusReportsBuilder, ModifyOrder,
-        QueryAccount, QueryOrder, SubmitOrder, SubmitOrderList,
+    messages::{
+        execution::{
+            BatchCancelOrders, CancelAllOrders, CancelOrder, GenerateFillReports,
+            GenerateOrderStatusReport, GenerateOrderStatusReports,
+            GenerateOrderStatusReportsBuilder, GeneratePositionStatusReports,
+            GeneratePositionStatusReportsBuilder, ModifyOrder, QueryAccount, QueryOrder,
+            SubmitOrder, SubmitOrderList,
+        },
+        system::ShutdownSystem,
     },
+    msgbus::{self, MessagingSwitchboard},
 };
 use nautilus_core::{
     MUTEX_POISONED, UUID4, UnixNanos,
@@ -1630,6 +1635,31 @@ fn dispatch_ws_trading_message(
             );
             // Individual OrderCanceled events arrive via UDS executionReport
         }
+        BinanceSpotWsTradingMessage::OrderListReconciliationRequired { response, reason } => {
+            log::error!(
+                "WS trading order-list reconciliation required: template_id={}, order_list_id={}, list_client_order_id={}, symbol={}, child_count={}, report_count={}, reason={}",
+                response.template_id,
+                response.order_list_id,
+                response.list_client_order_id,
+                response.symbol,
+                response.orders.len(),
+                response.order_reports.len(),
+                reason,
+            );
+            publish_adapter_fatal_shutdown(
+                dispatch_state,
+                emitter,
+                clock,
+                format!(
+                    "ws_trading_order_list_reconciliation_required: template_id={} order_list_id={} list_client_order_id={} symbol={} reason={}",
+                    response.template_id,
+                    response.order_list_id,
+                    response.list_client_order_id,
+                    response.symbol,
+                    reason,
+                ),
+            );
+        }
         BinanceSpotWsTradingMessage::UserDataSubscribed { subscription_id } => {
             log::info!("User data stream subscribed: id={subscription_id}");
         }
@@ -1689,7 +1719,35 @@ fn dispatch_ws_trading_message(
         BinanceSpotWsTradingMessage::Error(err) => {
             log::error!("WS trading API error: {err}");
         }
+        BinanceSpotWsTradingMessage::FatalError { reason } => {
+            log::error!("WS trading API fatal error: {reason}");
+            publish_adapter_fatal_shutdown(dispatch_state, emitter, clock, reason);
+        }
     }
+}
+
+fn publish_adapter_fatal_shutdown(
+    dispatch_state: &WsDispatchState,
+    emitter: &ExecutionEventEmitter,
+    clock: &'static AtomicTime,
+    reason: String,
+) {
+    if !dispatch_state.set_adapter_fatal_reason(reason.clone()) {
+        return;
+    }
+
+    let command = ShutdownSystem::new(
+        emitter.trader_id(),
+        Ustr::from("binance_spot_execution_client"),
+        Some(reason),
+        UUID4::new(),
+        clock.get_time_ns(),
+        None,
+    );
+    msgbus::publish_any(
+        MessagingSwitchboard::shutdown_system_topic(),
+        command.as_any(),
+    );
 }
 
 fn dispatch_list_status(
@@ -3283,6 +3341,34 @@ mod tests {
             }
             other => panic!("Expected CancelRejected event, was {other:?}"),
         }
+    }
+
+    #[rstest]
+    fn test_dispatch_ws_trading_message_fatal_error_records_adapter_signal() {
+        let clock = get_atomic_clock_realtime();
+        let (emitter, _rx) = create_test_emitter(clock);
+        let http_client = create_test_http_client(clock);
+        let dispatch_state = WsDispatchState::default();
+        let ws_authenticated = tokio::sync::Notify::new();
+        let seen_trade_ids = Arc::new(Mutex::new(FifoCache::new()));
+
+        dispatch_ws_trading_message(
+            BinanceSpotWsTradingMessage::FatalError {
+                reason: "unsupported direct template".to_string(),
+            },
+            &emitter,
+            &http_client,
+            AccountId::from("BINANCE-001"),
+            clock,
+            &dispatch_state,
+            &ws_authenticated,
+            &seen_trade_ids,
+        );
+
+        assert_eq!(
+            dispatch_state.adapter_fatal_reason().as_deref(),
+            Some("unsupported direct template")
+        );
     }
 
     #[rstest]

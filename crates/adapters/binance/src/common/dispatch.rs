@@ -80,6 +80,7 @@ pub struct WsDispatchState {
     emitted_accepted: Mutex<FifoCache<ClientOrderId, 10_000>>,
     pending_updates: Mutex<FifoCache<ClientOrderId, 10_000>>,
     filled_orders: Mutex<FifoCache<ClientOrderId, 10_000>>,
+    adapter_fatal_reason: Mutex<Option<String>>,
 }
 
 impl Default for WsDispatchState {
@@ -90,6 +91,7 @@ impl Default for WsDispatchState {
             emitted_accepted: Mutex::new(FifoCache::new()),
             pending_updates: Mutex::new(FifoCache::new()),
             filled_orders: Mutex::new(FifoCache::new()),
+            adapter_fatal_reason: Mutex::new(None),
         }
     }
 }
@@ -129,6 +131,22 @@ impl WsDispatchState {
     /// Marks an order as having received a fill.
     pub fn insert_filled(&self, cid: ClientOrderId) {
         self.filled_orders.lock().expect(MUTEX_POISONED).add(cid);
+    }
+
+    pub fn set_adapter_fatal_reason(&self, reason: String) -> bool {
+        let mut fatal_reason = self.adapter_fatal_reason.lock().expect(MUTEX_POISONED);
+        if fatal_reason.is_some() {
+            return false;
+        }
+        *fatal_reason = Some(reason);
+        true
+    }
+
+    pub fn adapter_fatal_reason(&self) -> Option<String> {
+        self.adapter_fatal_reason
+            .lock()
+            .expect(MUTEX_POISONED)
+            .clone()
     }
 
     /// Removes all tracking state for a terminal order.

@@ -32,6 +32,65 @@ use crate::spot::http::{
     query::{CancelOrderParams, CancelReplaceOrderParams, NewOrderParams},
 };
 
+/// Child order identity from a Binance order-list WebSocket API response.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BinanceSpotOrderListChild {
+    /// Exchange order ID.
+    pub order_id: i64,
+    /// Venue symbol.
+    pub symbol: String,
+    /// Venue client order ID.
+    pub client_order_id: String,
+}
+
+/// Child order report from a Binance order-list WebSocket API response.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BinanceSpotOrderListChildReport {
+    /// Exchange order ID.
+    pub order_id: i64,
+    /// Order list ID.
+    pub order_list_id: Option<i64>,
+    /// Venue symbol.
+    pub symbol: String,
+    /// Original venue client order ID.
+    pub orig_client_order_id: String,
+    /// Venue client order ID.
+    pub client_order_id: String,
+    /// Venue order status.
+    pub status: String,
+    /// Venue side.
+    pub side: String,
+    /// Venue order type.
+    pub order_type: String,
+    /// Venue time-in-force.
+    pub time_in_force: String,
+}
+
+/// Binance direct SBE order-list response that must be reconciled by the caller.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BinanceSpotOrderListReconciliation {
+    /// SBE template ID.
+    pub template_id: u16,
+    /// Exchange order list ID.
+    pub order_list_id: i64,
+    /// Venue list client order ID.
+    pub list_client_order_id: String,
+    /// Venue symbol.
+    pub symbol: String,
+    /// Transaction time in microseconds.
+    pub transaction_time: i64,
+    /// Venue contingency type.
+    pub contingency_type: String,
+    /// Venue list status type.
+    pub list_status_type: String,
+    /// Venue list order status.
+    pub list_order_status: String,
+    /// Child order identities.
+    pub orders: Vec<BinanceSpotOrderListChild>,
+    /// Child order reports.
+    pub order_reports: Vec<BinanceSpotOrderListChildReport>,
+}
+
 /// Commands sent from the outer client to the inner handler.
 ///
 /// The handler runs in a dedicated Tokio task and processes these commands
@@ -156,6 +215,13 @@ pub enum BinanceSpotWsTradingMessage {
         /// Canceled order responses.
         responses: Vec<BinanceCancelOrderResponse>,
     },
+    /// Direct order-list response received outside the standard WS API envelope.
+    OrderListReconciliationRequired {
+        /// Decoded response.
+        response: BinanceSpotOrderListReconciliation,
+        /// Reason reconciliation is required.
+        reason: String,
+    },
     /// User data stream subscribed.
     UserDataSubscribed {
         /// Subscription ID from Binance.
@@ -176,6 +242,11 @@ pub enum BinanceSpotWsTradingMessage {
     },
     /// Error from venue or network.
     Error(String),
+    /// Fatal adapter error requiring live runner reconciliation.
+    FatalError {
+        /// Error reason.
+        reason: String,
+    },
 }
 
 /// Metadata for a pending request.

@@ -34,6 +34,8 @@ pub enum BinanceWsApiError {
     RequestRejected { code: i32, msg: String },
     /// SBE decoding error.
     DecodeError(SbeDecodeError),
+    /// Direct SBE WebSocket API response not yet supported by the adapter.
+    UnsupportedDirectResponse { template_id: u16, msg: String },
     /// Request timed out.
     Timeout(String),
     /// Request ID not found in pending requests.
@@ -51,6 +53,12 @@ impl Display for BinanceWsApiError {
                 write!(f, "Request rejected [{code}]: {msg}")
             }
             Self::DecodeError(err) => write!(f, "Decode error: {err}"),
+            Self::UnsupportedDirectResponse { template_id, msg } => {
+                write!(
+                    f,
+                    "Unsupported direct SBE WebSocket API response template {template_id}: {msg}"
+                )
+            }
             Self::Timeout(msg) => write!(f, "Timeout: {msg}"),
             Self::UnknownRequestId(id) => write!(f, "Unknown request ID: {id}"),
         }
