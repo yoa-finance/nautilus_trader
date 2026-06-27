@@ -142,9 +142,38 @@ Expected:
 crate=stratneo-nautilus-binance version=0.59.0 yanked=false
 ```
 
-## 4. Update trade-service
+## 4. Audit And Update Consumers
 
-After crates.io has the new version, update the consumer pin:
+After crates.io has the new version, audit all StratNeo Cargo consumers before
+updating any one repo:
+
+```bash
+cd /home/allen/StratNeo
+rg -n "stratneo-nautilus-binance|nautilus-binance" \
+  --glob 'Cargo.toml' \
+  --glob 'Cargo.lock' \
+  --glob '!target'
+```
+
+Known consumer actions:
+
+| Repo | Action |
+|------|--------|
+| `trade-service` | Update the direct `nautilus-binance` pin and lockfile. |
+| `backtest-service` | No update unless the audit finds `stratneo-nautilus-binance`; it currently has no direct or resolved Binance adapter dependency. |
+
+Confirm the resolved dependency graph in any suspected consumer:
+
+```bash
+cd /home/allen/StratNeo/backtest-service
+INFISICAL_ENV=prod ./scripts/with_infisical.sh \
+  cargo +1.96.0 tree -i stratneo-nautilus-binance
+```
+
+If Cargo reports `did not match any packages`, do not add a new dependency just
+for the release. That repo is not consuming the published adapter crate.
+
+For `trade-service`, update the consumer pin:
 
 ```toml
 nautilus-binance = { package = "stratneo-nautilus-binance", version = "=0.59.0", default-features = false, features = ["high-precision"] }
@@ -170,9 +199,9 @@ consumer diff should normally be:
 - `Cargo.toml`: `=old` to `=new`
 - `Cargo.lock`: `stratneo-nautilus-binance` version and checksum
 
-## 5. Verify The Consumer
+## 5. Verify Consumers
 
-Run the live runner target first, then the workspace:
+For `trade-service`, run the live runner target first, then the workspace:
 
 ```bash
 cd /home/allen/StratNeo/trade-service
@@ -188,13 +217,18 @@ INFISICAL_LOAD_SHARED_PATH=true \
 ./scripts/with_infisical.sh cargo +1.96.0 check --workspace
 ```
 
+For any additional consumer found by the audit, run that repo's equivalent
+package-level check plus workspace check. For `backtest-service`, no Binance
+adapter verification is required when the dependency graph audit shows the crate
+is absent.
+
 ## 6. Commit Order
 
 Use separate commits when possible:
 
 1. `nautilus_trader`: adapter fix.
 2. `nautilus_trader`: crate version bump.
-3. `trade-service`: consumer pin and lockfile update.
+3. Consumer repos such as `trade-service`: pin and lockfile update.
 
 This keeps the source fix, publish metadata, and consumer rollout auditable.
 
