@@ -25,8 +25,8 @@ use ustr::Ustr;
 
 use super::{
     messages::{
-        BinanceSpotOrderListChild, BinanceSpotOrderListChildReport,
-        BinanceSpotOrderListReconciliation,
+        BinanceSpotOrderListCancelResult, BinanceSpotOrderListChild,
+        BinanceSpotOrderListChildReport,
     },
     user_data::{
         BinanceSpotAccountPositionMsg, BinanceSpotBalanceEntry, BinanceSpotBalanceUpdateMsg,
@@ -463,10 +463,9 @@ pub fn decode_balance_update(data: &[u8]) -> anyhow::Result<BinanceSpotBalanceUp
 
 /// Decodes an SBE CancelOrderListResponse (template 312).
 ///
-/// Binance can send this as a direct WebSocket API SBE template instead of the
-/// standard WebSocketResponse envelope. The decoded payload is intentionally
-/// surfaced as reconciliation-required data because order-list child lifecycle
-/// events must be confirmed against user-data execution reports or broker state.
+/// Binance returns this payload as the `openOrders.cancelAll` result when the
+/// canceled orders belong to an order list. The decoded child reports are used
+/// by the execution layer to deterministically close tracked child orders.
 ///
 /// # Errors
 ///
@@ -474,7 +473,7 @@ pub fn decode_balance_update(data: &[u8]) -> anyhow::Result<BinanceSpotBalanceUp
 /// or the schema ID does not match.
 pub fn decode_cancel_order_list_response(
     data: &[u8],
-) -> anyhow::Result<BinanceSpotOrderListReconciliation> {
+) -> anyhow::Result<BinanceSpotOrderListCancelResult> {
     if data.len() < HEADER_LEN {
         anyhow::bail!(
             "Buffer too short for SBE header: expected {HEADER_LEN}, was {}",
@@ -596,7 +595,7 @@ pub fn decode_cancel_order_list_response(
         String::from_utf8_lossy(dec.symbol_slice(coords)).into_owned()
     };
 
-    Ok(BinanceSpotOrderListReconciliation {
+    Ok(BinanceSpotOrderListCancelResult {
         template_id,
         order_list_id,
         list_client_order_id,

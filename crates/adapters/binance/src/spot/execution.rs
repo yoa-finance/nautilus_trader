@@ -67,7 +67,9 @@ use ustr::Ustr;
 
 use super::websocket::trading::{
     client::BinanceSpotWsTradingClient,
-    messages::BinanceSpotWsTradingMessage,
+    messages::{
+        BinanceSpotCancelAllResult, BinanceSpotOrderListCancelResult, BinanceSpotWsTradingMessage,
+    },
     parse::{
         parse_spot_account_position, parse_spot_exec_report_to_fill,
         parse_spot_exec_report_to_order_status,
@@ -1624,41 +1626,27 @@ fn dispatch_ws_trading_message(
                 "WS trading request failed without structured venue response: request_id={request_id}, {msg}"
             );
         }
-        BinanceSpotWsTradingMessage::AllOrdersCanceled {
-            request_id,
-            responses,
-        } => {
+        BinanceSpotWsTradingMessage::AllOrdersCanceled { request_id, result } => {
             dispatch_state.pending_requests.remove(&request_id);
-            log::debug!(
-                "WS all orders canceled: request_id={request_id}, count={}",
-                responses.len()
-            );
-            // Individual OrderCanceled events arrive via UDS executionReport
-        }
-        BinanceSpotWsTradingMessage::OrderListReconciliationRequired { response, reason } => {
-            log::error!(
-                "WS trading order-list reconciliation required: template_id={}, order_list_id={}, list_client_order_id={}, symbol={}, child_count={}, report_count={}, reason={}",
-                response.template_id,
-                response.order_list_id,
-                response.list_client_order_id,
-                response.symbol,
-                response.orders.len(),
-                response.order_reports.len(),
-                reason,
-            );
-            publish_adapter_fatal_shutdown(
-                dispatch_state,
-                emitter,
-                clock,
-                format!(
-                    "ws_trading_order_list_reconciliation_required: template_id={} order_list_id={} list_client_order_id={} symbol={} reason={}",
-                    response.template_id,
-                    response.order_list_id,
-                    response.list_client_order_id,
-                    response.symbol,
-                    reason,
-                ),
-            );
+            match result {
+                BinanceSpotCancelAllResult::Orders(responses) => {
+                    log::debug!(
+                        "WS all orders canceled: request_id={request_id}, count={}",
+                        responses.len()
+                    );
+                    // Individual OrderCanceled events arrive via UDS executionReport
+                }
+                BinanceSpotCancelAllResult::OrderList(response) => {
+                    dispatch_order_list_cancel_result(
+                        &request_id,
+                        &response,
+                        emitter,
+                        account_id,
+                        dispatch_state,
+                        clock,
+                    );
+                }
+            }
         }
         BinanceSpotWsTradingMessage::UserDataSubscribed { subscription_id } => {
             log::info!("User data stream subscribed: id={subscription_id}");
@@ -1723,6 +1711,77 @@ fn dispatch_ws_trading_message(
             log::error!("WS trading API fatal error: {reason}");
             publish_adapter_fatal_shutdown(dispatch_state, emitter, clock, reason);
         }
+    }
+}
+
+fn dispatch_order_list_cancel_result(
+    request_id: &str,
+    response: &BinanceSpotOrderListCancelResult,
+    emitter: &ExecutionEventEmitter,
+    account_id: AccountId,
+    dispatch_state: &WsDispatchState,
+    clock: &'static AtomicTime,
+) {
+    log::debug!(
+        "WS order-list cancel result: request_id={request_id}, template_id={}, order_list_id={}, list_client_order_id={}, symbol={}, child_count={}, report_count={}",
+        response.template_id,
+        response.order_list_id,
+        response.list_client_order_id,
+        response.symbol,
+        response.orders.len(),
+        response.order_reports.len(),
+    );
+
+    let ts_event = if response.transaction_time >= 0 {
+        UnixNanos::from_micros(response.transaction_time as u64)
+    } else {
+        clock.get_time_ns()
+    };
+    let ts_init = clock.get_time_ns();
+
+    for report in &response.order_reports {
+        let client_order_id = ClientOrderId::from(decode_broker_id(
+            &report.orig_client_order_id,
+            BINANCE_NAUTILUS_SPOT_BROKER_ID,
+        ));
+
+        let Some(identity) = dispatch_state
+            .order_identities
+            .get(&client_order_id)
+            .map(|entry| entry.clone())
+        else {
+            log::debug!(
+                "Ignoring untracked order-list cancel report client_order_id={client_order_id}, order_id={}",
+                report.order_id
+            );
+            continue;
+        };
+
+        let venue_order_id = VenueOrderId::new(report.order_id.to_string());
+        ensure_accepted_emitted(
+            client_order_id,
+            account_id,
+            venue_order_id,
+            &identity,
+            emitter,
+            dispatch_state,
+            ts_init,
+        );
+
+        let canceled = OrderCanceled::new(
+            emitter.trader_id(),
+            identity.strategy_id,
+            identity.instrument_id,
+            client_order_id,
+            UUID4::new(),
+            ts_event,
+            ts_init,
+            false,
+            Some(venue_order_id),
+            Some(account_id),
+        );
+        dispatch_state.cleanup_terminal(client_order_id);
+        emitter.send_order_event(OrderEventAny::Canceled(canceled));
     }
 }
 
@@ -3341,6 +3400,95 @@ mod tests {
             }
             other => panic!("Expected CancelRejected event, was {other:?}"),
         }
+    }
+
+    #[rstest]
+    fn test_dispatch_ws_trading_message_order_list_cancel_result_emits_canceled_and_clears_identity()
+     {
+        let clock = get_atomic_clock_realtime();
+        let (emitter, mut rx) = create_test_emitter(clock);
+        let http_client = create_test_http_client(clock);
+        let client_order_id = ClientOrderId::from("TARGET");
+        let dispatch_state =
+            create_tracked_dispatch_state(client_order_id, InstrumentId::from("BTCUSDT.BINANCE"));
+        dispatch_state.insert_accepted(client_order_id);
+        dispatch_state.pending_requests.insert(
+            "req-cancel-all".to_string(),
+            PendingRequest {
+                client_order_id,
+                venue_order_id: None,
+                operation: PendingOperation::Cancel,
+            },
+        );
+        let ws_authenticated = tokio::sync::Notify::new();
+        let seen_trade_ids = Arc::new(Mutex::new(FifoCache::new()));
+
+        dispatch_ws_trading_message(
+            BinanceSpotWsTradingMessage::AllOrdersCanceled {
+                request_id: "req-cancel-all".to_string(),
+                result: BinanceSpotCancelAllResult::OrderList(BinanceSpotOrderListCancelResult {
+                    template_id: 312,
+                    order_list_id: 42,
+                    list_client_order_id: "list-client-1".to_string(),
+                    symbol: "BTCUSDT".to_string(),
+                    transaction_time: 1_709_654_400_124_000,
+                    contingency_type: "Oco".to_string(),
+                    list_status_type: "AllDone".to_string(),
+                    list_order_status: "AllDone".to_string(),
+                    orders: Vec::new(),
+                    order_reports: vec![
+                        crate::spot::websocket::trading::messages::BinanceSpotOrderListChildReport {
+                            order_id: 1001,
+                            order_list_id: Some(42),
+                            symbol: "BTCUSDT".to_string(),
+                            orig_client_order_id: encode_broker_id(
+                                &client_order_id,
+                                BINANCE_NAUTILUS_SPOT_BROKER_ID,
+                            ),
+                            client_order_id: "cancel-client".to_string(),
+                            status: "Canceled".to_string(),
+                            side: "Sell".to_string(),
+                            order_type: "Limit".to_string(),
+                            time_in_force: "Gtc".to_string(),
+                        },
+                    ],
+                }),
+            },
+            &emitter,
+            &http_client,
+            AccountId::from("BINANCE-001"),
+            clock,
+            &dispatch_state,
+            &ws_authenticated,
+            &seen_trade_ids,
+        );
+
+        assert!(
+            dispatch_state
+                .pending_requests
+                .get("req-cancel-all")
+                .is_none()
+        );
+        assert!(
+            dispatch_state
+                .order_identities
+                .get(&client_order_id)
+                .is_none()
+        );
+        assert!(dispatch_state.adapter_fatal_reason().is_none());
+
+        match rx
+            .try_recv()
+            .expect("OrderCanceled event should be emitted")
+        {
+            ExecutionEvent::Order(OrderEventAny::Canceled(event)) => {
+                assert_eq!(event.client_order_id, client_order_id);
+                assert_eq!(event.venue_order_id, Some(VenueOrderId::from("1001")));
+                assert_eq!(event.account_id, Some(AccountId::from("BINANCE-001")));
+            }
+            other => panic!("Expected OrderCanceled event, was {other:?}"),
+        }
+        assert!(rx.try_recv().is_err());
     }
 
     #[rstest]

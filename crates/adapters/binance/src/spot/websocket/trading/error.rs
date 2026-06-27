@@ -34,8 +34,26 @@ pub enum BinanceWsApiError {
     RequestRejected { code: i32, msg: String },
     /// SBE decoding error.
     DecodeError(SbeDecodeError),
-    /// Direct SBE WebSocket API response not yet supported by the adapter.
+    /// Direct SBE WebSocket API response not supported by the current protocol model.
     UnsupportedDirectResponse { template_id: u16, msg: String },
+    /// WebSocket API response payload did not match the pending request method.
+    UnexpectedResponseTemplate {
+        /// Request ID from the WebSocketResponse envelope.
+        request_id: String,
+        /// Pending Binance WebSocket API method.
+        method: &'static str,
+        /// Accepted SBE template IDs for the method.
+        expected: &'static [u16],
+        /// Actual SBE template ID in the response payload.
+        actual: u16,
+    },
+    /// WebSocket API response is well-formed SBE but violates adapter invariants.
+    ProtocolViolation {
+        /// Request ID when available.
+        request_id: Option<String>,
+        /// Violation detail.
+        msg: String,
+    },
     /// Request timed out.
     Timeout(String),
     /// Request ID not found in pending requests.
@@ -58,6 +76,27 @@ impl Display for BinanceWsApiError {
                     f,
                     "Unsupported direct SBE WebSocket API response template {template_id}: {msg}"
                 )
+            }
+            Self::UnexpectedResponseTemplate {
+                request_id,
+                method,
+                expected,
+                actual,
+            } => {
+                write!(
+                    f,
+                    "Unexpected SBE WebSocket API response template for request_id={request_id} method={method}: actual={actual}, expected={expected:?}"
+                )
+            }
+            Self::ProtocolViolation { request_id, msg } => {
+                if let Some(request_id) = request_id {
+                    write!(
+                        f,
+                        "WebSocket API protocol violation for request_id={request_id}: {msg}"
+                    )
+                } else {
+                    write!(f, "WebSocket API protocol violation: {msg}")
+                }
             }
             Self::Timeout(msg) => write!(f, "Timeout: {msg}"),
             Self::UnknownRequestId(id) => write!(f, "Unknown request ID: {id}"),

@@ -42,8 +42,9 @@ use super::{
     client::BINANCE_WS_RATE_LIMIT_KEY_ORDER,
     error::{BinanceWsApiError, BinanceWsApiResult},
     messages::{
-        BinanceSpotWsTradingCommand, BinanceSpotWsTradingMessage, BinanceSpotWsTradingRequest,
-        BinanceSpotWsTradingRequestMeta, method,
+        BinanceSpotCancelAllResult, BinanceSpotOrderListCancelResult, BinanceSpotWsTradingCommand,
+        BinanceSpotWsTradingMessage, BinanceSpotWsTradingRequest, BinanceSpotWsTradingRequestMeta,
+        method,
     },
 };
 use crate::{
@@ -52,13 +53,29 @@ use crate::{
         enums::BinanceSpotUserDataEventType,
         http::{models::BinanceCancelOrderResponse, parse},
         sbe::spot::{
-            ReadBuf, cancel_order_list_response_codec,
+            ReadBuf, SBE_SCHEMA_ID, SBE_SCHEMA_VERSION, cancel_open_orders_response_codec,
+            cancel_order_list_response_codec, cancel_order_response_codec,
             error_response_codec::ErrorResponseDecoder,
-            message_header_codec,
+            message_header_codec, new_order_full_response_codec,
             web_socket_response_codec::{SBE_TEMPLATE_ID, WebSocketResponseDecoder},
         },
     },
 };
+
+const PLACE_ORDER_RESPONSE_TEMPLATES: &[u16] = &[new_order_full_response_codec::SBE_TEMPLATE_ID];
+const CANCEL_ORDER_RESPONSE_TEMPLATES: &[u16] = &[cancel_order_response_codec::SBE_TEMPLATE_ID];
+const CANCEL_REPLACE_RESPONSE_TEMPLATES: &[u16] = &[new_order_full_response_codec::SBE_TEMPLATE_ID];
+const CANCEL_ALL_RESPONSE_TEMPLATES: &[u16] = &[
+    cancel_open_orders_response_codec::SBE_TEMPLATE_ID,
+    cancel_order_list_response_codec::SBE_TEMPLATE_ID,
+];
+
+#[derive(Debug, Clone, Copy)]
+struct SbeFrameHeader {
+    template_id: u16,
+    schema_id: u16,
+    version: u16,
+}
 
 /// Binance Spot WebSocket API handler.
 ///
@@ -519,126 +536,114 @@ impl BinanceSpotWsTradingHandler {
         &mut self,
         data: &[u8],
     ) -> Result<BinanceSpotWsTradingMessage, BinanceWsApiError> {
-        // Check template ID before parsing
-        if data.len() >= message_header_codec::ENCODED_LENGTH {
-            let buf = ReadBuf::new(data);
-            let template_id = buf.get_u16_at(2);
+        let top_header = read_sbe_frame_header(data, None)?;
 
-            // User data stream events arrive as SBE with their own template IDs
-            // (not wrapped in WebSocketResponse template 50).
-            match template_id {
-                601 => {
-                    log::debug!("Received SBE BalanceUpdateEvent ({} bytes)", data.len());
-                    match super::decode_sbe::decode_balance_update(data) {
-                        Ok(msg) => {
-                            log::debug!(
-                                "SBE balance update: asset={}, delta={}",
-                                msg.asset,
-                                msg.delta
-                            );
-                            return Ok(BinanceSpotWsTradingMessage::BalanceUpdate(msg));
-                        }
-                        Err(e) => {
-                            log::error!("Failed to decode SBE BalanceUpdateEvent: {e}");
-                            return Ok(BinanceSpotWsTradingMessage::Error(format!(
-                                "SBE BalanceUpdateEvent decode failed: {e}"
-                            )));
-                        }
+        // User data stream events arrive as SBE with their own template IDs
+        // (not wrapped in WebSocketResponse template 50). Request/response
+        // traffic must arrive as WebSocketResponse template 50 envelopes.
+        match top_header.template_id {
+            601 => {
+                log::debug!("Received SBE BalanceUpdateEvent ({} bytes)", data.len());
+                match super::decode_sbe::decode_balance_update(data) {
+                    Ok(msg) => {
+                        log::debug!(
+                            "SBE balance update: asset={}, delta={}",
+                            msg.asset,
+                            msg.delta
+                        );
+                        return Ok(BinanceSpotWsTradingMessage::BalanceUpdate(msg));
+                    }
+                    Err(e) => {
+                        log::error!("Failed to decode SBE BalanceUpdateEvent: {e}");
+                        return Ok(BinanceSpotWsTradingMessage::Error(format!(
+                            "SBE BalanceUpdateEvent decode failed: {e}"
+                        )));
                     }
                 }
-                603 => {
-                    log::debug!("Received SBE ExecutionReportEvent ({} bytes)", data.len());
-                    match super::decode_sbe::decode_execution_report(data) {
-                        Ok(report) => {
-                            log::debug!(
-                                "SBE execution report: symbol={}, order_id={}, exec={:?}, status={:?}",
-                                report.symbol,
-                                report.order_id,
-                                report.execution_type,
-                                report.order_status
-                            );
-                            return Ok(BinanceSpotWsTradingMessage::ExecutionReport(Box::new(
-                                report,
-                            )));
-                        }
-                        Err(e) => {
-                            log::error!("Failed to decode SBE ExecutionReportEvent: {e}");
-                            return Ok(BinanceSpotWsTradingMessage::Error(format!(
-                                "SBE ExecutionReportEvent decode failed: {e}"
-                            )));
-                        }
+            }
+            603 => {
+                log::debug!("Received SBE ExecutionReportEvent ({} bytes)", data.len());
+                match super::decode_sbe::decode_execution_report(data) {
+                    Ok(report) => {
+                        log::debug!(
+                            "SBE execution report: symbol={}, order_id={}, exec={:?}, status={:?}",
+                            report.symbol,
+                            report.order_id,
+                            report.execution_type,
+                            report.order_status
+                        );
+                        return Ok(BinanceSpotWsTradingMessage::ExecutionReport(Box::new(
+                            report,
+                        )));
+                    }
+                    Err(e) => {
+                        log::error!("Failed to decode SBE ExecutionReportEvent: {e}");
+                        return Ok(BinanceSpotWsTradingMessage::Error(format!(
+                            "SBE ExecutionReportEvent decode failed: {e}"
+                        )));
                     }
                 }
-                606 => {
-                    log::debug!("Received SBE ListStatusEvent ({} bytes)", data.len());
-                    match super::decode_sbe::decode_list_status(data) {
-                        Ok(msg) => {
-                            log::debug!(
-                                "SBE list status: symbol={}, order_list_id={}, status_type={:?}, order_status={:?}",
-                                msg.symbol,
-                                msg.order_list_id,
-                                msg.list_status_type,
-                                msg.list_order_status
-                            );
-                            return Ok(BinanceSpotWsTradingMessage::ListStatus(msg));
-                        }
-                        Err(e) => {
-                            log::error!("Failed to decode SBE ListStatusEvent: {e}");
-                            return Ok(BinanceSpotWsTradingMessage::Error(format!(
-                                "SBE ListStatusEvent decode failed: {e}"
-                            )));
-                        }
+            }
+            606 => {
+                log::debug!("Received SBE ListStatusEvent ({} bytes)", data.len());
+                match super::decode_sbe::decode_list_status(data) {
+                    Ok(msg) => {
+                        log::debug!(
+                            "SBE list status: symbol={}, order_list_id={}, status_type={:?}, order_status={:?}",
+                            msg.symbol,
+                            msg.order_list_id,
+                            msg.list_status_type,
+                            msg.list_order_status
+                        );
+                        return Ok(BinanceSpotWsTradingMessage::ListStatus(msg));
+                    }
+                    Err(e) => {
+                        log::error!("Failed to decode SBE ListStatusEvent: {e}");
+                        return Ok(BinanceSpotWsTradingMessage::Error(format!(
+                            "SBE ListStatusEvent decode failed: {e}"
+                        )));
                     }
                 }
-                607 => {
-                    log::debug!(
-                        "Received SBE OutboundAccountPositionEvent ({} bytes)",
-                        data.len()
-                    );
+            }
+            607 => {
+                log::debug!(
+                    "Received SBE OutboundAccountPositionEvent ({} bytes)",
+                    data.len()
+                );
 
-                    match super::decode_sbe::decode_account_position(data) {
-                        Ok(msg) => {
-                            log::debug!("SBE account position: {} balance(s)", msg.balances.len());
-                            return Ok(BinanceSpotWsTradingMessage::AccountPosition(msg));
-                        }
-                        Err(e) => {
-                            log::error!("Failed to decode SBE OutboundAccountPositionEvent: {e}");
-                            return Ok(BinanceSpotWsTradingMessage::Error(format!(
-                                "SBE OutboundAccountPositionEvent decode failed: {e}"
-                            )));
-                        }
+                match super::decode_sbe::decode_account_position(data) {
+                    Ok(msg) => {
+                        log::debug!("SBE account position: {} balance(s)", msg.balances.len());
+                        return Ok(BinanceSpotWsTradingMessage::AccountPosition(msg));
+                    }
+                    Err(e) => {
+                        log::error!("Failed to decode SBE OutboundAccountPositionEvent: {e}");
+                        return Ok(BinanceSpotWsTradingMessage::Error(format!(
+                            "SBE OutboundAccountPositionEvent decode failed: {e}"
+                        )));
                     }
                 }
-                610 => {
-                    let event_time = parse_server_shutdown_event_time_ms(data);
-                    log::warn!(
-                        "Binance server shutdown notice (SBE, event_time={event_time}); disconnect expected within ~10 minutes",
-                    );
-                    return Ok(BinanceSpotWsTradingMessage::ServerShutdown { event_time });
-                }
-                cancel_order_list_response_codec::SBE_TEMPLATE_ID => {
-                    log::warn!(
-                        "Received direct SBE CancelOrderListResponse ({} bytes); reconciliation required",
-                        data.len()
-                    );
-                    let response = super::decode_sbe::decode_cancel_order_list_response(data)
-                        .map_err(|e| {
-                            BinanceWsApiError::ClientError(format!(
-                                "SBE CancelOrderListResponse decode failed: {e}"
-                            ))
-                        })?;
-                    return Ok(BinanceSpotWsTradingMessage::OrderListReconciliationRequired {
-                        response,
-                        reason: "direct Binance SBE order-list response requires broker reconciliation before terminalizing live run".to_string(),
+            }
+            610 => {
+                let event_time = parse_server_shutdown_event_time_ms(data);
+                log::warn!(
+                    "Binance server shutdown notice (SBE, event_time={event_time}); disconnect expected within ~10 minutes",
+                );
+                return Ok(BinanceSpotWsTradingMessage::ServerShutdown { event_time });
+            }
+            SBE_TEMPLATE_ID => {}
+            _ if is_direct_ws_api_response_template(top_header.template_id) => {
+                return Err(BinanceWsApiError::UnsupportedDirectResponse {
+                        template_id: top_header.template_id,
+                        msg: "request/response SBE payloads must be wrapped in WebSocketResponse envelope template 50".to_string(),
                     });
-                }
-                _ if is_direct_ws_api_response_template(template_id) => {
-                    return Err(BinanceWsApiError::UnsupportedDirectResponse {
-                        template_id,
-                        msg: "direct Binance SBE WebSocket API response requires explicit decoder support and reconciliation handling".to_string(),
-                    });
-                }
-                _ => {} // Fall through to WebSocketResponse parsing
+            }
+            _ => {
+                return Err(BinanceWsApiError::DecodeError(
+                    crate::spot::sbe::error::SbeDecodeError::UnknownTemplateId(
+                        top_header.template_id,
+                    ),
+                ));
             }
         }
 
@@ -659,9 +664,31 @@ impl BinanceSpotWsTradingHandler {
             return Ok(self.create_rejection(request_id, code, msg, meta));
         }
 
-        // Decode the inner payload based on request type
+        match meta {
+            BinanceSpotWsTradingRequestMeta::SessionLogon => {
+                log::info!("Session authenticated (SBE response)");
+                return Ok(BinanceSpotWsTradingMessage::Authenticated);
+            }
+            BinanceSpotWsTradingRequestMeta::SubscribeUserData => {
+                log::info!("User data stream subscribed (SBE response)");
+                return Ok(BinanceSpotWsTradingMessage::UserDataSubscribed {
+                    subscription_id: request_id,
+                });
+            }
+            _ => {}
+        }
+
+        let inner_template_id = read_sbe_frame_header(&result_data, Some(&request_id))?.template_id;
+
+        // Decode the inner payload based on request type.
         match meta {
             BinanceSpotWsTradingRequestMeta::PlaceOrder => {
+                expect_response_template(
+                    &request_id,
+                    meta,
+                    PLACE_ORDER_RESPONSE_TEMPLATES,
+                    inner_template_id,
+                )?;
                 let response = parse::decode_new_order_full(&result_data)?;
                 Ok(BinanceSpotWsTradingMessage::OrderAccepted {
                     request_id,
@@ -669,6 +696,12 @@ impl BinanceSpotWsTradingHandler {
                 })
             }
             BinanceSpotWsTradingRequestMeta::CancelOrder => {
+                expect_response_template(
+                    &request_id,
+                    meta,
+                    CANCEL_ORDER_RESPONSE_TEMPLATES,
+                    inner_template_id,
+                )?;
                 let response = parse::decode_cancel_order(&result_data)?;
                 Ok(BinanceSpotWsTradingMessage::OrderCanceled {
                     request_id,
@@ -676,6 +709,12 @@ impl BinanceSpotWsTradingHandler {
                 })
             }
             BinanceSpotWsTradingRequestMeta::CancelReplaceOrder => {
+                expect_response_template(
+                    &request_id,
+                    meta,
+                    CANCEL_REPLACE_RESPONSE_TEMPLATES,
+                    inner_template_id,
+                )?;
                 // Cancel-replace returns both cancel and new order info
                 let new_order_response = parse::decode_new_order_full(&result_data)?;
                 let cancel_response = BinanceCancelOrderResponse {
@@ -703,23 +742,39 @@ impl BinanceSpotWsTradingHandler {
                     new_order_response,
                 })
             }
-            BinanceSpotWsTradingRequestMeta::CancelAllOrders => {
-                let responses = parse::decode_cancel_open_orders(&result_data)?;
-                Ok(BinanceSpotWsTradingMessage::AllOrdersCanceled {
-                    request_id,
-                    responses,
-                })
-            }
-            BinanceSpotWsTradingRequestMeta::SessionLogon => {
-                log::info!("Session authenticated (SBE response)");
-                Ok(BinanceSpotWsTradingMessage::Authenticated)
-            }
-            BinanceSpotWsTradingRequestMeta::SubscribeUserData => {
-                log::info!("User data stream subscribed (SBE response)");
-                Ok(BinanceSpotWsTradingMessage::UserDataSubscribed {
-                    subscription_id: request_id,
-                })
-            }
+            BinanceSpotWsTradingRequestMeta::CancelAllOrders => match inner_template_id {
+                cancel_open_orders_response_codec::SBE_TEMPLATE_ID => {
+                    let responses = parse::decode_cancel_open_orders(&result_data)?;
+                    Ok(BinanceSpotWsTradingMessage::AllOrdersCanceled {
+                        request_id,
+                        result: BinanceSpotCancelAllResult::Orders(responses),
+                    })
+                }
+                cancel_order_list_response_codec::SBE_TEMPLATE_ID => {
+                    let response =
+                        super::decode_sbe::decode_cancel_order_list_response(&result_data)
+                            .map_err(|e| {
+                                BinanceWsApiError::ClientError(format!(
+                                    "SBE CancelOrderListResponse decode failed: {e}"
+                                ))
+                            })?;
+                    validate_order_list_cancel_result(&request_id, &response)?;
+                    Ok(BinanceSpotWsTradingMessage::AllOrdersCanceled {
+                        request_id,
+                        result: BinanceSpotCancelAllResult::OrderList(response),
+                    })
+                }
+                actual => Err(unexpected_response_template(
+                    &request_id,
+                    meta,
+                    CANCEL_ALL_RESPONSE_TEMPLATES,
+                    actual,
+                )),
+            },
+            BinanceSpotWsTradingRequestMeta::SessionLogon
+            | BinanceSpotWsTradingRequestMeta::SubscribeUserData => unreachable!(
+                "session and subscription responses return before inner payload dispatch"
+            ),
         }
     }
 
@@ -849,6 +904,134 @@ impl BinanceSpotWsTradingHandler {
     }
 }
 
+fn read_sbe_frame_header(
+    data: &[u8],
+    request_id: Option<&str>,
+) -> Result<SbeFrameHeader, BinanceWsApiError> {
+    if data.len() < message_header_codec::ENCODED_LENGTH {
+        return Err(BinanceWsApiError::DecodeError(
+            crate::spot::sbe::error::SbeDecodeError::BufferTooShort {
+                expected: message_header_codec::ENCODED_LENGTH,
+                actual: data.len(),
+            },
+        ));
+    }
+
+    let buf = ReadBuf::new(data);
+    let header = SbeFrameHeader {
+        template_id: buf.get_u16_at(2),
+        schema_id: buf.get_u16_at(4),
+        version: buf.get_u16_at(6),
+    };
+
+    if header.schema_id != SBE_SCHEMA_ID {
+        return Err(BinanceWsApiError::ProtocolViolation {
+            request_id: request_id.map(ToOwned::to_owned),
+            msg: format!(
+                "SBE schema mismatch: expected {SBE_SCHEMA_ID}, received {}",
+                header.schema_id
+            ),
+        });
+    }
+
+    if header.version != SBE_SCHEMA_VERSION {
+        return Err(BinanceWsApiError::ProtocolViolation {
+            request_id: request_id.map(ToOwned::to_owned),
+            msg: format!(
+                "SBE schema version mismatch: expected {SBE_SCHEMA_VERSION}, received {}",
+                header.version
+            ),
+        });
+    }
+
+    Ok(header)
+}
+
+fn expect_response_template(
+    request_id: &str,
+    meta: BinanceSpotWsTradingRequestMeta,
+    expected: &'static [u16],
+    actual: u16,
+) -> Result<(), BinanceWsApiError> {
+    if expected.contains(&actual) {
+        return Ok(());
+    }
+
+    Err(unexpected_response_template(
+        request_id, meta, expected, actual,
+    ))
+}
+
+fn unexpected_response_template(
+    request_id: &str,
+    meta: BinanceSpotWsTradingRequestMeta,
+    expected: &'static [u16],
+    actual: u16,
+) -> BinanceWsApiError {
+    BinanceWsApiError::UnexpectedResponseTemplate {
+        request_id: request_id.to_string(),
+        method: request_method(meta),
+        expected,
+        actual,
+    }
+}
+
+fn request_method(meta: BinanceSpotWsTradingRequestMeta) -> &'static str {
+    match meta {
+        BinanceSpotWsTradingRequestMeta::PlaceOrder => method::ORDER_PLACE,
+        BinanceSpotWsTradingRequestMeta::CancelOrder => method::ORDER_CANCEL,
+        BinanceSpotWsTradingRequestMeta::CancelReplaceOrder => method::ORDER_CANCEL_REPLACE,
+        BinanceSpotWsTradingRequestMeta::CancelAllOrders => method::OPEN_ORDERS_CANCEL_ALL,
+        BinanceSpotWsTradingRequestMeta::SessionLogon => method::SESSION_LOGON,
+        BinanceSpotWsTradingRequestMeta::SubscribeUserData => "userDataStream.subscribe",
+    }
+}
+
+fn validate_order_list_cancel_result(
+    request_id: &str,
+    response: &BinanceSpotOrderListCancelResult,
+) -> Result<(), BinanceWsApiError> {
+    if response.list_order_status != "AllDone" {
+        return Err(BinanceWsApiError::ProtocolViolation {
+            request_id: Some(request_id.to_string()),
+            msg: format!(
+                "CancelOrderListResponse order_list_id={} has non-terminal list_order_status={}",
+                response.order_list_id, response.list_order_status
+            ),
+        });
+    }
+
+    if response.order_reports.is_empty() {
+        return Err(BinanceWsApiError::ProtocolViolation {
+            request_id: Some(request_id.to_string()),
+            msg: format!(
+                "CancelOrderListResponse order_list_id={} contains no child order reports",
+                response.order_list_id
+            ),
+        });
+    }
+
+    if let Some(report) = response
+        .order_reports
+        .iter()
+        .find(|report| !is_terminal_order_status(&report.status))
+    {
+        return Err(BinanceWsApiError::ProtocolViolation {
+            request_id: Some(request_id.to_string()),
+            msg: format!(
+                "CancelOrderListResponse order_list_id={} child order_id={} has non-terminal status={}",
+                response.order_list_id, report.order_id, report.status
+            ),
+        });
+    }
+
+    Ok(())
+}
+
+fn is_terminal_order_status(status: &str) -> bool {
+    matches!(status, "Canceled" | "Expired" | "ExpiredInMatch")
+}
+
 /// Classifies a JSON user-data event into a trading message, if any.
 ///
 /// Returns `None` when the event type is unknown or the payload fails to
@@ -964,9 +1147,11 @@ mod tests {
         BINANCE_SPOT_SBE_WS_API_URL,
     };
     use crate::spot::sbe::spot::{
-        Encoder, WriteBuf, cancel_order_list_response_codec, contingency_type::ContingencyType,
+        Encoder, WriteBuf, bool_enum::BoolEnum, cancel_open_orders_response_codec,
+        cancel_order_list_response_codec, contingency_type::ContingencyType,
         list_order_status::ListOrderStatus, list_status_event_codec,
-        list_status_type::ListStatusType,
+        list_status_type::ListStatusType, order_side::OrderSide, order_status::OrderStatus,
+        order_type::OrderType, time_in_force::TimeInForce, web_socket_response_codec,
     };
 
     fn encode_list_status() -> Vec<u8> {
@@ -1020,7 +1205,7 @@ mod tests {
     }
 
     fn encode_cancel_order_list_response() -> Vec<u8> {
-        let mut buf_vec = vec![0u8; 256];
+        let mut buf_vec = vec![0u8; 512];
         let buf = WriteBuf::new(buf_vec.as_mut_slice());
         let enc = cancel_order_list_response_codec::CancelOrderListResponseEncoder::default()
             .wrap(buf, message_header_codec::ENCODED_LENGTH);
@@ -1044,11 +1229,57 @@ mod tests {
         let enc = orders_enc.parent().unwrap();
 
         let reports_enc = cancel_order_list_response_codec::encoder::OrderReportsEncoder::default();
-        let mut reports_enc = enc.order_reports_encoder(0, reports_enc);
+        let mut reports_enc = enc.order_reports_encoder(1, reports_enc);
+        reports_enc.advance().unwrap();
+        reports_enc.order_id(63562212148_i64);
+        reports_enc.order_list_id(42);
+        reports_enc.transact_time(1_709_654_400_124_000);
+        reports_enc.status(OrderStatus::Canceled);
+        reports_enc.time_in_force(TimeInForce::Gtc);
+        reports_enc.order_type(OrderType::Limit);
+        reports_enc.side(OrderSide::Sell);
+        reports_enc.symbol("BTCUSDT");
+        reports_enc.orig_client_order_id("target-client");
+        reports_enc.client_order_id("target-client");
         let mut enc = reports_enc.parent().unwrap();
 
         enc.list_client_order_id("list-client-1");
         enc.symbol("BTCUSDT");
+        let encoded_len = enc.get_limit();
+        buf_vec.truncate(encoded_len);
+        buf_vec
+    }
+
+    fn encode_cancel_open_orders_response() -> Vec<u8> {
+        let mut buf_vec = vec![0u8; 64];
+        let buf = WriteBuf::new(buf_vec.as_mut_slice());
+        let enc = cancel_open_orders_response_codec::CancelOpenOrdersResponseEncoder::default()
+            .wrap(buf, message_header_codec::ENCODED_LENGTH);
+        let mut header = enc.header(0);
+        let enc = header.parent().unwrap();
+        let responses_enc = cancel_open_orders_response_codec::encoder::ResponsesEncoder::default();
+        let mut responses_enc = enc.responses_encoder(0, responses_enc);
+        let enc = responses_enc.parent().unwrap();
+        let encoded_len = enc.get_limit();
+        buf_vec.truncate(encoded_len);
+        buf_vec
+    }
+
+    fn encode_ws_api_envelope(request_id: &str, result: &[u8]) -> Vec<u8> {
+        let mut buf_vec = vec![0u8; 512 + result.len()];
+        let buf = WriteBuf::new(buf_vec.as_mut_slice());
+        let enc = web_socket_response_codec::WebSocketResponseEncoder::default()
+            .wrap(buf, message_header_codec::ENCODED_LENGTH);
+        let mut header = enc.header(0);
+        let mut enc = header.parent().unwrap();
+        enc.sbe_schema_id_version_deprecated(BoolEnum::False);
+        enc.status(200);
+
+        let rate_limits_enc = web_socket_response_codec::encoder::RateLimitsEncoder::default();
+        let mut rate_limits_enc = enc.rate_limits_encoder(0, rate_limits_enc);
+        let mut enc = rate_limits_enc.parent().unwrap();
+        enc.id(request_id);
+        enc.result(result);
         let encoded_len = enc.get_limit();
         buf_vec.truncate(encoded_len);
         buf_vec
@@ -1177,26 +1408,108 @@ mod tests {
     }
 
     #[rstest]
-    fn test_decode_ws_api_response_template_312_requires_reconciliation() {
+    fn test_decode_ws_api_response_cancel_all_envelope_template_312_emits_order_list_result() {
         let mut handler = create_test_handler();
+        handler.pending_requests.insert(
+            "req-cancel-all".to_string(),
+            BinanceSpotWsTradingRequestMeta::CancelAllOrders,
+        );
+        let inner = encode_cancel_order_list_response();
+        let envelope = encode_ws_api_envelope("req-cancel-all", &inner);
+
         let msg = handler
-            .decode_ws_api_response(&encode_cancel_order_list_response())
-            .expect("template 312 should decode");
+            .decode_ws_api_response(&envelope)
+            .expect("template 312 cancel-all result should decode");
 
         match msg {
-            BinanceSpotWsTradingMessage::OrderListReconciliationRequired { response, reason } => {
-                assert_eq!(response.template_id, 312);
-                assert_eq!(response.order_list_id, 42);
-                assert_eq!(response.list_client_order_id, "list-client-1");
-                assert_eq!(response.symbol, "BTCUSDT");
-                assert_eq!(response.orders.len(), 1);
-                assert_eq!(response.orders[0].client_order_id, "target-client");
-                assert!(reason.contains("reconciliation"));
+            BinanceSpotWsTradingMessage::AllOrdersCanceled { request_id, result } => {
+                assert_eq!(request_id, "req-cancel-all");
+                match result {
+                    BinanceSpotCancelAllResult::OrderList(response) => {
+                        assert_eq!(response.template_id, 312);
+                        assert_eq!(response.order_list_id, 42);
+                        assert_eq!(response.list_client_order_id, "list-client-1");
+                        assert_eq!(response.symbol, "BTCUSDT");
+                        assert_eq!(response.orders.len(), 1);
+                        assert_eq!(response.orders[0].client_order_id, "target-client");
+                        assert_eq!(response.order_reports.len(), 1);
+                        assert_eq!(response.order_reports[0].status, "Canceled");
+                    }
+                    other => panic!("expected order-list cancel result, was {other:?}"),
+                }
             }
-            BinanceSpotWsTradingMessage::Error(err) => {
-                panic!("template 312 must not emit generic Error: {err}");
+            BinanceSpotWsTradingMessage::FatalError { reason } => {
+                panic!("template 312 cancel-all result must not be fatal: {reason}");
             }
-            other => panic!("expected OrderListReconciliationRequired variant, was {other:?}"),
+            other => panic!("expected AllOrdersCanceled variant, was {other:?}"),
+        }
+    }
+
+    #[rstest]
+    fn test_decode_ws_api_response_cancel_all_envelope_template_306_emits_orders_result() {
+        let mut handler = create_test_handler();
+        handler.pending_requests.insert(
+            "req-cancel-all".to_string(),
+            BinanceSpotWsTradingRequestMeta::CancelAllOrders,
+        );
+        let inner = encode_cancel_open_orders_response();
+        let envelope = encode_ws_api_envelope("req-cancel-all", &inner);
+
+        let msg = handler
+            .decode_ws_api_response(&envelope)
+            .expect("template 306 cancel-all result should decode");
+
+        match msg {
+            BinanceSpotWsTradingMessage::AllOrdersCanceled { result, .. } => match result {
+                BinanceSpotCancelAllResult::Orders(responses) => assert!(responses.is_empty()),
+                other => panic!("expected standard orders cancel result, was {other:?}"),
+            },
+            other => panic!("expected AllOrdersCanceled variant, was {other:?}"),
+        }
+    }
+
+    #[rstest]
+    fn test_decode_ws_api_response_cancel_all_unexpected_inner_template_is_typed_error() {
+        let mut handler = create_test_handler();
+        handler.pending_requests.insert(
+            "req-cancel-all".to_string(),
+            BinanceSpotWsTradingRequestMeta::CancelAllOrders,
+        );
+        let inner = encode_direct_template_header(309);
+        let envelope = encode_ws_api_envelope("req-cancel-all", &inner);
+
+        let err = handler
+            .decode_ws_api_response(&envelope)
+            .expect_err("unexpected inner template should fail with typed error");
+
+        match err {
+            BinanceWsApiError::UnexpectedResponseTemplate {
+                request_id,
+                method,
+                expected,
+                actual,
+            } => {
+                assert_eq!(request_id, "req-cancel-all");
+                assert_eq!(method, method::OPEN_ORDERS_CANCEL_ALL);
+                assert_eq!(expected, CANCEL_ALL_RESPONSE_TEMPLATES);
+                assert_eq!(actual, 309);
+            }
+            other => panic!("expected UnexpectedResponseTemplate, was {other:?}"),
+        }
+    }
+
+    #[rstest]
+    fn test_decode_ws_api_response_direct_template_312_is_typed_error() {
+        let mut handler = create_test_handler();
+        let err = handler
+            .decode_ws_api_response(&encode_cancel_order_list_response())
+            .expect_err("direct template 312 should not be accepted outside envelope");
+
+        match err {
+            BinanceWsApiError::UnsupportedDirectResponse { template_id, .. } => {
+                assert_eq!(template_id, 312);
+            }
+            other => panic!("expected UnsupportedDirectResponse, was {other:?}"),
         }
     }
 

@@ -66,9 +66,9 @@ pub struct BinanceSpotOrderListChildReport {
     pub time_in_force: String,
 }
 
-/// Binance direct SBE order-list response that must be reconciled by the caller.
+/// Binance order-list cancel result from a WebSocket API response.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BinanceSpotOrderListReconciliation {
+pub struct BinanceSpotOrderListCancelResult {
     /// SBE template ID.
     pub template_id: u16,
     /// Exchange order list ID.
@@ -89,6 +89,15 @@ pub struct BinanceSpotOrderListReconciliation {
     pub orders: Vec<BinanceSpotOrderListChild>,
     /// Child order reports.
     pub order_reports: Vec<BinanceSpotOrderListChildReport>,
+}
+
+/// Result variants returned by `openOrders.cancelAll`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum BinanceSpotCancelAllResult {
+    /// Standard cancel-all result containing individual cancel responses.
+    Orders(Vec<BinanceCancelOrderResponse>),
+    /// Order-list cancel result containing child order reports.
+    OrderList(BinanceSpotOrderListCancelResult),
 }
 
 /// Commands sent from the outer client to the inner handler.
@@ -212,15 +221,8 @@ pub enum BinanceSpotWsTradingMessage {
     AllOrdersCanceled {
         /// Request ID for correlation.
         request_id: String,
-        /// Canceled order responses.
-        responses: Vec<BinanceCancelOrderResponse>,
-    },
-    /// Direct order-list response received outside the standard WS API envelope.
-    OrderListReconciliationRequired {
-        /// Decoded response.
-        response: BinanceSpotOrderListReconciliation,
-        /// Reason reconciliation is required.
-        reason: String,
+        /// Cancel-all result.
+        result: BinanceSpotCancelAllResult,
     },
     /// User data stream subscribed.
     UserDataSubscribed {
