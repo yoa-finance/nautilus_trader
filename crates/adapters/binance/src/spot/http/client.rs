@@ -65,10 +65,10 @@ use super::{
     parse,
     query::{
         AccountInfoParams, AccountTradesParams, AllOrdersParams, AvgPriceParams, BatchCancelItem,
-        BatchOrderItem, CancelOpenOrdersParams, CancelOrderParams, CancelReplaceOrderParams,
-        DepthParams, KlinesParams, ListenKeyParams, NewOrderListOcoParams, NewOrderListOpocoParams,
-        NewOrderParams, OpenOrdersParams, QueryOrderParams, TickerParams, TradeFeeParams,
-        TradesParams,
+        BatchOrderItem, CancelOpenOrdersParams, CancelOrderListParams, CancelOrderParams,
+        CancelReplaceOrderParams, DepthParams, KlinesParams, ListenKeyParams,
+        NewOrderListOcoParams, NewOrderListOpocoParams, NewOrderParams, OpenOrdersParams,
+        QueryOrderParams, TickerParams, TradeFeeParams, TradesParams,
     },
 };
 use crate::{
@@ -986,6 +986,21 @@ impl BinanceRawSpotHttpClient {
         let bytes = self
             .post_signed_json("orderList/opoco", Some(params))
             .await?;
+
+        serde_json::from_slice(&bytes).map_err(|e| BinanceSpotHttpError::JsonError(e.to_string()))
+    }
+
+    /// Cancels a native Spot order list.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if credentials are missing, the request fails, or
+    /// JSON parsing fails.
+    pub async fn cancel_order_list(
+        &self,
+        params: &CancelOrderListParams,
+    ) -> BinanceSpotHttpResult<BinanceOrderListResponse> {
+        let bytes = self.delete_order("orderList", Some(params)).await?;
 
         serde_json::from_slice(&bytes).map_err(|e| BinanceSpotHttpError::JsonError(e.to_string()))
     }
@@ -2079,6 +2094,18 @@ impl BinanceSpotHttpClient {
         params: &NewOrderListOpocoParams,
     ) -> BinanceSpotHttpResult<BinanceOrderListResponse> {
         self.inner.submit_opoco_order_list(params).await
+    }
+
+    /// Cancels a native Spot order list.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request fails or JSON parsing fails.
+    pub async fn cancel_order_list(
+        &self,
+        params: &CancelOrderListParams,
+    ) -> BinanceSpotHttpResult<BinanceOrderListResponse> {
+        self.inner.cancel_order_list(params).await
     }
 
     /// Modifies an existing order (cancel and replace atomically).

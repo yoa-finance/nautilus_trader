@@ -107,8 +107,9 @@ use crate::{
             error::BinanceSpotHttpError,
             models::{BatchCancelResult, BinanceOrderListResponse},
             query::{
-                BatchCancelItem, CancelOrderParams, CancelReplaceOrderParams,
-                NewOrderListOcoParams, NewOrderListOpocoParams, NewOrderParams,
+                BatchCancelItem, CancelOrderListParams, CancelOrderParams,
+                CancelReplaceOrderParams, NewOrderListOcoParams, NewOrderListOpocoParams,
+                NewOrderParams,
             },
         },
         sbe::spot::list_order_status::ListOrderStatus,
@@ -118,6 +119,9 @@ use crate::{
 const OCO_CONTINGENCY_TYPE_PARAM: &str = "contingency_type";
 const OCO_CONTINGENCY_TYPE_VALUE: &str = "OCO";
 const OPOCO_CONTINGENCY_TYPE_VALUE: &str = "OPOCO";
+const ORDER_LIST_CANCEL_PARAM: &str = "order_list_cancel";
+const ORDER_LIST_CLIENT_ORDER_ID_PARAM: &str = "list_client_order_id";
+const ORDER_LIST_ID_PARAM: &str = "order_list_id";
 
 /// Live execution client for Binance Spot trading.
 ///
@@ -409,6 +413,58 @@ impl BinanceSpotExecutionClient {
         let account_id = self.core.account_id;
         let clock = self.clock;
         let command = cmd.clone();
+
+        if let Some(order_list_cancel_params) = build_cancel_order_list_params(&command)? {
+            let http_client = self.http_client.clone();
+            let dispatch_state = self.dispatch_state.clone();
+            self.spawn_task("cancel_order_list_http", async move {
+                match http_client
+                    .cancel_order_list(&order_list_cancel_params)
+                    .await
+                {
+                    Ok(response) => {
+                        dispatch_http_order_list_cancel_result(
+                            &response,
+                            &event_emitter,
+                            account_id,
+                            &dispatch_state,
+                            clock,
+                        );
+                    }
+                    Err(e) => {
+                        let error = anyhow::anyhow!(e);
+                        if is_structured_venue_rejection(&error)
+                            || is_local_command_failure(&error)
+                        {
+                            let ts_now = clock.get_time_ns();
+                            let rejected_event = OrderCancelRejected::new(
+                                trader_id,
+                                command.strategy_id,
+                                command.instrument_id,
+                                command.client_order_id,
+                                format!("cancel-order-list-error: {error}").into(),
+                                UUID4::new(),
+                                ts_now,
+                                ts_now,
+                                false,
+                                command.venue_order_id,
+                                Some(account_id),
+                            );
+                            event_emitter
+                                .send_order_event(OrderEventAny::CancelRejected(rejected_event));
+                        } else {
+                            log::error!(
+                                "Ambiguous order-list cancel failure for {}, awaiting reconciliation: {error}",
+                                command.client_order_id
+                            );
+                        }
+                        return Err(error);
+                    }
+                }
+                Ok(())
+            });
+            return Ok(());
+        }
 
         if self.ws_trading_active() {
             let ws_client = self.ws_trading_client.as_ref().unwrap().clone();
@@ -1830,6 +1886,99 @@ fn dispatch_order_list_cancel_result(
     }
 }
 
+fn dispatch_http_order_list_cancel_result(
+    response: &BinanceOrderListResponse,
+    emitter: &ExecutionEventEmitter,
+    account_id: AccountId,
+    dispatch_state: &WsDispatchState,
+    clock: &'static AtomicTime,
+) {
+    log::debug!(
+        "HTTP order-list cancel result: order_list_id={}, list_client_order_id={}, symbol={}, child_count={}, report_count={}",
+        response.order_list_id,
+        response.list_client_order_id,
+        response.symbol,
+        response.orders.len(),
+        response.order_reports.len(),
+    );
+
+    let ts_init = clock.get_time_ns();
+    let canceled_children = if response.order_reports.is_empty() {
+        response
+            .orders
+            .iter()
+            .map(|order| {
+                (
+                    order.client_order_id.as_str(),
+                    order.order_id,
+                    response.transaction_time,
+                )
+            })
+            .collect::<Vec<_>>()
+    } else {
+        response
+            .order_reports
+            .iter()
+            .map(|report| {
+                (
+                    report.client_order_id.as_str(),
+                    report.order_id,
+                    report.transact_time.or(response.transaction_time),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+
+    for (venue_client_order_id, venue_order_id, transact_time) in canceled_children {
+        let client_order_id = ClientOrderId::from(decode_broker_id(
+            venue_client_order_id,
+            BINANCE_NAUTILUS_SPOT_BROKER_ID,
+        ));
+
+        let Some(identity) = dispatch_state
+            .order_identities
+            .get(&client_order_id)
+            .map(|entry| entry.clone())
+        else {
+            log::debug!(
+                "Ignoring untracked HTTP order-list cancel report client_order_id={client_order_id}, order_id={venue_order_id}"
+            );
+            continue;
+        };
+
+        let venue_order_id = VenueOrderId::new(venue_order_id.to_string());
+        let ts_event = transact_time
+            .filter(|millis| *millis >= 0)
+            .map(|millis| UnixNanos::from_millis(millis as u64))
+            .unwrap_or_else(|| clock.get_time_ns());
+
+        ensure_accepted_emitted(
+            client_order_id,
+            account_id,
+            venue_order_id,
+            &identity,
+            emitter,
+            dispatch_state,
+            ts_init,
+        );
+
+        let canceled = OrderCanceled::new(
+            emitter.trader_id(),
+            identity.strategy_id,
+            identity.instrument_id,
+            client_order_id,
+            UUID4::new(),
+            ts_event,
+            ts_init,
+            false,
+            Some(venue_order_id),
+            Some(account_id),
+        );
+        dispatch_state.cleanup_terminal(client_order_id);
+        emitter.send_order_event(OrderEventAny::Canceled(canceled));
+    }
+}
+
 async fn submit_ws_order_after_cancel_gate(
     ws_client: BinanceSpotWsTradingClient,
     dispatch_state: Arc<WsDispatchState>,
@@ -2229,6 +2378,12 @@ fn build_oco_order_list_params(
         new_order_resp_type: Some(BinanceOrderResponseType::Full),
         self_trade_prevention_mode: None,
     };
+    if let Some(list_client_order_id) = order_list_client_order_id(command_params) {
+        params.list_client_order_id = Some(encode_binance_client_order_id(
+            &ClientOrderId::new(list_client_order_id.to_string()),
+            BINANCE_NAUTILUS_SPOT_BROKER_ID,
+        )?);
+    }
 
     match first.order_side() {
         OrderSide::Sell => {
@@ -2430,6 +2585,12 @@ fn build_opoco_order_list_params(
         new_order_resp_type: Some(BinanceOrderResponseType::Full),
         self_trade_prevention_mode: None,
     };
+    if let Some(list_client_order_id) = order_list_client_order_id(command_params) {
+        params.list_client_order_id = Some(encode_binance_client_order_id(
+            &ClientOrderId::new(list_client_order_id.to_string()),
+            BINANCE_NAUTILUS_SPOT_BROKER_ID,
+        )?);
+    }
 
     match pending_side {
         OrderSide::Sell => {
@@ -2472,6 +2633,42 @@ fn has_opoco_contingency_param(params: Option<&nautilus_core::params::Params>) -
 
 fn order_list_contingency_type(params: Option<&nautilus_core::params::Params>) -> Option<&str> {
     params.and_then(|params| params.get_str(OCO_CONTINGENCY_TYPE_PARAM))
+}
+
+fn order_list_client_order_id(params: Option<&nautilus_core::params::Params>) -> Option<&str> {
+    params.and_then(|params| params.get_str(ORDER_LIST_CLIENT_ORDER_ID_PARAM))
+}
+
+fn build_cancel_order_list_params(
+    cmd: &CancelOrder,
+) -> anyhow::Result<Option<CancelOrderListParams>> {
+    let Some(params) = cmd.params.as_ref() else {
+        return Ok(None);
+    };
+    if !params.get_bool(ORDER_LIST_CANCEL_PARAM).unwrap_or(false) {
+        return Ok(None);
+    }
+
+    let symbol = cmd.instrument_id.symbol.to_string();
+    let mut cancel_params = if let Some(order_list_id) = params.get_i64(ORDER_LIST_ID_PARAM) {
+        CancelOrderListParams::by_order_list_id(symbol, order_list_id)
+    } else if let Some(list_client_order_id) = params.get_str(ORDER_LIST_CLIENT_ORDER_ID_PARAM) {
+        let encoded_list_client_order_id = encode_binance_client_order_id(
+            &ClientOrderId::new(list_client_order_id.to_string()),
+            BINANCE_NAUTILUS_SPOT_BROKER_ID,
+        )?;
+        CancelOrderListParams::by_list_client_order_id(symbol, encoded_list_client_order_id)
+    } else {
+        anyhow::bail!(
+            "order-list cancel requires params.{ORDER_LIST_ID_PARAM} or params.{ORDER_LIST_CLIENT_ORDER_ID_PARAM}"
+        );
+    };
+
+    if let Some(new_client_order_id) = params.get_str("new_client_order_id") {
+        cancel_params.new_client_order_id = Some(new_client_order_id.to_string());
+    }
+
+    Ok(Some(cancel_params))
 }
 
 fn build_cancel_order_params(cmd: &CancelOrder) -> anyhow::Result<CancelOrderParams> {
@@ -3139,6 +3336,66 @@ mod tests {
         assert!(request.below_price.is_none());
         assert!(request.above_client_order_id.is_some());
         assert!(request.below_client_order_id.is_some());
+    }
+
+    #[rstest]
+    fn test_build_oco_order_list_params_maps_list_client_order_id() {
+        let mut params = oco_order_list_params();
+        params.insert(
+            ORDER_LIST_CLIENT_ORDER_ID_PARAM.to_string(),
+            Value::String("LIST-CLIENT-1".to_string()),
+        );
+        let orders = sell_oco_orders("0.001", "0.001");
+
+        let request = build_oco_order_list_params(Some(&params), &orders).unwrap();
+        let expected = encode_binance_client_order_id(
+            &ClientOrderId::new("LIST-CLIENT-1"),
+            BINANCE_NAUTILUS_SPOT_BROKER_ID,
+        )
+        .unwrap();
+
+        assert_eq!(
+            request.list_client_order_id.as_deref(),
+            Some(expected.as_str())
+        );
+    }
+
+    #[rstest]
+    fn test_build_cancel_order_list_params_uses_list_client_order_id() {
+        let mut params = Params::new();
+        params.insert(ORDER_LIST_CANCEL_PARAM.to_string(), Value::Bool(true));
+        params.insert(
+            ORDER_LIST_CLIENT_ORDER_ID_PARAM.to_string(),
+            Value::String("LIST-CLIENT-1".to_string()),
+        );
+        let command = CancelOrder::new(
+            TraderId::from("TRADER-001"),
+            None,
+            StrategyId::from("S-001"),
+            InstrumentId::from("ETHUSDT.BINANCE"),
+            ClientOrderId::from("CHILD-1"),
+            None,
+            UUID4::new(),
+            UnixNanos::default(),
+            Some(params),
+            None,
+        );
+
+        let request = build_cancel_order_list_params(&command)
+            .unwrap()
+            .expect("order-list cancel params");
+        let expected = encode_binance_client_order_id(
+            &ClientOrderId::new("LIST-CLIENT-1"),
+            BINANCE_NAUTILUS_SPOT_BROKER_ID,
+        )
+        .unwrap();
+
+        assert_eq!(request.symbol, "ETHUSDT");
+        assert!(request.order_list_id.is_none());
+        assert_eq!(
+            request.list_client_order_id.as_deref(),
+            Some(expected.as_str())
+        );
     }
 
     #[rstest]
