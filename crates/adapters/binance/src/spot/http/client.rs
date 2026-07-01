@@ -86,8 +86,8 @@ use crate::{
         models::BinanceErrorResponse,
         parse::{
             get_currency, parse_fill_report_sbe, parse_klines_to_bars,
-            parse_new_order_response_sbe, parse_order_status_report_sbe, parse_spot_instrument_sbe,
-            parse_spot_trades_sbe,
+            parse_new_order_fill_reports_sbe, parse_new_order_response_sbe,
+            parse_order_status_report_sbe, parse_spot_instrument_sbe, parse_spot_trades_sbe,
         },
         urls::get_http_base_url,
     },
@@ -1000,7 +1000,7 @@ impl BinanceRawSpotHttpClient {
         &self,
         params: &CancelOrderListParams,
     ) -> BinanceSpotHttpResult<BinanceOrderListResponse> {
-        let bytes = self.delete_order("orderList", Some(params)).await?;
+        let bytes = self.delete_order_json("orderList", Some(params)).await?;
 
         serde_json::from_slice(&bytes).map_err(|e| BinanceSpotHttpError::JsonError(e.to_string()))
     }
@@ -1217,6 +1217,19 @@ impl BinanceRawSpotHttpClient {
         P: Serialize + ?Sized,
     {
         self.delete_signed(path, params).await
+    }
+
+    /// Performs a signed DELETE request for cancel operations expecting JSON.
+    async fn delete_order_json<P>(
+        &self,
+        path: &str,
+        params: Option<&P>,
+    ) -> BinanceSpotHttpResult<Vec<u8>>
+    where
+        P: Serialize + ?Sized,
+    {
+        self.request_json(Method::DELETE, path, params, true, true)
+            .await
     }
 
     /// Creates a new order.
@@ -1494,6 +1507,13 @@ pub struct BinanceSpotHttpClient {
     inner: Arc<BinanceRawSpotHttpClient>,
     clock: &'static AtomicTime,
     instruments_cache: Arc<DashMap<Ustr, InstrumentAny>>,
+}
+
+/// New-order FULL response converted to Nautilus status and fill reports.
+#[derive(Clone, Debug)]
+pub struct BinanceSubmitOrderResponse {
+    pub status: OrderStatusReport,
+    pub fills: Vec<FillReport>,
 }
 
 impl Clone for BinanceSpotHttpClient {
@@ -1956,6 +1976,50 @@ impl BinanceSpotHttpClient {
         quote_quantity: bool,
         display_qty: Option<Quantity>,
     ) -> anyhow::Result<OrderStatusReport> {
+        Ok(self
+            .submit_order_with_fills(
+                account_id,
+                instrument_id,
+                client_order_id,
+                order_side,
+                order_type,
+                quantity,
+                time_in_force,
+                price,
+                trigger_price,
+                post_only,
+                quote_quantity,
+                display_qty,
+            )
+            .await?
+            .status)
+    }
+
+    /// Submits a new order to the venue and returns the FULL response as status plus fills.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The instrument is not cached.
+    /// - The order type or time-in-force is unsupported.
+    /// - Stop orders are submitted without a trigger price.
+    /// - The request fails or SBE decoding fails.
+    #[expect(clippy::too_many_arguments)]
+    pub async fn submit_order_with_fills(
+        &self,
+        account_id: AccountId,
+        instrument_id: InstrumentId,
+        client_order_id: ClientOrderId,
+        order_side: OrderSide,
+        order_type: OrderType,
+        quantity: Quantity,
+        time_in_force: TimeInForce,
+        price: Option<Price>,
+        trigger_price: Option<Price>,
+        post_only: bool,
+        quote_quantity: bool,
+        display_qty: Option<Quantity>,
+    ) -> anyhow::Result<BinanceSubmitOrderResponse> {
         let symbol = instrument_id.symbol.inner();
         let instrument = self
             .instrument_from_cache(symbol)
@@ -2048,14 +2112,24 @@ impl BinanceSpotHttpClient {
             )
             .await?;
 
-        parse_new_order_response_sbe(
+        let status = parse_new_order_response_sbe(
             &response,
             account_id,
             &instrument,
             BINANCE_NAUTILUS_SPOT_BROKER_ID,
             ts_init,
         )
-        .map_err(|e| Self::response_parse_error(e.to_string()))
+        .map_err(|e| Self::response_parse_error(e.to_string()))?;
+        let fills = parse_new_order_fill_reports_sbe(
+            &response,
+            account_id,
+            &instrument,
+            BINANCE_NAUTILUS_SPOT_BROKER_ID,
+            ts_init,
+        )
+        .map_err(|e| Self::response_parse_error(e.to_string()))?;
+
+        Ok(BinanceSubmitOrderResponse { status, fills })
     }
 
     /// Submits multiple orders in a single batch request.

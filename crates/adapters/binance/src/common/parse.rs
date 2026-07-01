@@ -51,7 +51,8 @@ use crate::{
     spot::{
         http::models::{
             BinanceAccountTrade, BinanceKlines, BinanceLotSizeFilterSbe, BinanceNewOrderResponse,
-            BinanceOrderResponse, BinancePriceFilterSbe, BinanceSymbolSbe, BinanceTrades,
+            BinanceOrderFill, BinanceOrderResponse, BinancePriceFilterSbe, BinanceSymbolSbe,
+            BinanceTrades,
         },
         sbe::spot::{
             order_side::OrderSide as SbeOrderSide, order_status::OrderStatus as SbeOrderStatus,
@@ -931,6 +932,86 @@ pub fn parse_new_order_response_sbe(
     Ok(report)
 }
 
+/// Parses fill reports embedded in a Binance new-order FULL response.
+///
+/// # Errors
+///
+/// Returns an error if any fill field cannot be represented in Nautilus domain types.
+pub fn parse_new_order_fill_reports_sbe(
+    response: &BinanceNewOrderResponse,
+    account_id: AccountId,
+    instrument: &InstrumentAny,
+    broker_id: &str,
+    ts_init: UnixNanos,
+) -> anyhow::Result<Vec<FillReport>> {
+    response
+        .fills
+        .iter()
+        .enumerate()
+        .filter(|(_, fill)| fill.qty_mantissa > 0)
+        .filter_map(|(index, fill)| {
+            fill.trade_id.map(|trade_id| {
+                parse_new_order_fill_report_sbe(
+                    response, fill, trade_id, index, account_id, instrument, broker_id, ts_init,
+                )
+            })
+        })
+        .collect()
+}
+
+#[expect(clippy::too_many_arguments)]
+fn parse_new_order_fill_report_sbe(
+    response: &BinanceNewOrderResponse,
+    fill: &BinanceOrderFill,
+    trade_id: i64,
+    index: usize,
+    account_id: AccountId,
+    instrument: &InstrumentAny,
+    broker_id: &str,
+    ts_init: UnixNanos,
+) -> anyhow::Result<FillReport> {
+    let instrument_id = instrument.id();
+    let price_precision = instrument.price_precision();
+    let size_precision = instrument.size_precision();
+
+    let last_px = Price::from_mantissa_exponent(
+        fill.price_mantissa,
+        response.price_exponent,
+        price_precision,
+    );
+    let last_qty = Quantity::from_mantissa_exponent(
+        fill.qty_mantissa as u64,
+        response.qty_exponent,
+        size_precision,
+    );
+
+    let comm_exp = fill.commission_exponent as i32;
+    let comm_dec = Decimal::new(fill.commission_mantissa, (-comm_exp) as u32);
+    let commission = Money::from_decimal(comm_dec, get_currency(&fill.commission_asset))?;
+    let order_side = map_order_side_sbe(response.side);
+    let ts_event = UnixNanos::from_micros(response.transact_time as u64);
+
+    Ok(FillReport::new(
+        account_id,
+        instrument_id,
+        VenueOrderId::new(response.order_id.to_string()),
+        TradeId::new(trade_id.to_string()),
+        order_side,
+        last_qty,
+        last_px,
+        commission,
+        LiquiditySide::Taker,
+        Some(ClientOrderId::new(decode_broker_id(
+            &response.client_order_id,
+            broker_id,
+        ))),
+        None,
+        ts_event + UnixNanos::from(index as u64),
+        ts_init,
+        None,
+    ))
+}
+
 /// Parses a Binance SBE account trade into a Nautilus `FillReport`.
 ///
 /// # Errors
@@ -1551,6 +1632,84 @@ mod tests {
             report.ts_last,
             UnixNanos::from(1_700_000_000_000_000_000u64)
         );
+    }
+
+    #[rstest]
+    fn test_parse_new_order_full_ioc_partial_expired_reports_fill_and_terminal_status() {
+        let instrument = sample_spot_instrument();
+        let response = BinanceNewOrderResponse {
+            price_exponent: -2,
+            qty_exponent: -4,
+            order_id: 48060199829,
+            order_list_id: None,
+            transact_time: 1_700_000_000_000_000,
+            price_mantissa: 0,
+            orig_qty_mantissa: 63,
+            executed_qty_mantissa: 40,
+            cummulative_quote_qty_mantissa: 140_000,
+            status: SbeOrderStatus::Expired,
+            time_in_force: SbeTimeInForce::Ioc,
+            order_type: SbeOrderType::Market,
+            side: SbeOrderSide::Buy,
+            stop_price_mantissa: None,
+            working_time: Some(1_700_000_000_000_000),
+            self_trade_prevention_mode:
+                crate::spot::sbe::spot::self_trade_prevention_mode::SelfTradePreventionMode::None,
+            client_order_id: "G-rc1aac44180b2-n_buy-1".to_string(),
+            symbol: "ETHUSDT".to_string(),
+            fills: vec![BinanceOrderFill {
+                price_mantissa: 350_000,
+                qty_mantissa: 40,
+                commission_mantissa: 12,
+                commission_exponent: -8,
+                commission_asset: "ETH".to_string(),
+                trade_id: Some(123456789),
+            }],
+            expiry_reason: None,
+        };
+        let ts_init = UnixNanos::from(1_700_000_001_000_000_000u64);
+
+        let report = parse_new_order_response_sbe(
+            &response,
+            sample_account_id(),
+            &instrument,
+            BINANCE_NAUTILUS_SPOT_BROKER_ID,
+            ts_init,
+        )
+        .unwrap();
+        let fills = parse_new_order_fill_reports_sbe(
+            &response,
+            sample_account_id(),
+            &instrument,
+            BINANCE_NAUTILUS_SPOT_BROKER_ID,
+            ts_init,
+        )
+        .unwrap();
+
+        assert_eq!(report.order_status, OrderStatus::Expired);
+        assert_eq!(report.order_type, OrderType::Market);
+        assert_eq!(report.order_side, OrderSide::Buy);
+        assert_eq!(report.quantity.as_f64(), 0.0063);
+        assert_eq!(report.filled_qty.as_f64(), 0.004);
+        assert_eq!(report.venue_order_id, VenueOrderId::new("48060199829"));
+        assert_eq!(
+            report.client_order_id,
+            Some(ClientOrderId::new("G-rc1aac44180b2-n_buy-1"))
+        );
+
+        assert_eq!(fills.len(), 1);
+        assert_eq!(fills[0].trade_id, TradeId::new("123456789"));
+        assert_eq!(fills[0].venue_order_id, VenueOrderId::new("48060199829"));
+        assert_eq!(
+            fills[0].client_order_id,
+            Some(ClientOrderId::new("G-rc1aac44180b2-n_buy-1"))
+        );
+        assert_eq!(fills[0].order_side, OrderSide::Buy);
+        assert_eq!(fills[0].last_px.as_f64(), 3500.0);
+        assert_eq!(fills[0].last_qty.as_f64(), 0.004);
+        assert_eq!(fills[0].liquidity_side, LiquiditySide::Taker);
+        assert_eq!(fills[0].commission.as_f64(), 0.00000012);
+        assert_eq!(fills[0].ts_init, ts_init);
     }
 
     #[rstest]

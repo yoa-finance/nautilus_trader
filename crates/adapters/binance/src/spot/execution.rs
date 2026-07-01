@@ -136,6 +136,7 @@ pub struct BinanceSpotExecutionClient {
     config: BinanceExecClientConfig,
     emitter: ExecutionEventEmitter,
     dispatch_state: Arc<WsDispatchState>,
+    seen_trade_ids: Arc<Mutex<FifoCache<(Ustr, i64), 10_000>>>,
     http_client: BinanceSpotHttpClient,
     ws_trading_client: Option<BinanceSpotWsTradingClient>,
     ws_trading_handle: Mutex<Option<JoinHandle<()>>>,
@@ -196,6 +197,7 @@ impl BinanceSpotExecutionClient {
             config,
             emitter,
             dispatch_state: Arc::new(WsDispatchState::default()),
+            seen_trade_ids: Arc::new(Mutex::new(FifoCache::new())),
             http_client,
             ws_trading_client,
             ws_trading_handle: Mutex::new(None),
@@ -329,11 +331,12 @@ impl BinanceSpotExecutionClient {
         } else {
             let http_client = self.http_client.clone();
             let dispatch_state = self.dispatch_state.clone();
+            let seen_trade_ids = self.seen_trade_ids.clone();
             log::debug!("WS trading not active, falling back to HTTP for submit_order");
 
             self.spawn_task("submit_order_http", async move {
                 let result = http_client
-                    .submit_order(
+                    .submit_order_with_fills(
                         account_id,
                         instrument_id,
                         client_order_id,
@@ -350,8 +353,9 @@ impl BinanceSpotExecutionClient {
                     .await;
 
                 match result {
-                    Ok(report) => {
+                    Ok(response) => {
                         dispatch_state.insert_accepted(client_order_id);
+                        let report = response.status;
                         let accepted = OrderAccepted::new(
                             trader_id,
                             strategy_id,
@@ -365,6 +369,9 @@ impl BinanceSpotExecutionClient {
                             false,
                         );
                         event_emitter.send_order_event(OrderEventAny::Accepted(accepted));
+                        let fills =
+                            retain_unseen_fill_reports(&report, response.fills, &seen_trade_ids);
+                        event_emitter.send_order_with_fills(report, fills);
                     }
                     Err(e) => {
                         if is_ambiguous_submit_error(&e) {
@@ -660,7 +667,7 @@ impl ExecutionClient for BinanceSpotExecutionClient {
                     let http_client = self.http_client.clone();
                     let dispatch_state = self.dispatch_state.clone();
                     let ws_authenticated = self.ws_authenticated.clone();
-                    let seen_trade_ids = std::sync::Arc::new(Mutex::new(FifoCache::new()));
+                    let seen_trade_ids = self.seen_trade_ids.clone();
 
                     let handle = get_runtime().spawn(async move {
                         loop {
@@ -3233,6 +3240,38 @@ fn dispatch_untracked_execution_report(
             }
         }
     }
+}
+
+fn retain_unseen_fill_reports(
+    report: &OrderStatusReport,
+    fills: Vec<FillReport>,
+    seen_trade_ids: &Arc<Mutex<FifoCache<(Ustr, i64), 10_000>>>,
+) -> Vec<FillReport> {
+    if fills.is_empty() {
+        return fills;
+    }
+
+    let symbol = Ustr::from(report.instrument_id.symbol.as_str());
+    let mut guard = seen_trade_ids.lock().expect(MUTEX_POISONED);
+
+    fills
+        .into_iter()
+        .filter(|fill| {
+            let Ok(trade_id) = fill.trade_id.as_str().parse::<i64>() else {
+                return true;
+            };
+
+            let dedup_key = (symbol, trade_id);
+            let is_duplicate = guard.contains(&dedup_key);
+            guard.add(dedup_key);
+
+            if is_duplicate {
+                log::debug!("Duplicate trade_id={trade_id} for {symbol}, skipping");
+            }
+
+            !is_duplicate
+        })
+        .collect()
 }
 
 // Checks for GTX (-5022) and spot LIMIT_MAKER (-2010 + specific message)
