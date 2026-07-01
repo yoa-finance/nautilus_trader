@@ -221,6 +221,8 @@ pub enum BinanceSpotWsTradingMessage {
     AllOrdersCanceled {
         /// Request ID for correlation.
         request_id: String,
+        /// Venue symbol whose open orders reached cancel-all terminal.
+        symbol: Option<String>,
         /// Cancel-all result.
         result: BinanceSpotCancelAllResult,
     },
@@ -244,6 +246,13 @@ pub enum BinanceSpotWsTradingMessage {
     },
     /// Error from venue or network.
     Error(String),
+    /// Recoverable protocol anomaly requiring broker reconciliation before acting on related state.
+    ProtocolAnomaly {
+        /// SBE template ID when available.
+        template_id: Option<u16>,
+        /// Anomaly reason.
+        reason: String,
+    },
     /// Fatal adapter error requiring live runner reconciliation.
     FatalError {
         /// Error reason.
@@ -254,7 +263,7 @@ pub enum BinanceSpotWsTradingMessage {
 /// Metadata for a pending request.
 ///
 /// Stored in the handler to match responses to their originating requests.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum BinanceSpotWsTradingRequestMeta {
     /// Pending order placement.
     PlaceOrder,
@@ -263,7 +272,10 @@ pub enum BinanceSpotWsTradingRequestMeta {
     /// Pending cancel-replace.
     CancelReplaceOrder,
     /// Pending cancel-all.
-    CancelAllOrders,
+    CancelAllOrders {
+        /// Venue symbol whose open orders are being canceled.
+        symbol: String,
+    },
     /// Pending session logon.
     SessionLogon,
     /// Pending user data subscription.

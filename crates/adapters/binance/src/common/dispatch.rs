@@ -21,7 +21,10 @@
 //! - Tracked orders produce proper order events (OrderAccepted, OrderFilled, etc.).
 //! - Untracked orders fall back to execution reports for reconciliation.
 
-use std::sync::Mutex;
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use dashmap::DashMap;
 use nautilus_common::cache::fifo::FifoCache;
@@ -33,6 +36,7 @@ use nautilus_model::{
     identifiers::{AccountId, ClientOrderId, InstrumentId, StrategyId, VenueOrderId},
     types::{Price, Quantity},
 };
+use tokio::sync::Notify;
 
 /// The type of operation a pending WS API request represents.
 #[derive(Debug, Clone, Copy)]
@@ -77,10 +81,17 @@ pub struct OrderIdentity {
 pub struct WsDispatchState {
     pub order_identities: DashMap<ClientOrderId, OrderIdentity>,
     pub pending_requests: DashMap<String, PendingRequest>,
+    live_exit_cancel_gates: Mutex<HashMap<String, CancelAllGate>>,
     emitted_accepted: Mutex<FifoCache<ClientOrderId, 10_000>>,
     pending_updates: Mutex<FifoCache<ClientOrderId, 10_000>>,
     filled_orders: Mutex<FifoCache<ClientOrderId, 10_000>>,
     adapter_fatal_reason: Mutex<Option<String>>,
+}
+
+#[derive(Debug)]
+struct CancelAllGate {
+    notify: Arc<Notify>,
+    pending_count: usize,
 }
 
 impl Default for WsDispatchState {
@@ -88,6 +99,7 @@ impl Default for WsDispatchState {
         Self {
             order_identities: DashMap::new(),
             pending_requests: DashMap::new(),
+            live_exit_cancel_gates: Mutex::new(HashMap::new()),
             emitted_accepted: Mutex::new(FifoCache::new()),
             pending_updates: Mutex::new(FifoCache::new()),
             filled_orders: Mutex::new(FifoCache::new()),
@@ -149,6 +161,43 @@ impl WsDispatchState {
             .clone()
     }
 
+    pub fn mark_cancel_all_started(&self, symbol: &str) {
+        let mut gates = self.live_exit_cancel_gates.lock().expect(MUTEX_POISONED);
+        let gate = gates
+            .entry(symbol.to_string())
+            .or_insert_with(|| CancelAllGate {
+                notify: Arc::new(Notify::new()),
+                pending_count: 0,
+            });
+        gate.pending_count += 1;
+    }
+
+    pub fn cancel_all_gate(&self, symbol: &str) -> Option<Arc<Notify>> {
+        self.live_exit_cancel_gates
+            .lock()
+            .expect(MUTEX_POISONED)
+            .get(symbol)
+            .and_then(|gate| (gate.pending_count > 0).then(|| gate.notify.clone()))
+    }
+
+    pub fn complete_cancel_all(&self, symbol: &str) {
+        let notify = {
+            let mut gates = self.live_exit_cancel_gates.lock().expect(MUTEX_POISONED);
+            let Some(gate) = gates.get_mut(symbol) else {
+                return;
+            };
+            gate.pending_count = gate.pending_count.saturating_sub(1);
+            if gate.pending_count > 0 {
+                return;
+            }
+            gates.remove(symbol).map(|gate| gate.notify)
+        };
+
+        if let Some(notify) = notify {
+            notify.notify_waiters();
+        }
+    }
+
     /// Removes all tracking state for a terminal order.
     pub fn cleanup_terminal(&self, cid: ClientOrderId) {
         self.order_identities.remove(&cid);
@@ -196,4 +245,24 @@ pub fn ensure_accepted_emitted(
         false,
     );
     emitter.send_order_event(OrderEventAny::Accepted(accepted));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cancel_all_gate_releases_after_last_terminal() {
+        let state = WsDispatchState::default();
+
+        state.mark_cancel_all_started("BTCUSDT");
+        state.mark_cancel_all_started("BTCUSDT");
+        assert!(state.cancel_all_gate("BTCUSDT").is_some());
+
+        state.complete_cancel_all("BTCUSDT");
+        assert!(state.cancel_all_gate("BTCUSDT").is_some());
+
+        state.complete_cancel_all("BTCUSDT");
+        assert!(state.cancel_all_gate("BTCUSDT").is_none());
+    }
 }

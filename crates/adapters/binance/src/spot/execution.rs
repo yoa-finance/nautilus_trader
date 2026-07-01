@@ -48,7 +48,7 @@ use nautilus_core::{
 use nautilus_live::{ExecutionClientCore, ExecutionEventEmitter};
 use nautilus_model::{
     accounts::AccountAny,
-    enums::{LiquiditySide, OmsType, OrderSide, OrderType},
+    enums::{LiquiditySide, OmsType, OrderSide, OrderType, TimeInForce},
     events::{
         AccountState, OrderAccepted, OrderCancelRejected, OrderCanceled, OrderEventAny,
         OrderFilled, OrderModifyRejected, OrderRejected, OrderUpdated,
@@ -276,6 +276,27 @@ impl BinanceSpotExecutionClient {
             let dispatch_state = self.dispatch_state.clone();
             let params =
                 build_new_order_params(&order, client_order_id, is_post_only, is_quote_quantity)?;
+            let symbol = instrument_id.symbol.to_string();
+
+            if is_live_exit_close_order(&order)
+                && let Some(cancel_gate) = dispatch_state.cancel_all_gate(&symbol)
+            {
+                log::info!(
+                    "Deferring live exit close order {client_order_id} for {symbol} until cancel-all terminal"
+                );
+                let cancel_notified = cancel_gate.notified_owned();
+                self.spawn_task("deferred_live_exit_close_order_ws", async move {
+                    cancel_notified.await;
+                    submit_ws_order_after_cancel_gate(
+                        ws_client,
+                        dispatch_state,
+                        client_order_id,
+                        params,
+                    )
+                    .await
+                });
+                return Ok(());
+            }
 
             // Pre-register before sending to avoid response racing the insert
             let request_id = ws_client.next_request_id();
@@ -1229,6 +1250,7 @@ impl ExecutionClient for BinanceSpotExecutionClient {
         if self.ws_trading_active() {
             let ws_client = self.ws_trading_client.as_ref().unwrap().clone();
             let symbol = cmd.instrument_id.symbol.to_string();
+            self.dispatch_state.mark_cancel_all_started(&symbol);
 
             self.spawn_task("cancel_all_orders_ws", async move {
                 if let Err(e) = ws_client.cancel_all_orders(symbol).await {
@@ -1626,8 +1648,13 @@ fn dispatch_ws_trading_message(
                 "WS trading request failed without structured venue response: request_id={request_id}, {msg}"
             );
         }
-        BinanceSpotWsTradingMessage::AllOrdersCanceled { request_id, result } => {
+        BinanceSpotWsTradingMessage::AllOrdersCanceled {
+            request_id,
+            symbol,
+            result,
+        } => {
             dispatch_state.pending_requests.remove(&request_id);
+            let terminal_symbol = cancel_all_terminal_symbol(symbol.as_deref(), &result);
             match result {
                 BinanceSpotCancelAllResult::Orders(responses) => {
                     log::debug!(
@@ -1646,6 +1673,13 @@ fn dispatch_ws_trading_message(
                         clock,
                     );
                 }
+            }
+            if let Some(symbol) = terminal_symbol {
+                dispatch_state.complete_cancel_all(&symbol);
+            } else {
+                log::warn!(
+                    "WS all orders canceled without symbol; deferred live exit close orders cannot be released deterministically"
+                );
             }
         }
         BinanceSpotWsTradingMessage::UserDataSubscribed { subscription_id } => {
@@ -1706,6 +1740,17 @@ fn dispatch_ws_trading_message(
         }
         BinanceSpotWsTradingMessage::Error(err) => {
             log::error!("WS trading API error: {err}");
+        }
+        BinanceSpotWsTradingMessage::ProtocolAnomaly {
+            template_id,
+            reason,
+        } => {
+            log::error!(
+                "binance_ws_sbe_protocol_anomaly template_id={}: {reason}",
+                template_id
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "<unknown>".to_string())
+            );
         }
         BinanceSpotWsTradingMessage::FatalError { reason } => {
             log::error!("WS trading API fatal error: {reason}");
@@ -1782,6 +1827,67 @@ fn dispatch_order_list_cancel_result(
         );
         dispatch_state.cleanup_terminal(client_order_id);
         emitter.send_order_event(OrderEventAny::Canceled(canceled));
+    }
+}
+
+async fn submit_ws_order_after_cancel_gate(
+    ws_client: BinanceSpotWsTradingClient,
+    dispatch_state: Arc<WsDispatchState>,
+    client_order_id: ClientOrderId,
+    params: NewOrderParams,
+) -> anyhow::Result<()> {
+    let request_id = ws_client.next_request_id();
+    dispatch_state.pending_requests.insert(
+        request_id.clone(),
+        PendingRequest {
+            client_order_id,
+            venue_order_id: None,
+            operation: PendingOperation::Place,
+        },
+    );
+
+    if let Err(e) = ws_client
+        .place_order_with_id(request_id.clone(), params)
+        .await
+    {
+        dispatch_state.pending_requests.remove(&request_id);
+        log::error!(
+            "Deferred live exit close submit failed for {client_order_id}, awaiting reconciliation: {e}"
+        );
+        anyhow::bail!("deferred live exit close submit failed: {e}");
+    }
+
+    Ok(())
+}
+
+fn is_live_exit_close_order(order: &impl Order) -> bool {
+    order.is_reduce_only()
+        && order.order_type() == OrderType::Market
+        && order.time_in_force() == TimeInForce::Ioc
+}
+
+fn cancel_all_terminal_symbol(
+    symbol: Option<&str>,
+    result: &BinanceSpotCancelAllResult,
+) -> Option<String> {
+    if let Some(symbol) = symbol.filter(|value| !value.is_empty()) {
+        return Some(symbol.to_string());
+    }
+
+    match result {
+        BinanceSpotCancelAllResult::OrderList(response) => {
+            (!response.symbol.is_empty()).then(|| response.symbol.clone())
+        }
+        BinanceSpotCancelAllResult::Orders(responses) => {
+            let mut symbols = responses
+                .iter()
+                .map(|response| response.symbol.as_str())
+                .filter(|symbol| !symbol.is_empty());
+            let first = symbols.next()?;
+            symbols
+                .all(|symbol| symbol == first)
+                .then(|| first.to_string())
+        }
     }
 }
 
@@ -3426,6 +3532,7 @@ mod tests {
         dispatch_ws_trading_message(
             BinanceSpotWsTradingMessage::AllOrdersCanceled {
                 request_id: "req-cancel-all".to_string(),
+                symbol: Some("BTCUSDT".to_string()),
                 result: BinanceSpotCancelAllResult::OrderList(BinanceSpotOrderListCancelResult {
                     template_id: 312,
                     order_list_id: 42,
@@ -3492,6 +3599,34 @@ mod tests {
     }
 
     #[rstest]
+    fn test_dispatch_ws_trading_message_all_orders_canceled_releases_live_exit_gate() {
+        let clock = get_atomic_clock_realtime();
+        let (emitter, _rx) = create_test_emitter(clock);
+        let http_client = create_test_http_client(clock);
+        let dispatch_state = WsDispatchState::default();
+        dispatch_state.mark_cancel_all_started("BTCUSDT");
+        let ws_authenticated = tokio::sync::Notify::new();
+        let seen_trade_ids = Arc::new(Mutex::new(FifoCache::new()));
+
+        dispatch_ws_trading_message(
+            BinanceSpotWsTradingMessage::AllOrdersCanceled {
+                request_id: "req-cancel-all".to_string(),
+                symbol: Some("BTCUSDT".to_string()),
+                result: BinanceSpotCancelAllResult::Orders(Vec::new()),
+            },
+            &emitter,
+            &http_client,
+            AccountId::from("BINANCE-001"),
+            clock,
+            &dispatch_state,
+            &ws_authenticated,
+            &seen_trade_ids,
+        );
+
+        assert!(dispatch_state.cancel_all_gate("BTCUSDT").is_none());
+    }
+
+    #[rstest]
     fn test_dispatch_ws_trading_message_fatal_error_records_adapter_signal() {
         let clock = get_atomic_clock_realtime();
         let (emitter, _rx) = create_test_emitter(clock);
@@ -3517,6 +3652,32 @@ mod tests {
             dispatch_state.adapter_fatal_reason().as_deref(),
             Some("unsupported direct template")
         );
+    }
+
+    #[rstest]
+    fn test_dispatch_ws_trading_message_protocol_anomaly_does_not_shutdown_system() {
+        let clock = get_atomic_clock_realtime();
+        let (emitter, _rx) = create_test_emitter(clock);
+        let http_client = create_test_http_client(clock);
+        let dispatch_state = WsDispatchState::default();
+        let ws_authenticated = tokio::sync::Notify::new();
+        let seen_trade_ids = Arc::new(Mutex::new(FifoCache::new()));
+
+        dispatch_ws_trading_message(
+            BinanceSpotWsTradingMessage::ProtocolAnomaly {
+                template_id: Some(312),
+                reason: "direct response could not be correlated".to_string(),
+            },
+            &emitter,
+            &http_client,
+            AccountId::from("BINANCE-001"),
+            clock,
+            &dispatch_state,
+            &ws_authenticated,
+            &seen_trade_ids,
+        );
+
+        assert!(dispatch_state.adapter_fatal_reason().is_none());
     }
 
     #[rstest]
