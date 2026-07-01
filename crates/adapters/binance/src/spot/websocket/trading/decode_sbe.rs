@@ -554,6 +554,7 @@ pub fn decode_cancel_order_list_response(
     })? {
         let order_id = reports_dec.order_id();
         let order_list_id = reports_dec.order_list_id();
+        let transact_time = reports_dec.transact_time();
         let status = reports_dec.status().to_string();
         let time_in_force = reports_dec.time_in_force().to_string();
         let order_type = reports_dec.order_type().to_string();
@@ -573,6 +574,7 @@ pub fn decode_cancel_order_list_response(
         order_reports.push(BinanceSpotOrderListChildReport {
             order_id,
             order_list_id,
+            transact_time,
             symbol,
             orig_client_order_id,
             client_order_id,

@@ -99,7 +99,7 @@ nautilus-trading = { package = "stratneo-nautilus-trading", path = "crates/tradi
 # -----------------------------------------------------------------------------
 nautilus-architect-ax = { path = "crates/adapters/architect_ax", version = "0.58.0" }
 nautilus-betfair = { path = "crates/adapters/betfair", version = "0.58.0", default-features = false }
-nautilus-binance = { package = "stratneo-nautilus-binance", path = "crates/adapters/binance", version = "0.59.3", default-features = false }
+nautilus-binance = { package = "stratneo-nautilus-binance", path = "crates/adapters/binance", version = "0.59.4-stratneo.1", default-features = false }
 nautilus-bitmex = { path = "crates/adapters/bitmex", version = "0.58.0", default-features = false }
 nautilus-blockchain = { path = "crates/adapters/blockchain", version = "0.58.0" }
 nautilus-bybit = { path = "crates/adapters/bybit", version = "0.58.0", default-features = false }

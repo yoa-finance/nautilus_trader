@@ -288,7 +288,7 @@ impl BinanceSpotExecutionClient {
                 && let Some(cancel_gate) = dispatch_state.cancel_all_gate(&symbol)
             {
                 log::info!(
-                    "Deferring live exit close order {client_order_id} for {symbol} until cancel-all terminal"
+                    "deferred_live_exit_close_waiting_cancel_gate client_order_id={client_order_id} symbol={symbol}"
                 );
                 let cancel_notified = cancel_gate.notified_owned();
                 self.spawn_task("deferred_live_exit_close_order_ws", async move {
@@ -1840,11 +1840,12 @@ fn dispatch_order_list_cancel_result(
         response.order_reports.len(),
     );
 
-    let ts_event = if response.transaction_time >= 0 {
-        UnixNanos::from_micros(response.transaction_time as u64)
-    } else {
-        clock.get_time_ns()
-    };
+    let response_ts_event = checked_unix_nanos_from_micros(
+        response.transaction_time,
+        "transaction_time",
+        "ws_order_list_cancel_response",
+    )
+    .unwrap_or_else(|| clock.get_time_ns());
     let ts_init = clock.get_time_ns();
 
     for report in &response.order_reports {
@@ -1866,6 +1867,12 @@ fn dispatch_order_list_cancel_result(
         };
 
         let venue_order_id = VenueOrderId::new(report.order_id.to_string());
+        let ts_event = checked_unix_nanos_from_micros(
+            report.transact_time,
+            "order_report.transact_time",
+            "ws_order_list_cancel_report",
+        )
+        .unwrap_or(response_ts_event);
         ensure_accepted_emitted(
             client_order_id,
             account_id,
@@ -1955,8 +1962,13 @@ fn dispatch_http_order_list_cancel_result(
 
         let venue_order_id = VenueOrderId::new(venue_order_id.to_string());
         let ts_event = transact_time
-            .filter(|millis| *millis >= 0)
-            .map(|millis| UnixNanos::from_millis(millis as u64))
+            .and_then(|millis| {
+                checked_unix_nanos_from_millis(
+                    millis,
+                    "order_report.transact_time",
+                    "http_order_list_cancel_report",
+                )
+            })
             .unwrap_or_else(|| clock.get_time_ns());
 
         ensure_accepted_emitted(
@@ -1986,6 +1998,44 @@ fn dispatch_http_order_list_cancel_result(
     }
 }
 
+fn checked_unix_nanos_from_micros(value: i64, field: &str, context: &str) -> Option<UnixNanos> {
+    if value < 0 {
+        log::warn!(
+            "binance_timestamp_fallback context={context} field={field} value={value} reason=negative_microseconds"
+        );
+        return None;
+    }
+
+    let value = value as u64;
+    if value > u64::MAX / 1_000 {
+        log::warn!(
+            "binance_timestamp_fallback context={context} field={field} value={value} reason=unix_nanos_overflow"
+        );
+        return None;
+    }
+
+    Some(UnixNanos::from_micros(value))
+}
+
+fn checked_unix_nanos_from_millis(value: i64, field: &str, context: &str) -> Option<UnixNanos> {
+    if value < 0 {
+        log::warn!(
+            "binance_timestamp_fallback context={context} field={field} value={value} reason=negative_milliseconds"
+        );
+        return None;
+    }
+
+    let value = value as u64;
+    if value > u64::MAX / 1_000_000 {
+        log::warn!(
+            "binance_timestamp_fallback context={context} field={field} value={value} reason=unix_nanos_overflow"
+        );
+        return None;
+    }
+
+    Some(UnixNanos::from_millis(value))
+}
+
 async fn submit_ws_order_after_cancel_gate(
     ws_client: BinanceSpotWsTradingClient,
     dispatch_state: Arc<WsDispatchState>,
@@ -2002,13 +2052,16 @@ async fn submit_ws_order_after_cancel_gate(
         },
     );
 
+    log::info!(
+        "deferred_live_exit_close_submit_sent client_order_id={client_order_id} request_id={request_id}"
+    );
     if let Err(e) = ws_client
         .place_order_with_id(request_id.clone(), params)
         .await
     {
         dispatch_state.pending_requests.remove(&request_id);
         log::error!(
-            "Deferred live exit close submit failed for {client_order_id}, awaiting reconciliation: {e}"
+            "deferred_live_exit_close_submit_failed client_order_id={client_order_id} request_id={request_id} error={e}"
         );
         anyhow::bail!("deferred live exit close submit failed: {e}");
     }
@@ -3843,6 +3896,7 @@ mod tests {
                         crate::spot::websocket::trading::messages::BinanceSpotOrderListChildReport {
                             order_id: 1001,
                             order_list_id: Some(42),
+                            transact_time: 1_709_654_400_124_000,
                             symbol: "BTCUSDT".to_string(),
                             orig_client_order_id: encode_broker_id(
                                 &client_order_id,

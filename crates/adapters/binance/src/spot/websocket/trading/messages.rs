@@ -50,6 +50,8 @@ pub struct BinanceSpotOrderListChildReport {
     pub order_id: i64,
     /// Order list ID.
     pub order_list_id: Option<i64>,
+    /// Transaction time in microseconds.
+    pub transact_time: i64,
     /// Venue symbol.
     pub symbol: String,
     /// Original venue client order ID.
