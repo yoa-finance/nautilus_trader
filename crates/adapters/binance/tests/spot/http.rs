@@ -18,7 +18,7 @@
 use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Duration};
 
 use axum::{
-    Json, Router,
+    Router,
     body::Body,
     extract::Query,
     http::{HeaderMap, StatusCode, header},
@@ -31,7 +31,7 @@ use nautilus_binance::{
         enums::BinanceSpotOrderType,
         http::{
             client::{BinanceRawSpotHttpClient, BinanceSpotHttpClient},
-            query::{AccountInfoParams, CancelOrderListParams, DepthParams},
+            query::{AccountInfoParams, DepthParams},
         },
         sbe::spot::{SBE_SCHEMA_ID, SBE_SCHEMA_VERSION},
     },
@@ -666,7 +666,6 @@ fn create_router(state: Arc<TestServerState>) -> Router {
     let my_trades_state = state.clone();
     let new_order_state = state.clone();
     let cancel_order_state = state.clone();
-    let cancel_order_list_state = state.clone();
     let cancel_all_orders_state = state;
 
     Router::new()
@@ -1089,91 +1088,6 @@ fn create_router(state: Arc<TestServerState>) -> Router {
                             ),
                         ];
                         sbe_response(build_cancel_open_orders_response(&orders)).into_response()
-                    }
-                },
-            ),
-        )
-        .route(
-            "/api/v3/orderList",
-            delete(
-                move |headers: HeaderMap, Query(params): Query<HashMap<String, String>>| {
-                    let state = cancel_order_list_state.clone();
-                    async move {
-                        if !has_auth_headers(&headers) {
-                            return unauthorized_response().into_response();
-                        }
-
-                        if state.increment_and_check() {
-                            return rate_limit_response().into_response();
-                        }
-
-                        let symbol = params
-                            .get("symbol")
-                            .cloned()
-                            .unwrap_or_else(|| "BTCUSDT".to_string());
-                        let list_client_order_id = params
-                            .get("listClientOrderId")
-                            .cloned()
-                            .unwrap_or_else(|| "oco-list-1".to_string());
-                        Json(serde_json::json!({
-                            "orderListId": 7001,
-                            "contingencyType": "OCO",
-                            "listStatusType": "ALL_DONE",
-                            "listOrderStatus": "ALL_DONE",
-                            "listClientOrderId": list_client_order_id,
-                            "transactionTime": 1734300000000i64,
-                            "symbol": symbol,
-                            "orders": [
-                                {
-                                    "symbol": symbol,
-                                    "orderId": 9001,
-                                    "clientOrderId": "oco-above-1"
-                                },
-                                {
-                                    "symbol": symbol,
-                                    "orderId": 9002,
-                                    "clientOrderId": "oco-below-1"
-                                }
-                            ],
-                            "orderReports": [
-                                {
-                                    "symbol": symbol,
-                                    "orderId": 9001,
-                                    "orderListId": 7001,
-                                    "clientOrderId": "oco-above-1",
-                                    "transactTime": 1734300000000i64,
-                                    "price": "1100.00",
-                                    "origQty": "0.10000000",
-                                    "executedQty": "0.00000000",
-                                    "cummulativeQuoteQty": "0.00000000",
-                                    "status": "CANCELED",
-                                    "type": "LIMIT_MAKER",
-                                    "side": "SELL",
-                                    "timeInForce": "GTC",
-                                    "workingTime": 1734300000000i64,
-                                    "selfTradePreventionMode": "NONE"
-                                },
-                                {
-                                    "symbol": symbol,
-                                    "orderId": 9002,
-                                    "orderListId": 7001,
-                                    "clientOrderId": "oco-below-1",
-                                    "transactTime": 1734300000000i64,
-                                    "price": "900.00",
-                                    "origQty": "0.10000000",
-                                    "executedQty": "0.00000000",
-                                    "cummulativeQuoteQty": "0.00000000",
-                                    "status": "CANCELED",
-                                    "type": "STOP_LOSS_LIMIT",
-                                    "side": "SELL",
-                                    "timeInForce": "GTC",
-                                    "stopPrice": "910.00",
-                                    "workingTime": 1734300000000i64,
-                                    "selfTradePreventionMode": "NONE"
-                                }
-                            ]
-                        }))
-                        .into_response()
                     }
                 },
             ),
@@ -1837,39 +1751,6 @@ async fn test_domain_cancel_order() {
         .unwrap();
 
     assert_eq!(venue_order_id, VenueOrderId::from("12345"));
-}
-
-#[rstest]
-#[tokio::test]
-async fn test_domain_cancel_order_list_uses_json_response() {
-    let addr = start_test_server(Arc::new(TestServerState::default())).await;
-    let base_url = format!("http://{addr}");
-
-    let client = create_domain_client_with_instruments(
-        base_url,
-        Some("test_api_key".to_string()),
-        Some("test_api_secret".to_string()),
-    )
-    .await;
-
-    let response = client
-        .cancel_order_list(&CancelOrderListParams::by_list_client_order_id(
-            "BTCUSDT",
-            "oco-list-abc",
-        ))
-        .await
-        .unwrap();
-
-    assert_eq!(response.order_list_id, 7001);
-    assert_eq!(response.list_client_order_id, "oco-list-abc");
-    assert_eq!(response.list_status_type, "ALL_DONE");
-    assert_eq!(response.list_order_status, "ALL_DONE");
-    assert_eq!(response.orders.len(), 2);
-    assert_eq!(response.order_reports.len(), 2);
-    assert_eq!(
-        response.order_reports[0].status.as_deref(),
-        Some("CANCELED")
-    );
 }
 
 #[rstest]
