@@ -48,7 +48,7 @@ use nautilus_core::{
 use nautilus_live::{ExecutionClientCore, ExecutionEventEmitter};
 use nautilus_model::{
     accounts::AccountAny,
-    enums::{LiquiditySide, OmsType, OrderSide, OrderType, TimeInForce},
+    enums::{LiquiditySide, OmsType, OrderSide, OrderType},
     events::{
         AccountState, OrderAccepted, OrderCancelRejected, OrderCanceled, OrderEventAny,
         OrderFilled, OrderModifyRejected, OrderRejected, OrderUpdated,
@@ -81,8 +81,7 @@ use crate::{
     common::{
         consts::{
             BINANCE_GTX_ORDER_REJECT_CODE, BINANCE_NAUTILUS_SPOT_BROKER_ID,
-            BINANCE_NEW_ORDER_REJECTED_CODE, BINANCE_SPOT_POST_ONLY_REJECT_MSG,
-            BINANCE_STATUS_UNKNOWN_CODE, BINANCE_UNEXPECTED_RESPONSE_CODE, BINANCE_VENUE,
+            BINANCE_NEW_ORDER_REJECTED_CODE, BINANCE_SPOT_POST_ONLY_REJECT_MSG, BINANCE_VENUE,
         },
         credential::resolve_credentials,
         dispatch::{
@@ -110,7 +109,6 @@ use crate::{
             query::{
                 BatchCancelItem, CancelOrderListParams, CancelOrderParams,
                 CancelReplaceOrderParams, NewOrderListOcoParams, NewOrderListOpocoParams,
-                NewOrderParams,
             },
         },
         sbe::spot::list_order_status::ListOrderStatus,
@@ -123,13 +121,14 @@ const OPOCO_CONTINGENCY_TYPE_VALUE: &str = "OPOCO";
 const ORDER_LIST_CANCEL_PARAM: &str = "order_list_cancel";
 const ORDER_LIST_CLIENT_ORDER_ID_PARAM: &str = "list_client_order_id";
 const ORDER_LIST_ID_PARAM: &str = "order_list_id";
+const BINANCE_SPOT_SUBMIT_ACK_TIMEOUT_MS: u64 = 5_000;
 
 /// Live execution client for Binance Spot trading.
 ///
 /// Implements the [`ExecutionClient`] trait for order management on Binance Spot
-/// and Spot Margin markets. Uses WebSocket API as the primary transport for order
-/// operations (lowest latency), with HTTP API fallback when the WS connection is
-/// unavailable. The WebSocket User Data Stream provides real-time execution events.
+/// and Spot Margin markets. New order submit uses the HTTP FULL response as the
+/// venue acknowledgement source. The WebSocket User Data Stream provides real-time
+/// execution events.
 #[derive(Debug)]
 pub struct BinanceSpotExecutionClient {
     core: ExecutionClientCore,
@@ -278,139 +277,96 @@ impl BinanceSpotExecutionClient {
             },
         );
 
-        if self.ws_trading_active() {
-            let ws_client = self.ws_trading_client.as_ref().unwrap().clone();
-            let dispatch_state = self.dispatch_state.clone();
-            let params =
-                build_new_order_params(&order, client_order_id, is_post_only, is_quote_quantity)?;
-            let symbol = instrument_id.symbol.to_string();
+        let http_client = self.http_client.clone();
+        let dispatch_state = self.dispatch_state.clone();
+        let seen_trade_ids = self.seen_trade_ids.clone();
 
-            if is_live_exit_close_order(&order)
-                && let Some(cancel_gate) = dispatch_state.cancel_all_gate(&symbol)
-            {
-                log::info!(
-                    "deferred_live_exit_close_waiting_cancel_gate client_order_id={client_order_id} symbol={symbol}"
-                );
-                let cancel_notified = cancel_gate.notified_owned();
-                self.spawn_task("deferred_live_exit_close_order_ws", async move {
-                    cancel_notified.await;
-                    submit_ws_order_after_cancel_gate(
-                        ws_client,
-                        dispatch_state,
-                        client_order_id,
-                        params,
-                    )
-                    .await
-                });
-                return Ok(());
-            }
-
-            // Pre-register before sending to avoid response racing the insert
-            let request_id = ws_client.next_request_id();
-            dispatch_state.pending_requests.insert(
-                request_id.clone(),
-                PendingRequest {
+        self.spawn_task("submit_order_http", async move {
+            let result = tokio::time::timeout(
+                Duration::from_millis(BINANCE_SPOT_SUBMIT_ACK_TIMEOUT_MS),
+                http_client.submit_order_with_fills(
+                    account_id,
+                    instrument_id,
                     client_order_id,
-                    venue_order_id: None,
-                    operation: PendingOperation::Place,
-                },
-            );
+                    order_side,
+                    order_type,
+                    quantity,
+                    time_in_force,
+                    price,
+                    trigger_price,
+                    is_post_only,
+                    is_quote_quantity,
+                    display_qty,
+                ),
+            )
+            .await;
 
-            self.spawn_task("submit_order_ws", async move {
-                if let Err(e) = ws_client
-                    .place_order_with_id(request_id.clone(), params)
-                    .await
-                {
-                    dispatch_state.pending_requests.remove(&request_id);
-                    log::error!(
-                        "WS submit request failed for {client_order_id}, awaiting reconciliation: {e}"
-                    );
-                    anyhow::bail!("WS submit order failed: {e}");
-                }
-                Ok(())
-            });
-        } else {
-            let http_client = self.http_client.clone();
-            let dispatch_state = self.dispatch_state.clone();
-            let seen_trade_ids = self.seen_trade_ids.clone();
-            log::debug!("WS trading not active, falling back to HTTP for submit_order");
-
-            self.spawn_task("submit_order_http", async move {
-                let result = http_client
-                    .submit_order_with_fills(
-                        account_id,
+            let response = match result {
+                Ok(Ok(response)) => response,
+                Ok(Err(e)) => {
+                    let due_post_only = e
+                        .downcast_ref::<BinanceSpotHttpError>()
+                        .is_some_and(is_spot_post_only_rejection);
+                    let reason = format!("submit-order-error: {e}");
+                    dispatch_state.cleanup_terminal(client_order_id);
+                    let rejected = OrderRejected::new(
+                        trader_id,
+                        strategy_id,
                         instrument_id,
                         client_order_id,
-                        order_side,
-                        order_type,
-                        quantity,
-                        time_in_force,
-                        price,
-                        trigger_price,
-                        is_post_only,
-                        is_quote_quantity,
-                        display_qty,
-                    )
-                    .await;
-
-                match result {
-                    Ok(response) => {
-                        dispatch_state.insert_accepted(client_order_id);
-                        let report = response.status;
-                        let accepted = OrderAccepted::new(
-                            trader_id,
-                            strategy_id,
-                            instrument_id,
-                            client_order_id,
-                            report.venue_order_id,
-                            account_id,
-                            UUID4::new(),
-                            ts_init,
-                            ts_init,
-                            false,
-                        );
-                        event_emitter.send_order_event(OrderEventAny::Accepted(accepted));
-                        let fills =
-                            retain_unseen_fill_reports(&report, response.fills, &seen_trade_ids);
-                        event_emitter.send_order_with_fills(report, fills);
-                    }
-                    Err(e) => {
-                        if is_ambiguous_submit_error(&e) {
-                            log::error!(
-                                "Ambiguous submit failure for {client_order_id}, awaiting reconciliation: {e}"
-                            );
-                        } else if is_structured_venue_rejection(&e)
-                            || is_local_command_failure(&e)
-                        {
-                            let due_post_only = e
-                                .downcast_ref::<BinanceSpotHttpError>()
-                                .is_some_and(is_spot_post_only_rejection);
-                            dispatch_state.cleanup_terminal(client_order_id);
-                            let rejected = OrderRejected::new(
-                                trader_id,
-                                strategy_id,
-                                instrument_id,
-                                client_order_id,
-                                account_id,
-                                format!("submit-order-error: {e}").into(),
-                                UUID4::new(),
-                                ts_init,
-                                clock.get_time_ns(),
-                                false,
-                                due_post_only,
-                            );
-                            event_emitter.send_order_event(OrderEventAny::Rejected(rejected));
-                        } else {
-                            log::error!(
-                                "Ambiguous submit failure for {client_order_id}, awaiting reconciliation: {e}"
-                            );
-                        }
-                        return Err(e);
-                    }
+                        account_id,
+                        reason.into(),
+                        UUID4::new(),
+                        ts_init,
+                        clock.get_time_ns(),
+                        false,
+                        due_post_only,
+                    );
+                    event_emitter.send_order_event(OrderEventAny::Rejected(rejected));
+                    return Err(e);
                 }
-                Ok(())
-            });
-        }
+                Err(_) => {
+                    let reason = format!(
+                        "submit-order-ack-timeout: no venue ack within {BINANCE_SPOT_SUBMIT_ACK_TIMEOUT_MS}ms"
+                    );
+                    dispatch_state.cleanup_terminal(client_order_id);
+                    let rejected = OrderRejected::new(
+                        trader_id,
+                        strategy_id,
+                        instrument_id,
+                        client_order_id,
+                        account_id,
+                        reason.clone().into(),
+                        UUID4::new(),
+                        ts_init,
+                        clock.get_time_ns(),
+                        false,
+                        false,
+                    );
+                    event_emitter.send_order_event(OrderEventAny::Rejected(rejected));
+                    anyhow::bail!("{reason}");
+                }
+            };
+
+            dispatch_state.insert_accepted(client_order_id);
+            let report = response.status;
+            let accepted = OrderAccepted::new(
+                trader_id,
+                strategy_id,
+                instrument_id,
+                client_order_id,
+                report.venue_order_id,
+                account_id,
+                UUID4::new(),
+                ts_init,
+                ts_init,
+                false,
+            );
+            event_emitter.send_order_event(OrderEventAny::Accepted(accepted));
+            let fills = retain_unseen_fill_reports(&report, response.fills, &seen_trade_ids);
+            event_emitter.send_order_with_fills(report, fills);
+            Ok(())
+        });
 
         Ok(())
     }
@@ -708,7 +664,7 @@ impl ExecutionClient for BinanceSpotExecutionClient {
                         if auth_result.is_err() {
                             log::error!(
                                 "WS session authentication timed out, \
-                                 order operations will use HTTP fallback"
+                                 WS order operations are disabled"
                             );
 
                             if let Some(handle) =
@@ -726,7 +682,7 @@ impl ExecutionClient for BinanceSpotExecutionClient {
                 Err(e) => {
                     log::error!(
                         "Failed to connect WS trading API: {e}. \
-                         Order operations will use HTTP fallback"
+                         WS order operations are disabled"
                     );
                 }
             }
@@ -1571,17 +1527,6 @@ fn dispatch_ws_trading_message(
             log::debug!("WS order rejected: request_id={request_id}, code={code}, msg={msg}");
             if let Some((_, pending)) = dispatch_state.pending_requests.remove(&request_id) {
                 let code_i64 = i64::from(code);
-                if matches!(
-                    code_i64,
-                    BINANCE_UNEXPECTED_RESPONSE_CODE | BINANCE_STATUS_UNKNOWN_CODE
-                ) {
-                    log::error!(
-                        "Ambiguous WS submit failure for {}, awaiting reconciliation: code={code}, msg={msg}",
-                        pending.client_order_id,
-                    );
-                    return;
-                }
-
                 // Clone to drop the DashMap read guard before cleanup_terminal
                 let identity = dispatch_state
                     .order_identities
@@ -2041,45 +1986,6 @@ fn checked_unix_nanos_from_millis(value: i64, field: &str, context: &str) -> Opt
     Some(UnixNanos::from_millis(value))
 }
 
-async fn submit_ws_order_after_cancel_gate(
-    ws_client: BinanceSpotWsTradingClient,
-    dispatch_state: Arc<WsDispatchState>,
-    client_order_id: ClientOrderId,
-    params: NewOrderParams,
-) -> anyhow::Result<()> {
-    let request_id = ws_client.next_request_id();
-    dispatch_state.pending_requests.insert(
-        request_id.clone(),
-        PendingRequest {
-            client_order_id,
-            venue_order_id: None,
-            operation: PendingOperation::Place,
-        },
-    );
-
-    log::info!(
-        "deferred_live_exit_close_submit_sent client_order_id={client_order_id} request_id={request_id}"
-    );
-    if let Err(e) = ws_client
-        .place_order_with_id(request_id.clone(), params)
-        .await
-    {
-        dispatch_state.pending_requests.remove(&request_id);
-        log::error!(
-            "deferred_live_exit_close_submit_failed client_order_id={client_order_id} request_id={request_id} error={e}"
-        );
-        anyhow::bail!("deferred live exit close submit failed: {e}");
-    }
-
-    Ok(())
-}
-
-fn is_live_exit_close_order(order: &impl Order) -> bool {
-    order.is_reduce_only()
-        && order.order_type() == OrderType::Market
-        && order.time_in_force() == TimeInForce::Ioc
-}
-
 fn cancel_all_terminal_symbol(
     symbol: Option<&str>,
     result: &BinanceSpotCancelAllResult,
@@ -2208,68 +2114,6 @@ fn dispatch_list_status(
         );
         emitter.send_order_event(OrderEventAny::Accepted(accepted));
     }
-}
-
-fn build_new_order_params(
-    order: &impl Order,
-    client_order_id: ClientOrderId,
-    is_post_only: bool,
-    is_quote_quantity: bool,
-) -> anyhow::Result<NewOrderParams> {
-    let binance_side = BinanceSide::try_from(order.order_side())?;
-    let binance_order_type = order_type_to_binance_spot(order.order_type(), is_post_only)?;
-
-    let requires_trigger = matches!(
-        order.order_type(),
-        OrderType::StopMarket
-            | OrderType::StopLimit
-            | OrderType::MarketIfTouched
-            | OrderType::LimitIfTouched
-    );
-
-    if requires_trigger && order.trigger_price().is_none() {
-        anyhow::bail!("Conditional orders require a trigger price");
-    }
-
-    let supports_tif = matches!(
-        binance_order_type,
-        BinanceSpotOrderType::Limit
-            | BinanceSpotOrderType::StopLossLimit
-            | BinanceSpotOrderType::TakeProfitLimit
-    );
-    let binance_tif = if supports_tif {
-        Some(time_in_force_to_binance_spot(order.time_in_force())?)
-    } else {
-        None
-    };
-
-    let qty_str = order.quantity().to_string();
-    let (base_qty, quote_qty) = if is_quote_quantity {
-        (None, Some(qty_str))
-    } else {
-        (Some(qty_str), None)
-    };
-
-    let client_id_str =
-        encode_binance_client_order_id(&client_order_id, BINANCE_NAUTILUS_SPOT_BROKER_ID)?;
-
-    Ok(NewOrderParams {
-        symbol: order.instrument_id().symbol.to_string(),
-        side: binance_side,
-        order_type: binance_order_type,
-        time_in_force: binance_tif,
-        quantity: base_qty,
-        quote_order_qty: quote_qty,
-        price: order.price().map(|p| p.to_string()),
-        new_client_order_id: Some(client_id_str),
-        stop_price: order.trigger_price().map(|p| p.to_string()),
-        trailing_delta: None,
-        iceberg_qty: order.display_qty().map(|q| q.to_string()),
-        new_order_resp_type: Some(BinanceOrderResponseType::Full),
-        self_trade_prevention_mode: None,
-        strategy_id: None,
-        strategy_type: None,
-    })
 }
 
 fn emit_order_list_denied(
@@ -3346,19 +3190,6 @@ fn is_structured_venue_rejection(err: &anyhow::Error) -> bool {
         .is_some_and(|be| matches!(be, BinanceSpotHttpError::BinanceError { .. }))
 }
 
-fn is_ambiguous_submit_error(err: &anyhow::Error) -> bool {
-    err.downcast_ref::<BinanceSpotHttpError>()
-        .is_some_and(|be| {
-            matches!(
-                be,
-                BinanceSpotHttpError::BinanceError {
-                    code: BINANCE_UNEXPECTED_RESPONSE_CODE | BINANCE_STATUS_UNKNOWN_CODE,
-                    ..
-                }
-            )
-        })
-}
-
 fn is_local_command_failure(err: &anyhow::Error) -> bool {
     err.downcast_ref::<BinanceSpotHttpError>()
         .is_some_and(is_local_http_command_failure)
@@ -3579,24 +3410,6 @@ mod tests {
         let error = build_oco_order_list_params(Some(&params), &orders).unwrap_err();
 
         assert!(error.to_string().contains("post-only LIMIT target"));
-    }
-
-    #[rstest]
-    fn test_build_new_order_params_rejects_invalid_client_order_id_before_http() {
-        let order = test_order(
-            OrderType::Limit,
-            "order.with.dot",
-            OrderSide::Buy,
-            "0.001",
-            Some("95.00"),
-            None,
-            false,
-        );
-
-        let error =
-            build_new_order_params(&order, order.client_order_id(), false, false).unwrap_err();
-
-        assert!(error.to_string().contains("Binance client order id"));
     }
 
     #[rstest]
@@ -4032,62 +3845,6 @@ mod tests {
         );
 
         assert!(dispatch_state.adapter_fatal_reason().is_none());
-    }
-
-    #[rstest]
-    #[case(
-        BINANCE_UNEXPECTED_RESPONSE_CODE,
-        "An unexpected response was received from the message bus"
-    )]
-    #[case(
-        BINANCE_STATUS_UNKNOWN_CODE,
-        "Timeout waiting for response from backend server"
-    )]
-    fn test_dispatch_ws_trading_message_unknown_status_keeps_order_registered(
-        #[case] code: i64,
-        #[case] msg: &str,
-    ) {
-        let clock = get_atomic_clock_realtime();
-        let (emitter, mut rx) = create_test_emitter(clock);
-        let http_client = create_test_http_client(clock);
-        let client_order_id = ClientOrderId::from("TEST");
-        let dispatch_state =
-            create_tracked_dispatch_state(client_order_id, InstrumentId::from("BTCUSDT.BINANCE"));
-        let ws_authenticated = tokio::sync::Notify::new();
-        let seen_trade_ids = Arc::new(Mutex::new(FifoCache::new()));
-
-        dispatch_state.pending_requests.insert(
-            "req-submit".to_string(),
-            PendingRequest {
-                client_order_id,
-                venue_order_id: None,
-                operation: PendingOperation::Place,
-            },
-        );
-
-        dispatch_ws_trading_message(
-            BinanceSpotWsTradingMessage::OrderRejected {
-                request_id: "req-submit".to_string(),
-                code: code as i32,
-                msg: msg.to_string(),
-            },
-            &emitter,
-            &http_client,
-            AccountId::from("BINANCE-001"),
-            clock,
-            &dispatch_state,
-            &ws_authenticated,
-            &seen_trade_ids,
-        );
-
-        assert!(dispatch_state.pending_requests.get("req-submit").is_none());
-        assert!(
-            dispatch_state
-                .order_identities
-                .get(&client_order_id)
-                .is_some()
-        );
-        assert!(rx.try_recv().is_err());
     }
 
     #[rstest]
@@ -4713,28 +4470,6 @@ mod tests {
         #[case] expected: bool,
     ) {
         assert_eq!(is_spot_post_only_rejection(&error), expected);
-    }
-
-    #[rstest]
-    #[case(BINANCE_UNEXPECTED_RESPONSE_CODE)]
-    #[case(BINANCE_STATUS_UNKNOWN_CODE)]
-    fn test_unknown_status_submit_error_is_ambiguous(#[case] code: i64) {
-        let err = anyhow::Error::new(BinanceSpotHttpError::BinanceError {
-            code,
-            message: "test error".to_string(),
-        });
-        assert!(is_ambiguous_submit_error(&err));
-        assert!(is_structured_venue_rejection(&err));
-    }
-
-    #[rstest]
-    fn test_other_structured_submit_error_is_not_ambiguous() {
-        let err = anyhow::Error::new(BinanceSpotHttpError::BinanceError {
-            code: BINANCE_GTX_ORDER_REJECT_CODE,
-            message: "test error".to_string(),
-        });
-        assert!(!is_ambiguous_submit_error(&err));
-        assert!(is_structured_venue_rejection(&err));
     }
 
     #[rstest]
