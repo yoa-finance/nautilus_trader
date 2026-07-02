@@ -65,11 +65,12 @@ use rust_decimal::Decimal;
 use tokio::task::JoinHandle;
 use ustr::Ustr;
 
+use super::http::models::{
+    BinanceSpotCancelAllItem, BinanceSpotCancelAllResult, BinanceSpotOrderListCancelResult,
+};
 use super::websocket::trading::{
     client::BinanceSpotWsTradingClient,
-    messages::{
-        BinanceSpotCancelAllResult, BinanceSpotOrderListCancelResult, BinanceSpotWsTradingMessage,
-    },
+    messages::BinanceSpotWsTradingMessage,
     parse::{
         parse_spot_account_position, parse_spot_exec_report_to_fill,
         parse_spot_exec_report_to_order_status,
@@ -1718,25 +1719,29 @@ fn dispatch_ws_trading_message(
         } => {
             dispatch_state.pending_requests.remove(&request_id);
             let terminal_symbol = cancel_all_terminal_symbol(symbol.as_deref(), &result);
-            match result {
-                BinanceSpotCancelAllResult::Orders(responses) => {
-                    log::debug!(
-                        "WS all orders canceled: request_id={request_id}, count={}",
-                        responses.len()
-                    );
-                    // Individual OrderCanceled events arrive via UDS executionReport
-                }
-                BinanceSpotCancelAllResult::OrderList(response) => {
-                    dispatch_order_list_cancel_result(
-                        &request_id,
-                        &response,
-                        emitter,
-                        account_id,
-                        dispatch_state,
-                        clock,
-                    );
+            let mut order_count = 0usize;
+            let mut order_list_count = 0usize;
+            for item in &result.items {
+                match item {
+                    BinanceSpotCancelAllItem::Order(_) => {
+                        order_count += 1;
+                    }
+                    BinanceSpotCancelAllItem::OrderList(response) => {
+                        order_list_count += 1;
+                        dispatch_order_list_cancel_result(
+                            &request_id,
+                            response,
+                            emitter,
+                            account_id,
+                            dispatch_state,
+                            clock,
+                        );
+                    }
                 }
             }
+            log::debug!(
+                "WS all orders canceled: request_id={request_id}, order_count={order_count}, order_list_count={order_list_count}"
+            );
             if let Some(symbol) = terminal_symbol {
                 dispatch_state.complete_cancel_all(&symbol);
             } else {
@@ -2083,21 +2088,18 @@ fn cancel_all_terminal_symbol(
         return Some(symbol.to_string());
     }
 
-    match result {
-        BinanceSpotCancelAllResult::OrderList(response) => {
-            (!response.symbol.is_empty()).then(|| response.symbol.clone())
+    let mut symbols = result.items.iter().filter_map(|item| match item {
+        BinanceSpotCancelAllItem::Order(response) => {
+            (!response.symbol.is_empty()).then_some(response.symbol.as_str())
         }
-        BinanceSpotCancelAllResult::Orders(responses) => {
-            let mut symbols = responses
-                .iter()
-                .map(|response| response.symbol.as_str())
-                .filter(|symbol| !symbol.is_empty());
-            let first = symbols.next()?;
-            symbols
-                .all(|symbol| symbol == first)
-                .then(|| first.to_string())
+        BinanceSpotCancelAllItem::OrderList(response) => {
+            (!response.symbol.is_empty()).then_some(response.symbol.as_str())
         }
-    }
+    });
+    let first = symbols.next()?;
+    symbols
+        .all(|symbol| symbol == first)
+        .then(|| first.to_string())
 }
 
 fn publish_adapter_fatal_shutdown(
@@ -3386,7 +3388,9 @@ mod tests {
     use crate::{
         common::{encoder::encode_broker_id, enums::BinanceEnvironment},
         spot::{
-            http::models::{BinanceOrderListOrder, BinanceOrderListOrderReport},
+            http::models::{
+                BinanceOrderListOrder, BinanceOrderListOrderReport, BinanceSpotOrderListChildReport,
+            },
             sbe::spot::{contingency_type::ContingencyType, list_status_type::ListStatusType},
             websocket::trading::user_data::BinanceSpotListStatusOrder,
         },
@@ -3882,18 +3886,18 @@ mod tests {
             BinanceSpotWsTradingMessage::AllOrdersCanceled {
                 request_id: "req-cancel-all".to_string(),
                 symbol: Some("BTCUSDT".to_string()),
-                result: BinanceSpotCancelAllResult::OrderList(BinanceSpotOrderListCancelResult {
-                    template_id: 312,
-                    order_list_id: 42,
-                    list_client_order_id: "list-client-1".to_string(),
-                    symbol: "BTCUSDT".to_string(),
-                    transaction_time: 1_709_654_400_124_000,
-                    contingency_type: "Oco".to_string(),
-                    list_status_type: "AllDone".to_string(),
-                    list_order_status: "AllDone".to_string(),
-                    orders: Vec::new(),
-                    order_reports: vec![
-                        crate::spot::websocket::trading::messages::BinanceSpotOrderListChildReport {
+                result: BinanceSpotCancelAllResult::from_order_list(
+                    BinanceSpotOrderListCancelResult {
+                        template_id: 312,
+                        order_list_id: 42,
+                        list_client_order_id: "list-client-1".to_string(),
+                        symbol: "BTCUSDT".to_string(),
+                        transaction_time: 1_709_654_400_124_000,
+                        contingency_type: "Oco".to_string(),
+                        list_status_type: "AllDone".to_string(),
+                        list_order_status: "AllDone".to_string(),
+                        orders: Vec::new(),
+                        order_reports: vec![BinanceSpotOrderListChildReport {
                             order_id: 1001,
                             order_list_id: Some(42),
                             transact_time: 1_709_654_400_124_000,
@@ -3907,9 +3911,9 @@ mod tests {
                             side: "Sell".to_string(),
                             order_type: "Limit".to_string(),
                             time_in_force: "Gtc".to_string(),
-                        },
-                    ],
-                }),
+                        }],
+                    },
+                ),
             },
             &emitter,
             &http_client,
@@ -3962,7 +3966,7 @@ mod tests {
             BinanceSpotWsTradingMessage::AllOrdersCanceled {
                 request_id: "req-cancel-all".to_string(),
                 symbol: Some("BTCUSDT".to_string()),
-                result: BinanceSpotCancelAllResult::Orders(Vec::new()),
+                result: BinanceSpotCancelAllResult::default(),
             },
             &emitter,
             &http_client,

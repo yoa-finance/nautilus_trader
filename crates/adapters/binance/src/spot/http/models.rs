@@ -241,6 +241,102 @@ pub struct BinanceCancelOrderResponse {
     pub symbol: String,
 }
 
+/// Child order identity from a Binance order-list WebSocket API response.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BinanceSpotOrderListChild {
+    /// Exchange order ID.
+    pub order_id: i64,
+    /// Venue symbol.
+    pub symbol: String,
+    /// Venue client order ID.
+    pub client_order_id: String,
+}
+
+/// Child order report from a Binance order-list WebSocket API response.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BinanceSpotOrderListChildReport {
+    /// Exchange order ID.
+    pub order_id: i64,
+    /// Order list ID.
+    pub order_list_id: Option<i64>,
+    /// Transaction time in microseconds.
+    pub transact_time: i64,
+    /// Venue symbol.
+    pub symbol: String,
+    /// Original venue client order ID.
+    pub orig_client_order_id: String,
+    /// Venue client order ID.
+    pub client_order_id: String,
+    /// Venue order status.
+    pub status: String,
+    /// Venue side.
+    pub side: String,
+    /// Venue order type.
+    pub order_type: String,
+    /// Venue time-in-force.
+    pub time_in_force: String,
+}
+
+/// Binance order-list cancel result from an SBE response.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BinanceSpotOrderListCancelResult {
+    /// SBE template ID.
+    pub template_id: u16,
+    /// Exchange order list ID.
+    pub order_list_id: i64,
+    /// Venue list client order ID.
+    pub list_client_order_id: String,
+    /// Venue symbol.
+    pub symbol: String,
+    /// Transaction time in microseconds.
+    pub transaction_time: i64,
+    /// Venue contingency type.
+    pub contingency_type: String,
+    /// Venue list status type.
+    pub list_status_type: String,
+    /// Venue list order status.
+    pub list_order_status: String,
+    /// Child order identities.
+    pub orders: Vec<BinanceSpotOrderListChild>,
+    /// Child order reports.
+    pub order_reports: Vec<BinanceSpotOrderListChildReport>,
+}
+
+/// One item returned by `openOrders.cancelAll`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum BinanceSpotCancelAllItem {
+    /// Standard cancel response for one order.
+    Order(BinanceCancelOrderResponse),
+    /// Order-list cancel response containing child order reports.
+    OrderList(BinanceSpotOrderListCancelResult),
+}
+
+/// Result returned by `openOrders.cancelAll`.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct BinanceSpotCancelAllResult {
+    /// Canceled order/order-list items.
+    pub items: Vec<BinanceSpotCancelAllItem>,
+}
+
+impl BinanceSpotCancelAllResult {
+    /// Creates a result from standard order cancel responses.
+    pub fn from_orders(orders: Vec<BinanceCancelOrderResponse>) -> Self {
+        Self {
+            items: orders
+                .into_iter()
+                .map(BinanceSpotCancelAllItem::Order)
+                .collect(),
+        }
+    }
+
+    /// Creates a result from one order-list cancel response.
+    pub fn from_order_list(order_list: BinanceSpotOrderListCancelResult) -> Self {
+        Self {
+            items: vec![BinanceSpotCancelAllItem::OrderList(order_list)],
+        }
+    }
+}
+
 /// Query order response.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BinanceOrderResponse {

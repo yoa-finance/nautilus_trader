@@ -30,6 +30,7 @@ pub mod error;
 #[path = "generated/mod.rs"]
 pub mod generated;
 pub mod stream;
+pub mod template_catalog;
 
 pub use cursor::SbeCursor;
 pub use error::{MAX_GROUP_SIZE, SbeDecodeError};

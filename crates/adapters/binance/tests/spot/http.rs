@@ -31,6 +31,7 @@ use nautilus_binance::{
         enums::BinanceSpotOrderType,
         http::{
             client::{BinanceRawSpotHttpClient, BinanceSpotHttpClient},
+            models::BinanceSpotCancelAllItem,
             query::{AccountInfoParams, DepthParams},
         },
         sbe::spot::{SBE_SCHEMA_ID, SBE_SCHEMA_VERSION},
@@ -1597,11 +1598,19 @@ async fn test_cancel_all_orders_with_credentials_succeeds() {
     )
     .unwrap();
 
-    let orders = client.cancel_open_orders("BTCUSDT").await.unwrap();
+    let result = client.cancel_open_orders("BTCUSDT").await.unwrap();
 
-    assert_eq!(orders.len(), 2);
-    assert_eq!(orders[0].order_id, 12345);
-    assert_eq!(orders[1].order_id, 12346);
+    assert_eq!(result.items.len(), 2);
+    match result.items.as_slice() {
+        [
+            BinanceSpotCancelAllItem::Order(first),
+            BinanceSpotCancelAllItem::Order(second),
+        ] => {
+            assert_eq!(first.order_id, 12345);
+            assert_eq!(second.order_id, 12346);
+        }
+        other => panic!("expected two cancel-order items, was {other:?}"),
+    }
 }
 
 async fn create_domain_client_with_instruments(

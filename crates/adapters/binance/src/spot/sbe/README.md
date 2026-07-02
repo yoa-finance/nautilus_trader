@@ -93,29 +93,12 @@ A reference Python script that does all four steps lives at `/tmp/sbegen/transfo
 regenerating; see the commit history for `crates/adapters/binance/src/spot/sbe/generated/` for
 the most recent regen for an example.
 
-### Strip unused codec modules
+### Keep official response/event codecs
 
-Delete these files from the generator output before copying to `generated/`:
-
-- `account_allocations_response_codec.rs`
-- `allocation_report_event_codec.rs`
-- `allocation_report_type.rs`
-- `allocation_status.rs`
-- `allocation_transaction_type.rs`
-- `allocation_type.rs`
-- `block_trades_response_codec.rs`
-- `counter_party_role.rs`
-- `order_amend_keep_priority_response_codec.rs`
-- `order_amendments_response_codec.rs`
-- `user_data_stream_ping_response_codec.rs`
-- `user_data_stream_start_response_codec.rs`
-- `user_data_stream_stop_response_codec.rs`
-- `user_data_stream_subscribe_listen_token_response_codec.rs`
-- `user_data_stream_subscribe_response_codec.rs`
-- `user_data_stream_unsubscribe_response_codec.rs`
-
-These belong to features the adapter does not consume (institutional allocations, order
-amendments, user-data stream session management, historical block trades).
+Do not strip official response or event codec modules from the generator output. Templates for
+features the adapter does not currently consume should be classified in
+`template_catalog.rs` as `KnownUnsupported`, so ingress code can distinguish official-but-unused
+payloads from genuinely unknown wire data.
 
 ### Rebuild `mod.rs`
 

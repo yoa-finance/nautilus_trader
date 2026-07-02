@@ -59,8 +59,9 @@ use super::{
     models::{
         AvgPrice, BatchCancelResult, BatchOrderResult, BinanceAccountInfo, BinanceAccountTrade,
         BinanceCancelOrderResponse, BinanceDepth, BinanceKlines, BinanceNewOrderResponse,
-        BinanceOrderListResponse, BinanceOrderResponse, BinanceTrades, BookTicker,
-        ListenKeyResponse, Ticker24hr, TickerPrice, TradeFee,
+        BinanceOrderListResponse, BinanceOrderResponse, BinanceSpotCancelAllItem,
+        BinanceSpotCancelAllResult, BinanceTrades, BookTicker, ListenKeyResponse, Ticker24hr,
+        TickerPrice, TradeFee,
     },
     parse,
     query::{
@@ -1394,7 +1395,7 @@ impl BinanceRawSpotHttpClient {
     pub async fn cancel_open_orders(
         &self,
         symbol: &str,
-    ) -> BinanceSpotHttpResult<Vec<BinanceCancelOrderResponse>> {
+    ) -> BinanceSpotHttpResult<BinanceSpotCancelAllResult> {
         let params = CancelOpenOrdersParams::new(symbol.to_string());
         let bytes = self.delete_order("openOrders", Some(&params)).await?;
         let response = parse::decode_cancel_open_orders(&bytes)?;
@@ -2324,24 +2325,39 @@ impl BinanceSpotHttpClient {
     ) -> anyhow::Result<Vec<(VenueOrderId, ClientOrderId)>> {
         let symbol = instrument_id.symbol.inner();
 
-        let responses = self
+        let result = self
             .inner
             .cancel_open_orders(symbol.as_str())
             .await
             .map_err(|e| anyhow::anyhow!(e))?;
 
-        Ok(responses
-            .into_iter()
-            .map(|r| {
-                (
-                    VenueOrderId::new(r.order_id.to_string()),
-                    ClientOrderId::new(decode_broker_id(
-                        &r.orig_client_order_id,
-                        BINANCE_NAUTILUS_SPOT_BROKER_ID,
-                    )),
-                )
-            })
-            .collect())
+        let mut canceled_orders = Vec::new();
+        for item in result.items {
+            match item {
+                BinanceSpotCancelAllItem::Order(response) => {
+                    canceled_orders.push((
+                        VenueOrderId::new(response.order_id.to_string()),
+                        ClientOrderId::new(decode_broker_id(
+                            &response.orig_client_order_id,
+                            BINANCE_NAUTILUS_SPOT_BROKER_ID,
+                        )),
+                    ));
+                }
+                BinanceSpotCancelAllItem::OrderList(response) => {
+                    canceled_orders.extend(response.order_reports.into_iter().map(|report| {
+                        (
+                            VenueOrderId::new(report.order_id.to_string()),
+                            ClientOrderId::new(decode_broker_id(
+                                &report.orig_client_order_id,
+                                BINANCE_NAUTILUS_SPOT_BROKER_ID,
+                            )),
+                        )
+                    }));
+                }
+            }
+        }
+
+        Ok(canceled_orders)
     }
 }
 

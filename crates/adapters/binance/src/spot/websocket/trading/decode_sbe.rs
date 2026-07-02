@@ -23,19 +23,17 @@
 use rust_decimal::Decimal;
 use ustr::Ustr;
 
-use super::{
-    messages::{
-        BinanceSpotOrderListCancelResult, BinanceSpotOrderListChild,
-        BinanceSpotOrderListChildReport,
-    },
-    user_data::{
-        BinanceSpotAccountPositionMsg, BinanceSpotBalanceEntry, BinanceSpotBalanceUpdateMsg,
-        BinanceSpotExecutionReport, BinanceSpotExecutionType, BinanceSpotListStatusMsg,
-        BinanceSpotListStatusOrder,
-    },
+use super::user_data::{
+    BinanceSpotAccountPositionMsg, BinanceSpotBalanceEntry, BinanceSpotBalanceUpdateMsg,
+    BinanceSpotExecutionReport, BinanceSpotExecutionType, BinanceSpotListStatusMsg,
+    BinanceSpotListStatusOrder,
 };
 use crate::{
     common::enums::{BinanceOrderStatus, BinanceSide, BinanceTimeInForce},
+    spot::http::models::{
+        BinanceSpotOrderListCancelResult, BinanceSpotOrderListChild,
+        BinanceSpotOrderListChildReport,
+    },
     spot::sbe::spot::{
         ReadBuf, balance_update_event_codec, bool_enum, cancel_order_list_response_codec,
         execution_report_event_codec, execution_type, list_status_event_codec,
