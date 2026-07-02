@@ -101,6 +101,8 @@ use nautilus_common::{
         data::DataCommand,
         execution::{GenerateOrderStatusReports, TradingCommand},
     },
+    msgbus::MessagingSwitchboard,
+    runner::QueuedTradingCommand,
     timer::TimeEventHandler,
 };
 use nautilus_core::{
@@ -862,7 +864,7 @@ impl LiveNode {
         let AsyncRunnerChannels {
             mut time_evt_rx,
             mut exec_evt_rx,
-            mut exec_cmd_rx,
+            mut trading_cmd_rx,
             mut data_evt_rx,
             mut data_cmd_rx,
         } = runner.take_channels();
@@ -901,7 +903,7 @@ impl LiveNode {
             &mut data_evt_rx,
             &mut data_cmd_rx,
             &mut exec_evt_rx,
-            &mut exec_cmd_rx,
+            &mut trading_cmd_rx,
         )
         .await;
 
@@ -922,7 +924,7 @@ impl LiveNode {
             &mut data_evt_rx,
             &mut data_cmd_rx,
             &mut exec_evt_rx,
-            &mut exec_cmd_rx,
+            &mut trading_cmd_rx,
         )
         .await?;
 
@@ -933,7 +935,7 @@ impl LiveNode {
             &mut data_evt_rx,
             &mut data_cmd_rx,
             &mut exec_evt_rx,
-            &mut exec_cmd_rx,
+            &mut trading_cmd_rx,
         );
         debug_assert!(
             pending.is_empty(),
@@ -950,7 +952,7 @@ impl LiveNode {
                 &mut data_evt_rx,
                 &mut data_cmd_rx,
                 &mut exec_evt_rx,
-                &mut exec_cmd_rx,
+                &mut trading_cmd_rx,
             );
             log::info!("Event loop stopped");
             return Ok(());
@@ -968,7 +970,7 @@ impl LiveNode {
                     &mut data_evt_rx,
                     &mut data_cmd_rx,
                     &mut exec_evt_rx,
-                    &mut exec_cmd_rx,
+                    &mut trading_cmd_rx,
                 );
                 log::info!("Event loop stopped");
                 return result;
@@ -1295,30 +1297,32 @@ impl LiveNode {
                         }
                     }
                 }
-                Some(cmd) = exec_cmd_rx.recv() => {
+                Some(cmd) = trading_cmd_rx.recv() => {
                     if is_shutting_down {
-                        log::debug!("Residual exec command: {cmd:?}");
+                        log::debug!("Residual trading command: {cmd:?}");
                         residual_events += 1;
                     }
 
-                    match &cmd {
-                        TradingCommand::SubmitOrder(submit) => {
-                            self.exec_manager.register_inflight(submit.client_order_id);
-                        }
-                        TradingCommand::SubmitOrderList(submit) => {
-                            for order_init in &submit.order_inits {
-                                self.exec_manager.register_inflight(order_init.client_order_id);
+                    if cmd.endpoint == MessagingSwitchboard::exec_engine_execute() {
+                        match &cmd.command {
+                            TradingCommand::SubmitOrder(submit) => {
+                                self.exec_manager.register_inflight(submit.client_order_id);
                             }
+                            TradingCommand::SubmitOrderList(submit) => {
+                                for order_init in &submit.order_inits {
+                                    self.exec_manager.register_inflight(order_init.client_order_id);
+                                }
+                            }
+                            TradingCommand::ModifyOrder(modify) => {
+                                self.exec_manager.register_inflight(modify.client_order_id);
+                            }
+                            TradingCommand::CancelOrder(cancel) => {
+                                self.exec_manager.register_inflight(cancel.client_order_id);
+                            }
+                            _ => {}
                         }
-                        TradingCommand::ModifyOrder(modify) => {
-                            self.exec_manager.register_inflight(modify.client_order_id);
-                        }
-                        TradingCommand::CancelOrder(cancel) => {
-                            self.exec_manager.register_inflight(cancel.client_order_id);
-                        }
-                        _ => {}
                     }
-                    AsyncRunner::handle_exec_command(cmd);
+                    AsyncRunner::handle_trading_command(cmd);
                 }
                 Some(evt) = data_evt_rx.recv() => {
                     if is_shutting_down {
@@ -1352,7 +1356,7 @@ impl LiveNode {
             &mut data_evt_rx,
             &mut data_cmd_rx,
             &mut exec_evt_rx,
-            &mut exec_cmd_rx,
+            &mut trading_cmd_rx,
         );
 
         log::info!("Event loop stopped");
@@ -1461,7 +1465,7 @@ impl LiveNode {
         data_evt_rx: &mut tokio::sync::mpsc::UnboundedReceiver<DataEvent>,
         data_cmd_rx: &mut tokio::sync::mpsc::UnboundedReceiver<DataCommand>,
         exec_evt_rx: &mut tokio::sync::mpsc::UnboundedReceiver<ExecutionEvent>,
-        exec_cmd_rx: &mut tokio::sync::mpsc::UnboundedReceiver<TradingCommand>,
+        trading_cmd_rx: &mut tokio::sync::mpsc::UnboundedReceiver<QueuedTradingCommand>,
     ) {
         let mut drained = 0;
 
@@ -1480,8 +1484,8 @@ impl LiveNode {
             drained += 1;
         }
 
-        while let Ok(cmd) = exec_cmd_rx.try_recv() {
-            AsyncRunner::handle_exec_command(cmd);
+        while let Ok(cmd) = trading_cmd_rx.try_recv() {
+            AsyncRunner::handle_trading_command(cmd);
             drained += 1;
         }
 
@@ -1710,7 +1714,10 @@ impl LiveNode {
             let result = self.exec_manager.check_inflight_orders();
             self.process_reconciliation_events(&result.events);
             for cmd in result.queries {
-                AsyncRunner::handle_exec_command(cmd);
+                AsyncRunner::handle_trading_command(QueuedTradingCommand::new(
+                    MessagingSwitchboard::exec_engine_execute(),
+                    cmd,
+                ));
             }
             *state.ts_last_inflight = ts_now;
         }
@@ -1845,7 +1852,7 @@ fn flush_all_pending(
     data_evt_rx: &mut tokio::sync::mpsc::UnboundedReceiver<DataEvent>,
     data_cmd_rx: &mut tokio::sync::mpsc::UnboundedReceiver<DataCommand>,
     exec_evt_rx: &mut tokio::sync::mpsc::UnboundedReceiver<ExecutionEvent>,
-    exec_cmd_rx: &mut tokio::sync::mpsc::UnboundedReceiver<TradingCommand>,
+    trading_cmd_rx: &mut tokio::sync::mpsc::UnboundedReceiver<QueuedTradingCommand>,
 ) {
     // Flush channel receivers into pending
     while let Ok(handler) = time_evt_rx.try_recv() {
@@ -1889,8 +1896,8 @@ fn flush_all_pending(
         }
     }
 
-    while let Ok(cmd) = exec_cmd_rx.try_recv() {
-        pending.exec_cmds.push(cmd);
+    while let Ok(cmd) = trading_cmd_rx.try_recv() {
+        pending.trading_cmds.push(cmd);
     }
 
     pending.drain();
@@ -1907,7 +1914,7 @@ async fn drive_with_event_buffering<F: std::future::Future>(
     data_evt_rx: &mut tokio::sync::mpsc::UnboundedReceiver<DataEvent>,
     data_cmd_rx: &mut tokio::sync::mpsc::UnboundedReceiver<DataCommand>,
     exec_evt_rx: &mut tokio::sync::mpsc::UnboundedReceiver<ExecutionEvent>,
-    exec_cmd_rx: &mut tokio::sync::mpsc::UnboundedReceiver<TradingCommand>,
+    trading_cmd_rx: &mut tokio::sync::mpsc::UnboundedReceiver<QueuedTradingCommand>,
 ) -> F::Output {
     tokio::pin!(future);
 
@@ -1952,8 +1959,8 @@ async fn drive_with_event_buffering<F: std::future::Future>(
                     }
                 }
             }
-            Some(cmd) = exec_cmd_rx.recv() => {
-                pending.exec_cmds.push(cmd);
+            Some(cmd) = trading_cmd_rx.recv() => {
+                pending.trading_cmds.push(cmd);
             }
             Some(evt) = data_evt_rx.recv() => {
                 pending.data_evts.push(evt);
@@ -1969,7 +1976,7 @@ async fn drive_with_event_buffering<F: std::future::Future>(
 struct PendingEvents {
     data_cmds: Vec<DataCommand>,
     data_evts: Vec<DataEvent>,
-    exec_cmds: Vec<TradingCommand>,
+    trading_cmds: Vec<QueuedTradingCommand>,
     exec_reports: Vec<ExecutionReport>,
     order_evts: Vec<OrderEventAny>,
 }
@@ -1978,7 +1985,7 @@ impl PendingEvents {
     fn is_empty(&self) -> bool {
         self.data_evts.is_empty()
             && self.data_cmds.is_empty()
-            && self.exec_cmds.is_empty()
+            && self.trading_cmds.is_empty()
             && self.exec_reports.is_empty()
             && self.order_evts.is_empty()
     }
@@ -2013,17 +2020,17 @@ impl PendingEvents {
     fn drain(&mut self) {
         let total = self.data_evts.len()
             + self.data_cmds.len()
-            + self.exec_cmds.len()
+            + self.trading_cmds.len()
             + self.exec_reports.len()
             + self.order_evts.len();
 
         if total > 0 {
             log::debug!(
                 "Processing {total} events/commands queued during startup \
-                 (data_evts={}, data_cmds={}, exec_cmds={}, exec_reports={}, order_evts={})",
+                 (data_evts={}, data_cmds={}, trading_cmds={}, exec_reports={}, order_evts={})",
                 self.data_evts.len(),
                 self.data_cmds.len(),
-                self.exec_cmds.len(),
+                self.trading_cmds.len(),
                 self.exec_reports.len(),
                 self.order_evts.len()
             );
@@ -2041,8 +2048,8 @@ impl PendingEvents {
             AsyncRunner::handle_exec_event(ExecutionEvent::Report(report));
         }
 
-        for cmd in self.exec_cmds.drain(..) {
-            AsyncRunner::handle_exec_command(cmd);
+        for cmd in self.trading_cmds.drain(..) {
+            AsyncRunner::handle_trading_command(cmd);
         }
 
         for evt in self.order_evts.drain(..) {
@@ -2739,20 +2746,23 @@ mod tests {
         )
     }
 
-    fn stub_trading_command() -> TradingCommand {
+    fn stub_trading_command() -> QueuedTradingCommand {
         use nautilus_common::messages::execution::query::QueryAccount;
         use nautilus_core::{UUID4, UnixNanos};
         use nautilus_model::identifiers::AccountId;
 
-        TradingCommand::QueryAccount(QueryAccount::new(
-            TraderId::from("TESTER-001"),
-            None,
-            AccountId::from("TEST-001"),
-            UUID4::new(),
-            UnixNanos::default(),
-            None,
-            None, // correlation_id
-        ))
+        QueuedTradingCommand::new(
+            MessagingSwitchboard::exec_engine_execute(),
+            TradingCommand::QueryAccount(QueryAccount::new(
+                TraderId::from("TESTER-001"),
+                None,
+                AccountId::from("TEST-001"),
+                UUID4::new(),
+                UnixNanos::default(),
+                None,
+                None, // correlation_id
+            )),
+        )
     }
 
     fn stub_exec_event() -> ExecutionEvent {
@@ -2788,8 +2798,8 @@ mod tests {
         let (data_cmd_tx, mut data_cmd_rx) = tokio::sync::mpsc::unbounded_channel::<DataCommand>();
         let (exec_evt_tx, mut exec_evt_rx) =
             tokio::sync::mpsc::unbounded_channel::<ExecutionEvent>();
-        let (exec_cmd_tx, mut exec_cmd_rx) =
-            tokio::sync::mpsc::unbounded_channel::<TradingCommand>();
+        let (trading_cmd_tx, mut trading_cmd_rx) =
+            tokio::sync::mpsc::unbounded_channel::<QueuedTradingCommand>();
 
         let mut pending = PendingEvents::default();
 
@@ -2802,7 +2812,7 @@ mod tests {
         data_evt_tx.send(stub_data_event()).unwrap();
         data_cmd_tx.send(stub_data_command()).unwrap();
         exec_evt_tx.send(stub_exec_event()).unwrap();
-        exec_cmd_tx.send(stub_trading_command()).unwrap();
+        trading_cmd_tx.send(stub_trading_command()).unwrap();
 
         flush_all_pending(
             &mut pending,
@@ -2810,19 +2820,19 @@ mod tests {
             &mut data_evt_rx,
             &mut data_cmd_rx,
             &mut exec_evt_rx,
-            &mut exec_cmd_rx,
+            &mut trading_cmd_rx,
         );
 
         assert!(pending.data_evts.is_empty());
         assert!(pending.data_cmds.is_empty());
         assert!(pending.exec_reports.is_empty());
-        assert!(pending.exec_cmds.is_empty());
+        assert!(pending.trading_cmds.is_empty());
         assert!(pending.order_evts.is_empty());
         assert!(time_rx.try_recv().is_err());
         assert!(data_evt_rx.try_recv().is_err());
         assert!(data_cmd_rx.try_recv().is_err());
         assert!(exec_evt_rx.try_recv().is_err());
-        assert!(exec_cmd_rx.try_recv().is_err());
+        assert!(trading_cmd_rx.try_recv().is_err());
     }
 
     fn stub_order_event() -> ExecutionEvent {
@@ -2859,8 +2869,8 @@ mod tests {
         let (_data_cmd_tx, mut data_cmd_rx) = tokio::sync::mpsc::unbounded_channel::<DataCommand>();
         let (exec_evt_tx, mut exec_evt_rx) =
             tokio::sync::mpsc::unbounded_channel::<ExecutionEvent>();
-        let (_exec_cmd_tx, mut exec_cmd_rx) =
-            tokio::sync::mpsc::unbounded_channel::<TradingCommand>();
+        let (_trading_cmd_tx, mut trading_cmd_rx) =
+            tokio::sync::mpsc::unbounded_channel::<QueuedTradingCommand>();
 
         let mut pending = PendingEvents::default();
 
@@ -2873,7 +2883,7 @@ mod tests {
             &mut data_evt_rx,
             &mut data_cmd_rx,
             &mut exec_evt_rx,
-            &mut exec_cmd_rx,
+            &mut trading_cmd_rx,
         );
 
         // Both order and report events are drained by pending.drain()
@@ -2889,8 +2899,8 @@ mod tests {
         let (_data_cmd_tx, mut data_cmd_rx) = tokio::sync::mpsc::unbounded_channel::<DataCommand>();
         let (exec_evt_tx, mut exec_evt_rx) =
             tokio::sync::mpsc::unbounded_channel::<ExecutionEvent>();
-        let (_exec_cmd_tx, mut exec_cmd_rx) =
-            tokio::sync::mpsc::unbounded_channel::<TradingCommand>();
+        let (_trading_cmd_tx, mut trading_cmd_rx) =
+            tokio::sync::mpsc::unbounded_channel::<QueuedTradingCommand>();
 
         let mut pending = PendingEvents::default();
 
@@ -2902,13 +2912,13 @@ mod tests {
             &mut data_evt_rx,
             &mut data_cmd_rx,
             &mut exec_evt_rx,
-            &mut exec_cmd_rx,
+            &mut trading_cmd_rx,
         );
 
         // Account events are forwarded immediately, never buffered in pending
         assert!(pending.exec_reports.is_empty());
         assert!(pending.order_evts.is_empty());
-        assert!(pending.exec_cmds.is_empty());
+        assert!(pending.trading_cmds.is_empty());
         assert!(exec_evt_rx.try_recv().is_err());
     }
 
@@ -2936,9 +2946,9 @@ mod tests {
     }
 
     #[rstest]
-    fn test_pending_is_empty_false_with_exec_cmd() {
+    fn test_pending_is_empty_false_with_trading_cmd() {
         let mut pending = PendingEvents::default();
-        pending.exec_cmds.push(stub_trading_command());
+        pending.trading_cmds.push(stub_trading_command());
 
         assert!(!pending.is_empty());
     }
@@ -3008,8 +3018,8 @@ mod tests {
         let (_data_cmd_tx, mut data_cmd_rx) = tokio::sync::mpsc::unbounded_channel::<DataCommand>();
         let (exec_evt_tx, mut exec_evt_rx) =
             tokio::sync::mpsc::unbounded_channel::<ExecutionEvent>();
-        let (_exec_cmd_tx, mut exec_cmd_rx) =
-            tokio::sync::mpsc::unbounded_channel::<TradingCommand>();
+        let (_trading_cmd_tx, mut trading_cmd_rx) =
+            tokio::sync::mpsc::unbounded_channel::<QueuedTradingCommand>();
 
         let mut pending = PendingEvents::default();
 
@@ -3021,7 +3031,7 @@ mod tests {
             &mut data_evt_rx,
             &mut data_cmd_rx,
             &mut exec_evt_rx,
-            &mut exec_cmd_rx,
+            &mut trading_cmd_rx,
         );
 
         // Batch should be unpacked into individual Submitted events then drained
@@ -3036,8 +3046,8 @@ mod tests {
         let (_data_cmd_tx, mut data_cmd_rx) = tokio::sync::mpsc::unbounded_channel::<DataCommand>();
         let (exec_evt_tx, mut exec_evt_rx) =
             tokio::sync::mpsc::unbounded_channel::<ExecutionEvent>();
-        let (_exec_cmd_tx, mut exec_cmd_rx) =
-            tokio::sync::mpsc::unbounded_channel::<TradingCommand>();
+        let (_trading_cmd_tx, mut trading_cmd_rx) =
+            tokio::sync::mpsc::unbounded_channel::<QueuedTradingCommand>();
 
         let mut pending = PendingEvents::default();
 
@@ -3049,7 +3059,7 @@ mod tests {
             &mut data_evt_rx,
             &mut data_cmd_rx,
             &mut exec_evt_rx,
-            &mut exec_cmd_rx,
+            &mut trading_cmd_rx,
         );
 
         // Batch should be unpacked into individual Canceled events then drained

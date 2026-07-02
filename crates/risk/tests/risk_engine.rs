@@ -15,7 +15,7 @@
 
 #![expect(clippy::too_many_arguments)] // Test functions with many fixtures
 
-use std::{cell::RefCell, rc::Rc, str::FromStr};
+use std::{cell::RefCell, rc::Rc, str::FromStr, sync::Arc};
 
 use ahash::AHashMap;
 use nautilus_common::{
@@ -29,6 +29,7 @@ use nautilus_common::{
         self, MessagingSwitchboard, TypedHandler,
         stubs::{TypedIntoMessageSavingHandler, get_typed_into_message_saving_handler},
     },
+    runner::{SyncTradingCommandSender, drain_trading_cmd_queue, replace_exec_cmd_sender},
     throttler::RateLimit,
 };
 use nautilus_core::{UUID4, UnixNanos};
@@ -2541,6 +2542,96 @@ fn test_submit_order_when_market_order_and_over_free_balance_then_denies(
             "NOTIONAL_EXCEEDS_FREE_BALANCE: free=Money(1000000.00, USD), notional=Money(10100000.00, USD)"
         )
     );
+}
+
+#[rstest]
+fn test_risk_queue_execute_with_sync_sender_still_runs_risk_checks() {
+    std::thread::spawn(|| {
+        msgbus::get_message_bus().borrow_mut().dispose();
+        replace_exec_cmd_sender(Arc::new(SyncTradingCommandSender));
+
+        let (process_handler, process_messages) = get_typed_into_message_saving_handler::<
+            OrderEventAny,
+        >(Some(Ustr::from("ExecEngine.process")));
+        msgbus::register_order_event_endpoint(
+            MessagingSwitchboard::exec_engine_process(),
+            process_handler,
+        );
+
+        let (exec_handler, exec_messages) = get_typed_into_message_saving_handler::<TradingCommand>(
+            Some(Ustr::from("ExecEngine.execute")),
+        );
+        msgbus::register_trading_command_endpoint(
+            MessagingSwitchboard::exec_engine_execute(),
+            exec_handler,
+        );
+
+        let instrument = InstrumentAny::CurrencyPair(audusd_sim());
+        let mut cache = Cache::new(None, None);
+        cache.add_instrument(instrument.clone()).unwrap();
+        cache
+            .add_account(AccountAny::Cash(cash_account(
+                cash_account_state_million_usd("1000000 USD", "0 USD", "1000000 USD"),
+            )))
+            .unwrap();
+        cache.add_quote(quote_audusd()).unwrap();
+
+        let risk_engine = Rc::new(RefCell::new(get_risk_engine(
+            Some(Rc::new(RefCell::new(cache))),
+            None,
+            None,
+            false,
+        )));
+        RiskEngine::register_msgbus_handlers(&risk_engine);
+
+        let order = OrderTestBuilder::new(OrderType::Market)
+            .instrument_id(instrument.id())
+            .side(OrderSide::Buy)
+            .quantity(Quantity::from_str("100000").unwrap())
+            .build();
+
+        risk_engine
+            .borrow()
+            .cache()
+            .borrow_mut()
+            .add_order(order.clone(), None, Some(ClientId::from("BINANCE")), false)
+            .unwrap();
+
+        let submit_order = SubmitOrder::new(
+            TraderId::from("TRADER-001"),
+            Some(ClientId::from("BINANCE")),
+            StrategyId::from("S-001"),
+            instrument.id(),
+            order.client_order_id(),
+            order.init_event().clone(),
+            None,
+            None,
+            None,
+            UUID4::new(),
+            risk_engine.borrow().clock().borrow().timestamp_ns(),
+            None,
+        );
+
+        msgbus::send_trading_command(
+            MessagingSwitchboard::risk_engine_queue_execute(),
+            TradingCommand::SubmitOrder(submit_order),
+        );
+        drain_trading_cmd_queue();
+
+        let denied_events = process_messages.get_messages();
+        assert_eq!(denied_events.len(), 1);
+        assert_eq!(denied_events[0].event_type(), OrderEventType::Denied);
+        assert!(
+            denied_events[0]
+                .message()
+                .unwrap()
+                .as_str()
+                .contains("NOTIONAL_EXCEEDS_FREE_BALANCE")
+        );
+        assert!(exec_messages.get_messages().is_empty());
+    })
+    .join()
+    .unwrap();
 }
 
 #[rstest]

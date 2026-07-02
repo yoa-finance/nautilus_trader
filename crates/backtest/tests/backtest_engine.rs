@@ -53,8 +53,8 @@ use nautilus_model::{
     events::{OrderEventAny, OrderFilled},
     identifiers::{ActorId, ExecAlgorithmId, InstrumentId, StrategyId, Symbol, TradeId, Venue},
     instruments::{
-        CryptoPerpetual, Equity, Instrument, InstrumentAny, OptionContract,
-        stubs::crypto_perpetual_ethusdt,
+        CryptoPerpetual, CurrencyPair, Equity, Instrument, InstrumentAny, OptionContract,
+        stubs::{crypto_perpetual_ethusdt, currency_pair_btcusdt},
     },
     orders::{Order, OrderAny},
     position::Position,
@@ -888,6 +888,98 @@ fn trade(instrument_id: InstrumentId, price: &str, size: &str, ts: u64) -> Data 
         ts.into(),
         ts.into(),
     ))
+}
+
+#[rstest]
+fn test_cash_zero_balance_market_buy_is_denied_before_matching(
+    currency_pair_btcusdt: CurrencyPair,
+) {
+    let mut engine = BacktestEngine::new(BacktestEngineConfig::default()).unwrap();
+    let venue_config = SimulatedVenueConfig::builder()
+        .venue(Venue::from("BINANCE"))
+        .oms_type(OmsType::Netting)
+        .account_type(AccountType::Cash)
+        .book_type(BookType::L1_MBP)
+        .starting_balances(vec![Money::from("0 USDT")])
+        .build();
+    engine.add_venue(venue_config).unwrap();
+
+    let instrument = InstrumentAny::CurrencyPair(currency_pair_btcusdt);
+    let instrument_id = instrument.id();
+    engine.add_instrument(&instrument).unwrap();
+    engine
+        .add_strategy(OpenOptionOnQuote::new(
+            instrument_id,
+            Quantity::from("0.010000"),
+        ))
+        .unwrap();
+
+    engine
+        .add_data(
+            vec![quote_with_size(
+                instrument_id,
+                "1000.00",
+                "1000.10",
+                "1.000000",
+                1_000_000_000,
+            )],
+            None,
+            true,
+            true,
+        )
+        .unwrap();
+    engine.run(None, None, None, false).unwrap();
+
+    {
+        let cache = engine.kernel().cache.borrow();
+        let orders = cache.orders(
+            Some(&Venue::from("BINANCE")),
+            Some(&instrument_id),
+            None,
+            None,
+            None,
+        );
+        let [order] = orders.as_slice() else {
+            panic!("expected exactly one denied strategy order");
+        };
+
+        let OrderEventAny::Denied(denied) = order.last_event() else {
+            panic!("expected order to be denied, got {:?}", order.last_event());
+        };
+        assert!(
+            denied
+                .reason
+                .to_string()
+                .contains("NOTIONAL_EXCEEDS_FREE_BALANCE"),
+            "unexpected deny reason: {}",
+            denied.reason,
+        );
+        assert!(
+            !order
+                .events()
+                .iter()
+                .any(|event| matches!(event, OrderEventAny::Filled(_))),
+            "denied order must not have any fill events",
+        );
+        assert_eq!(
+            cache.positions_open_count(None, Some(&instrument_id), None, None, None),
+            0,
+        );
+        assert_eq!(
+            cache.positions_closed_count(None, Some(&instrument_id), None, None, None),
+            0,
+        );
+        assert!(
+            cache
+                .order_lists(None, Some(&instrument_id), None, None)
+                .is_empty(),
+            "plain market buy should not create OCO/order-list legs",
+        );
+    }
+
+    let bt_result = engine.get_result();
+    assert_eq!(bt_result.total_orders, 1);
+    assert_eq!(bt_result.total_positions, 0);
 }
 
 fn option_underlying_equity(venue: Venue) -> InstrumentAny {

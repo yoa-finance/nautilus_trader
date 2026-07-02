@@ -35,7 +35,7 @@ use nautilus_common::{
     runner::try_get_trading_cmd_sender,
     throttler::{RateLimit, Throttler},
 };
-use nautilus_core::{UUID4, WeakCell};
+use nautilus_core::{SharedCell, UUID4, WeakCell};
 use nautilus_execution::trailing::{
     trailing_stop_calculate_with_bid_ask, trailing_stop_calculate_with_last,
 };
@@ -155,7 +155,7 @@ impl RiskEngine {
             MessagingSwitchboard::risk_engine_queue_execute(),
             TypedIntoHandler::from(move |cmd: TradingCommand| {
                 if let Some(sender) = try_get_trading_cmd_sender() {
-                    sender.execute(cmd);
+                    sender.execute(MessagingSwitchboard::risk_engine_execute(), cmd);
                 } else {
                     let endpoint = MessagingSwitchboard::risk_engine_execute();
                     msgbus::send_trading_command(endpoint, cmd);
@@ -168,7 +168,7 @@ impl RiskEngine {
             MessagingSwitchboard::risk_engine_process(),
             TypedIntoHandler::from(move |event: OrderEventAny| {
                 if let Some(rc) = weak_process.upgrade() {
-                    rc.borrow_mut().process(event);
+                    Self::process_order_event_from_msgbus(&rc, event);
                 }
             }),
         );
@@ -178,7 +178,7 @@ impl RiskEngine {
             "events.order.*".into(),
             TypedHandler::from(move |event: &OrderEventAny| {
                 if let Some(rc) = weak_order_events.upgrade() {
-                    rc.borrow_mut().process(event.clone());
+                    Self::process_order_event_from_msgbus(&rc, event.clone());
                 }
             }),
             Some(10),
@@ -189,11 +189,31 @@ impl RiskEngine {
             "events.position.*".into(),
             TypedHandler::from(move |event: &PositionEvent| {
                 if let Some(rc) = weak_position_events.upgrade() {
-                    rc.borrow_mut().process_position_event(event);
+                    Self::process_position_event_from_msgbus(&rc, event);
                 }
             }),
             Some(10),
         );
+    }
+
+    fn process_order_event_from_msgbus(rc: &SharedCell<Self>, event: OrderEventAny) {
+        match rc.try_borrow_mut() {
+            Ok(mut engine) => engine.process(event),
+            Err(_) => {
+                // `deny_order()` sends through ExecEngine, which publishes the denied event back to
+                // subscribers before the original RiskEngine command borrow has returned.
+                log::debug!("Skipping re-entrant RiskEngine order event: {event:?}");
+            }
+        }
+    }
+
+    fn process_position_event_from_msgbus(rc: &SharedCell<Self>, event: &PositionEvent) {
+        match rc.try_borrow_mut() {
+            Ok(mut engine) => engine.process_position_event(event),
+            Err(_) => {
+                log::debug!("Skipping re-entrant RiskEngine position event: {event:?}");
+            }
+        }
     }
 
     fn create_submit_throttler(

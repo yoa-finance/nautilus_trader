@@ -106,7 +106,7 @@ use nautilus_common::{
         DataEvent,
         execution::{CancelOrder, TradingCommand},
     },
-    msgbus,
+    msgbus::{self, MessagingSwitchboard},
     runner::get_trading_cmd_sender,
 };
 use nautilus_core::{UUID4, UnixNanos};
@@ -385,9 +385,10 @@ async fn stress_cancel_starvation() {
             // pure handler time. See the module doc for the full caveat.
             let pre_cmd = driver_exec_engine.borrow().command_count();
             let ts_init = driver_clock.borrow().timestamp_ns();
-            get_trading_cmd_sender().execute(TradingCommand::CancelOrder(sample_cancel(
-                seq as u64, ts_init,
-            )));
+            get_trading_cmd_sender().execute(
+                MessagingSwitchboard::exec_engine_execute(),
+                TradingCommand::CancelOrder(sample_cancel(seq as u64, ts_init)),
+            );
 
             let mut yield_iters = 0u32;
 

@@ -8840,7 +8840,7 @@ dependencies = [
 
 [[package]]
 name = "stratneo-nautilus-backtest"
-version = "0.58.1"
+version = "0.58.2"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
@@ -8925,7 +8925,7 @@ dependencies = [
 
 [[package]]
 name = "stratneo-nautilus-common"
-version = "0.58.0"
+version = "0.58.2"
 dependencies = [
  "ahash 0.8.12",
  "alloy-primitives",
@@ -9055,7 +9055,7 @@ dependencies = [
 
 [[package]]
 name = "stratneo-nautilus-execution"
-version = "0.58.0"
+version = "0.58.2"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
@@ -9099,7 +9099,7 @@ dependencies = [
 
 [[package]]
 name = "stratneo-nautilus-live"
-version = "0.58.1"
+version = "0.58.2"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
@@ -9286,7 +9286,7 @@ dependencies = [
 
 [[package]]
 name = "stratneo-nautilus-risk"
-version = "0.58.1"
+version = "0.58.2"
 dependencies = [
  "ahash 0.8.12",
  "bon",
@@ -9364,7 +9364,7 @@ dependencies = [
 
 [[package]]
 name = "stratneo-nautilus-system"
-version = "0.58.1"
+version = "0.58.2"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
