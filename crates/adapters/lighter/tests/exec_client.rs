@@ -1112,6 +1112,7 @@ fn submit_command(order: &OrderAny) -> SubmitOrder {
 fn submit_order_list_command(orders: &[OrderAny], order_list_id: &str) -> SubmitOrderList {
     let order_list = OrderList::new(
         OrderListId::from(order_list_id),
+        nautilus_model::enums::OrderListType::Standard,
         orders[0].instrument_id(),
         strategy_id(),
         orders.iter().map(|order| order.client_order_id()).collect(),

@@ -31,9 +31,9 @@ use nautilus_model::{
     enums::{
         AccountType, AggregationSource, AggressorSide, AssetClass, BarAggregation, BookAction,
         BookType, ContingencyType, CurrencyType, InstrumentClass, InstrumentCloseType,
-        LiquiditySide, MarketStatusAction, OmsType, OptionKind, OrderSide, OrderStatus, OrderType,
-        PositionAdjustmentType, PositionSide, PriceType, RecordFlag, TimeInForce,
-        TrailingOffsetType, TriggerType,
+        LiquiditySide, MarketStatusAction, OmsType, OptionKind, OrderListType, OrderSide,
+        OrderStatus, OrderType, PositionAdjustmentType, PositionSide, PriceType, RecordFlag,
+        TimeInForce, TrailingOffsetType, TriggerType,
     },
     events::{
         OrderAccepted, OrderCancelRejected, OrderCanceled, OrderDenied, OrderEmulated,
@@ -821,6 +821,24 @@ pub fn contingency_type_from_capnp(value: enums_capnp::ContingencyType) -> Conti
         enums_capnp::ContingencyType::Oco => ContingencyType::Oco,
         enums_capnp::ContingencyType::Oto => ContingencyType::Oto,
         enums_capnp::ContingencyType::Ouo => ContingencyType::Ouo,
+    }
+}
+
+#[must_use]
+pub fn order_list_type_to_capnp(value: OrderListType) -> enums_capnp::OrderListType {
+    match value {
+        OrderListType::Standard => enums_capnp::OrderListType::Standard,
+        OrderListType::Oco => enums_capnp::OrderListType::Oco,
+        OrderListType::Opoco => enums_capnp::OrderListType::Opoco,
+    }
+}
+
+#[must_use]
+pub fn order_list_type_from_capnp(value: enums_capnp::OrderListType) -> OrderListType {
+    match value {
+        enums_capnp::OrderListType::Standard => OrderListType::Standard,
+        enums_capnp::OrderListType::Oco => OrderListType::Oco,
+        enums_capnp::OrderListType::Opoco => OrderListType::Opoco,
     }
 }
 

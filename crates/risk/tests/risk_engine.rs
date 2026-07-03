@@ -38,9 +38,9 @@ use nautilus_model::{
     accounts::{AccountAny, BettingAccount, CashAccount, MarginAccount, stubs::cash_account},
     data::{Bar, BarSpecification, BarType, QuoteTick, stubs::quote_audusd},
     enums::{
-        AccountType, AggregationSource, BarAggregation, LiquiditySide, OmsType, OrderSide,
-        OrderType, PositionSide, PriceType, TimeInForce, TradingState, TrailingOffsetType,
-        TriggerType,
+        AccountType, AggregationSource, BarAggregation, ContingencyType, LiquiditySide, OmsType,
+        OrderListType, OrderSide, OrderType, PositionSide, PriceType, TimeInForce, TradingState,
+        TrailingOffsetType, TriggerType,
     },
     events::{
         AccountState, OrderAccepted, OrderEventAny, OrderEventType, OrderFilled, OrderSubmitted,
@@ -2755,6 +2755,7 @@ fn test_submit_order_list_buys_when_over_free_balance_then_denies(
     let orders = [order1, order2];
     let order_list = OrderList::new(
         OrderListId::new("1"),
+        nautilus_model::enums::OrderListType::Standard,
         instrument_audusd.id(),
         StrategyId::new("S-001"),
         vec![orders[0].client_order_id(), orders[1].client_order_id()],
@@ -2847,6 +2848,7 @@ fn test_submit_order_list_sells_when_over_free_balance_then_denies(
 
     let order_list = OrderList::new(
         OrderListId::new("1"),
+        nautilus_model::enums::OrderListType::Standard,
         instrument_audusd.id(),
         StrategyId::new("S-001"),
         vec![orders[0].client_order_id(), orders[1].client_order_id()],
@@ -3046,6 +3048,7 @@ fn test_submit_order_list_cash_spot_sells_without_price_when_cumulative_base_exc
     let orders = [order1, order2];
     let order_list = OrderList::new(
         OrderListId::new("SPOT-SELL-LIST"),
+        nautilus_model::enums::OrderListType::Standard,
         instrument.id(),
         strategy_id_ema_cross,
         vec![orders[0].client_order_id(), orders[1].client_order_id()],
@@ -3085,6 +3088,266 @@ fn test_submit_order_list_cash_spot_sells_without_price_when_cumulative_base_exc
     assert!(message.contains("CUM_NOTIONAL_EXCEEDS_FREE_BALANCE"));
     assert!(message.contains("1.00000000 BTC"));
     assert!(message.contains("1.20000000 BTC"));
+}
+
+#[rstest]
+fn test_submit_oco_order_list_cash_spot_sells_uses_max_base_exposure(
+    strategy_id_ema_cross: StrategyId,
+    client_id_binance: ClientId,
+    trader_id: TraderId,
+    process_order_event_handler: TypedIntoMessageSavingHandler<OrderEventAny>,
+    execute_order_event_handler: TypedIntoMessageSavingHandler<TradingCommand>,
+    mut simple_cache: Cache,
+) {
+    let instrument = bybit_btcusdt_spot();
+    simple_cache.add_instrument(instrument.clone()).unwrap();
+    simple_cache
+        .add_account(AccountAny::Cash(cash_account(bybit_cash_account_state(
+            vec![AccountBalance::new(
+                Money::from("1 BTC"),
+                Money::from("0 BTC"),
+                Money::from("1 BTC"),
+            )],
+        ))))
+        .unwrap();
+
+    let order1 = OrderTestBuilder::new(OrderType::Limit)
+        .instrument_id(instrument.id())
+        .client_order_id(ClientOrderId::from("O-OCO-SELL-TP"))
+        .side(OrderSide::Sell)
+        .quantity(Quantity::from("0.6"))
+        .price(Price::from("120000"))
+        .post_only(true)
+        .contingency_type(ContingencyType::Oco)
+        .build();
+    let order2 = OrderTestBuilder::new(OrderType::StopMarket)
+        .instrument_id(instrument.id())
+        .client_order_id(ClientOrderId::from("O-OCO-SELL-SL"))
+        .side(OrderSide::Sell)
+        .quantity(Quantity::from("0.6"))
+        .trigger_price(Price::from("90000"))
+        .contingency_type(ContingencyType::Oco)
+        .build();
+
+    simple_cache
+        .add_order(order1.clone(), None, Some(client_id_binance), true)
+        .unwrap();
+    simple_cache
+        .add_order(order2.clone(), None, Some(client_id_binance), true)
+        .unwrap();
+
+    let mut risk_engine =
+        get_risk_engine(Some(Rc::new(RefCell::new(simple_cache))), None, None, false);
+    let orders = [order1, order2];
+    let order_list = OrderList::new(
+        OrderListId::new("OCO-SPOT-SELL-LIST"),
+        OrderListType::Oco,
+        instrument.id(),
+        strategy_id_ema_cross,
+        vec![orders[0].client_order_id(), orders[1].client_order_id()],
+        risk_engine.clock().borrow().timestamp_ns(),
+    );
+    let submit = SubmitOrderList::new(
+        trader_id,
+        Some(client_id_binance),
+        strategy_id_ema_cross,
+        order_list,
+        orders
+            .iter()
+            .map(|order| order.init_event().clone())
+            .collect(),
+        None,
+        None,
+        None,
+        UUID4::new(),
+        risk_engine.clock().borrow().timestamp_ns(),
+        None,
+    );
+
+    risk_engine.execute(TradingCommand::SubmitOrderList(submit));
+
+    assert!(get_process_order_event_handler_messages(&process_order_event_handler).is_empty());
+    let saved_execute_messages =
+        get_execute_order_event_handler_messages(&execute_order_event_handler);
+    assert_eq!(saved_execute_messages.len(), 1);
+}
+
+#[rstest]
+fn test_submit_oco_order_list_cash_spot_sell_when_largest_leg_exceeds_base_free_then_denies(
+    strategy_id_ema_cross: StrategyId,
+    client_id_binance: ClientId,
+    trader_id: TraderId,
+    process_order_event_handler: TypedIntoMessageSavingHandler<OrderEventAny>,
+    mut simple_cache: Cache,
+) {
+    let instrument = bybit_btcusdt_spot();
+    simple_cache.add_instrument(instrument.clone()).unwrap();
+    simple_cache
+        .add_account(AccountAny::Cash(cash_account(bybit_cash_account_state(
+            vec![AccountBalance::new(
+                Money::from("1 BTC"),
+                Money::from("0 BTC"),
+                Money::from("1 BTC"),
+            )],
+        ))))
+        .unwrap();
+
+    let order1 = OrderTestBuilder::new(OrderType::Limit)
+        .instrument_id(instrument.id())
+        .client_order_id(ClientOrderId::from("O-OCO-SELL-TP-TOO-LARGE"))
+        .side(OrderSide::Sell)
+        .quantity(Quantity::from("1.1"))
+        .price(Price::from("120000"))
+        .post_only(true)
+        .contingency_type(ContingencyType::Oco)
+        .build();
+    let order2 = OrderTestBuilder::new(OrderType::StopMarket)
+        .instrument_id(instrument.id())
+        .client_order_id(ClientOrderId::from("O-OCO-SELL-SL-TOO-LARGE"))
+        .side(OrderSide::Sell)
+        .quantity(Quantity::from("1.1"))
+        .trigger_price(Price::from("90000"))
+        .contingency_type(ContingencyType::Oco)
+        .build();
+
+    simple_cache
+        .add_order(order1.clone(), None, Some(client_id_binance), true)
+        .unwrap();
+    simple_cache
+        .add_order(order2.clone(), None, Some(client_id_binance), true)
+        .unwrap();
+
+    let mut risk_engine =
+        get_risk_engine(Some(Rc::new(RefCell::new(simple_cache))), None, None, false);
+    let orders = [order1, order2];
+    let order_list = OrderList::new(
+        OrderListId::new("OCO-SPOT-SELL-LIST-TOO-LARGE"),
+        OrderListType::Oco,
+        instrument.id(),
+        strategy_id_ema_cross,
+        vec![orders[0].client_order_id(), orders[1].client_order_id()],
+        risk_engine.clock().borrow().timestamp_ns(),
+    );
+    let submit = SubmitOrderList::new(
+        trader_id,
+        Some(client_id_binance),
+        strategy_id_ema_cross,
+        order_list,
+        orders
+            .iter()
+            .map(|order| order.init_event().clone())
+            .collect(),
+        None,
+        None,
+        None,
+        UUID4::new(),
+        risk_engine.clock().borrow().timestamp_ns(),
+        None,
+    );
+
+    risk_engine.execute(TradingCommand::SubmitOrderList(submit));
+
+    let saved = get_process_order_event_handler_messages(&process_order_event_handler);
+    assert_eq!(saved.len(), 3);
+    assert!(
+        saved[0]
+            .message()
+            .unwrap()
+            .to_string()
+            .contains("CUM_NOTIONAL_EXCEEDS_FREE_BALANCE")
+    );
+    assert!(
+        saved[0]
+            .message()
+            .unwrap()
+            .to_string()
+            .contains("1.10000000 BTC")
+    );
+}
+
+#[rstest]
+fn test_submit_oco_order_list_with_missing_child_contingency_metadata_denies(
+    strategy_id_ema_cross: StrategyId,
+    client_id_binance: ClientId,
+    trader_id: TraderId,
+    process_order_event_handler: TypedIntoMessageSavingHandler<OrderEventAny>,
+    mut simple_cache: Cache,
+) {
+    let instrument = bybit_btcusdt_spot();
+    simple_cache.add_instrument(instrument.clone()).unwrap();
+    simple_cache
+        .add_account(AccountAny::Cash(cash_account(bybit_cash_account_state(
+            vec![AccountBalance::new(
+                Money::from("1 BTC"),
+                Money::from("0 BTC"),
+                Money::from("1 BTC"),
+            )],
+        ))))
+        .unwrap();
+
+    let order1 = OrderTestBuilder::new(OrderType::Limit)
+        .instrument_id(instrument.id())
+        .client_order_id(ClientOrderId::from("O-OCO-META-TP"))
+        .side(OrderSide::Sell)
+        .quantity(Quantity::from("0.6"))
+        .price(Price::from("120000"))
+        .post_only(true)
+        .contingency_type(ContingencyType::Oco)
+        .build();
+    let order2 = OrderTestBuilder::new(OrderType::StopMarket)
+        .instrument_id(instrument.id())
+        .client_order_id(ClientOrderId::from("O-OCO-META-SL"))
+        .side(OrderSide::Sell)
+        .quantity(Quantity::from("0.6"))
+        .trigger_price(Price::from("90000"))
+        .build();
+
+    simple_cache
+        .add_order(order1.clone(), None, Some(client_id_binance), true)
+        .unwrap();
+    simple_cache
+        .add_order(order2.clone(), None, Some(client_id_binance), true)
+        .unwrap();
+
+    let mut risk_engine =
+        get_risk_engine(Some(Rc::new(RefCell::new(simple_cache))), None, None, false);
+    let orders = [order1, order2];
+    let order_list = OrderList::new(
+        OrderListId::new("OCO-SPOT-SELL-LIST-BAD-META"),
+        OrderListType::Oco,
+        instrument.id(),
+        strategy_id_ema_cross,
+        vec![orders[0].client_order_id(), orders[1].client_order_id()],
+        risk_engine.clock().borrow().timestamp_ns(),
+    );
+    let submit = SubmitOrderList::new(
+        trader_id,
+        Some(client_id_binance),
+        strategy_id_ema_cross,
+        order_list,
+        orders
+            .iter()
+            .map(|order| order.init_event().clone())
+            .collect(),
+        None,
+        None,
+        None,
+        UUID4::new(),
+        risk_engine.clock().borrow().timestamp_ns(),
+        None,
+    );
+
+    risk_engine.execute(TradingCommand::SubmitOrderList(submit));
+
+    let saved = get_process_order_event_handler_messages(&process_order_event_handler);
+    assert_eq!(saved.len(), 3);
+    assert!(
+        saved[0]
+            .message()
+            .unwrap()
+            .to_string()
+            .contains("OCO_ORDER_LIST_REQUIRES_OCO_CONTINGENCY_TYPE")
+    );
 }
 
 #[rstest]
@@ -3355,6 +3618,7 @@ fn test_submit_order_list_when_trading_halted_then_denies_orders(
 
     let bracket = OrderList::new(
         OrderListId::new("1"),
+        nautilus_model::enums::OrderListType::Standard,
         instrument_audusd.id(),
         StrategyId::new("S-001"),
         vec![
@@ -3440,6 +3704,7 @@ fn test_submit_order_list_denies_when_non_representative_instrument_missing(
 
     let order_list = OrderList::new(
         OrderListId::new("L-MISS-001"),
+        nautilus_model::enums::OrderListType::Standard,
         instrument_a.id(),
         StrategyId::new("S-001"),
         vec![order_a.client_order_id(), order_b.client_order_id()],
@@ -3517,6 +3782,7 @@ fn test_submit_order_list_denies_when_representative_instrument_not_in_list(
 
     let order_list = OrderList::new(
         OrderListId::new("L-REP-001"),
+        nautilus_model::enums::OrderListType::Standard,
         representative_id,
         StrategyId::new("S-001"),
         vec![order_a.client_order_id(), order_b.client_order_id()],
@@ -3605,6 +3871,7 @@ fn test_submit_order_list_check_order_uses_each_orders_own_instrument(
 
     let order_list = OrderList::new(
         OrderListId::new("L-PREC-001"),
+        nautilus_model::enums::OrderListType::Standard,
         instrument_a.id(),
         StrategyId::new("S-001"),
         vec![order_a.client_order_id(), order_b.client_order_id()],
@@ -3757,6 +4024,7 @@ fn test_submit_order_list_buys_when_trading_reducing_then_denies_orders(
 
     let bracket = OrderList::new(
         OrderListId::new("1"),
+        nautilus_model::enums::OrderListType::Standard,
         instrument_xbtusd_bitmex.id(),
         StrategyId::new("S-001"),
         vec![orders[0].client_order_id(), orders[1].client_order_id()],
@@ -3902,6 +4170,7 @@ fn test_submit_order_list_sells_when_trading_reducing_then_denies_orders(
 
     let bracket = OrderList::new(
         OrderListId::new("1"),
+        nautilus_model::enums::OrderListType::Standard,
         instrument_xbtusd_bitmex.id(),
         StrategyId::new("S-001"),
         vec![
@@ -4006,6 +4275,7 @@ fn test_submit_bracket_order_when_instrument_not_in_cache_then_denies(
 
     let bracket = OrderList::new(
         OrderListId::new("1"),
+        nautilus_model::enums::OrderListType::Standard,
         instrument_audusd.id(),
         StrategyId::new("S-001"),
         vec![
@@ -5218,6 +5488,7 @@ fn test_submit_order_list_beyond_rate_limit_then_denies_all_orders(
 
         let order_list = OrderList::new(
             OrderListId::new(format!("OL-{i}")),
+            nautilus_model::enums::OrderListType::Standard,
             instrument_audusd.id(),
             strategy_id_ema_cross,
             vec![order.client_order_id()],
@@ -5263,6 +5534,7 @@ fn test_submit_order_list_beyond_rate_limit_then_denies_all_orders(
 
     let throttled_list = OrderList::new(
         OrderListId::new("OL-THROTTLED"),
+        nautilus_model::enums::OrderListType::Standard,
         instrument_audusd.id(),
         strategy_id_ema_cross,
         vec![throttled_order.client_order_id()],
@@ -5344,6 +5616,7 @@ fn test_submit_order_list_beyond_rate_limit_denies_all_orders_in_list(
 
         let order_list = OrderList::new(
             OrderListId::new(format!("OL-{i}")),
+            nautilus_model::enums::OrderListType::Standard,
             instrument_audusd.id(),
             strategy_id_ema_cross,
             vec![order.client_order_id()],
@@ -5402,6 +5675,7 @@ fn test_submit_order_list_beyond_rate_limit_denies_all_orders_in_list(
 
     let bracket = OrderList::new(
         OrderListId::new("OL-BRACKET"),
+        nautilus_model::enums::OrderListType::Standard,
         instrument_audusd.id(),
         strategy_id_ema_cross,
         orders.iter().map(|o| o.client_order_id()).collect(),
@@ -5579,6 +5853,7 @@ fn test_submit_order_list_within_rate_limit_passes_through(
 
     let order_list = OrderList::new(
         OrderListId::new("OL-001"),
+        nautilus_model::enums::OrderListType::Standard,
         instrument_audusd.id(),
         strategy_id_ema_cross,
         orders.iter().map(|o| o.client_order_id()).collect(),
@@ -6131,6 +6406,7 @@ fn test_submit_order_list_margin_account_cum_margin_exceeds_free_balance(
 
     let order_list = OrderList::new(
         OrderListId::new("OL-001"),
+        nautilus_model::enums::OrderListType::Standard,
         instrument_eth_usdt.id(),
         strategy_id_ema_cross,
         orders.iter().map(|o| o.client_order_id()).collect(),
@@ -6642,6 +6918,7 @@ fn test_submit_order_list_reducing_uses_each_orders_own_instrument(
 
     let order_list = OrderList::new(
         OrderListId::new("L-REDUCE-001"),
+        nautilus_model::enums::OrderListType::Standard,
         instrument_a.id(),
         StrategyId::new("S-001"),
         vec![order_a.client_order_id(), order_b.client_order_id()],

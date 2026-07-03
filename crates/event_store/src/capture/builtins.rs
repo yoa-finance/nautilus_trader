@@ -1770,6 +1770,7 @@ mod tests {
             .collect();
         let order_list = OrderList::new(
             OrderListId::from("OL-1"),
+            nautilus_model::enums::OrderListType::Standard,
             instrument_id(),
             strategy_id(),
             client_order_ids,

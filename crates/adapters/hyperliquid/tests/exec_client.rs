@@ -4047,6 +4047,7 @@ async fn test_submit_order_list_denies_outcome_reduce_only() {
 
     let order_list = OrderList::new(
         OrderListId::from("outcome-ro-list"),
+        nautilus_model::enums::OrderListType::Standard,
         instrument_id,
         strategy_id,
         vec![cid],
@@ -4564,6 +4565,7 @@ async fn test_submit_order_list_per_order_inner_error_rejects_only_failing() {
 
     let order_list = OrderList::new(
         OrderListId::from("test-list-1"),
+        nautilus_model::enums::OrderListType::Standard,
         instrument_id,
         strategy_id,
         vec![cid_a, cid_b],
@@ -4741,6 +4743,7 @@ async fn test_submit_order_list_grouped_error_broadcast_to_all() {
 
     let order_list = OrderList::new(
         OrderListId::from("bracket-1"),
+        nautilus_model::enums::OrderListType::Standard,
         instrument_id,
         strategy_id,
         vec![cid_p, cid_tp, cid_sl],

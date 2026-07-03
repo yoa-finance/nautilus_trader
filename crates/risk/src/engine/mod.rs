@@ -42,8 +42,8 @@ use nautilus_execution::trailing::{
 use nautilus_model::{
     accounts::{Account, AccountAny},
     enums::{
-        AggregationSource, OrderSide, OrderStatus, PositionSide, PriceType, TimeInForce,
-        TradingState, TrailingOffsetType, TriggerType,
+        AggregationSource, ContingencyType, OrderListType, OrderSide, OrderStatus, PositionSide,
+        PriceType, TimeInForce, TradingState, TrailingOffsetType, TriggerType,
     },
     events::{OrderDenied, OrderEventAny, OrderModifyRejected, PositionEvent},
     identifiers::{AccountId, InstrumentId},
@@ -719,7 +719,8 @@ impl RiskEngine {
             return; // Denied
         };
 
-        if !self.check_orders_risk(&representative, &orders) {
+        if !self.check_order_list_risk(&representative, command.order_list.order_list_type, &orders)
+        {
             self.deny_order_list(
                 &orders,
                 &format!("OrderList {} DENIED", command.order_list.id),
@@ -891,6 +892,28 @@ impl RiskEngine {
     }
 
     fn check_orders_risk(&self, instrument: &InstrumentAny, orders: &[OrderAny]) -> bool {
+        self.check_orders_risk_for_order_list_type(instrument, OrderListType::Standard, orders)
+    }
+
+    fn check_order_list_risk(
+        &self,
+        instrument: &InstrumentAny,
+        order_list_type: OrderListType,
+        orders: &[OrderAny],
+    ) -> bool {
+        if order_list_type == OrderListType::Oco && !self.validate_oco_order_list(orders) {
+            return false;
+        }
+
+        self.check_orders_risk_for_order_list_type(instrument, order_list_type, orders)
+    }
+
+    fn check_orders_risk_for_order_list_type(
+        &self,
+        instrument: &InstrumentAny,
+        order_list_type: OrderListType,
+        orders: &[OrderAny],
+    ) -> bool {
         let mut orders_by_account: AHashMap<Option<AccountId>, Vec<&OrderAny>> = AHashMap::new();
         for order in orders {
             orders_by_account
@@ -900,9 +923,58 @@ impl RiskEngine {
         }
 
         for (account_id, account_orders) in &orders_by_account {
-            if !self.check_orders_risk_for_account(instrument, account_orders, *account_id) {
+            if !self.check_orders_risk_for_account(
+                instrument,
+                order_list_type,
+                account_orders,
+                *account_id,
+            ) {
                 return false;
             }
+        }
+
+        true
+    }
+
+    fn validate_oco_order_list(&self, orders: &[OrderAny]) -> bool {
+        let Some(first) = orders.first() else {
+            return true;
+        };
+
+        if orders.len() != 2 {
+            self.deny_order(
+                first,
+                &format!(
+                    "OCO_ORDER_LIST_REQUIRES_TWO_LEGS: received={}",
+                    orders.len()
+                ),
+            );
+            return false;
+        }
+
+        let second = &orders[1];
+        for order in orders {
+            if order.contingency_type() != Some(ContingencyType::Oco) {
+                self.deny_order(order, "OCO_ORDER_LIST_REQUIRES_OCO_CONTINGENCY_TYPE");
+                return false;
+            }
+        }
+
+        if first.account_id() != second.account_id() {
+            self.deny_order(first, "OCO_ORDER_LIST_REQUIRES_SAME_ACCOUNT");
+            return false;
+        }
+        if first.instrument_id() != second.instrument_id() {
+            self.deny_order(first, "OCO_ORDER_LIST_REQUIRES_SAME_INSTRUMENT");
+            return false;
+        }
+        if first.order_side() != second.order_side() {
+            self.deny_order(first, "OCO_ORDER_LIST_REQUIRES_SAME_SIDE");
+            return false;
+        }
+        if first.quantity() != second.quantity() {
+            self.deny_order(first, "OCO_ORDER_LIST_REQUIRES_SAME_QUANTITY");
+            return false;
         }
 
         true
@@ -911,6 +983,7 @@ impl RiskEngine {
     fn check_orders_risk_for_account(
         &self,
         instrument: &InstrumentAny,
+        order_list_type: OrderListType,
         orders: &[&OrderAny],
         account_id: Option<AccountId>,
     ) -> bool {
@@ -1615,16 +1688,27 @@ impl RiskEngine {
                             log::debug!("Free: {base_free:?}");
                         }
 
+                        let use_oco_sell_exposure = order_list_type == OrderListType::Oco
+                            && matches!(&account, AccountAny::Cash(_))
+                            && order.is_sell();
                         match cum_notional_sell {
                             Some(mut value) => {
-                                value.raw += cash_value.raw;
+                                if use_oco_sell_exposure {
+                                    value.raw = value.raw.max(cash_value.raw);
+                                } else {
+                                    value.raw += cash_value.raw;
+                                }
                                 cum_notional_sell = Some(value);
                             }
                             None => cum_notional_sell = Some(cash_value),
                         }
 
                         if self.config.debug {
-                            log::debug!("Cumulative notional SELL: {cum_notional_sell:?}");
+                            if use_oco_sell_exposure {
+                                log::debug!("OCO max notional SELL: {cum_notional_sell:?}");
+                            } else {
+                                log::debug!("Cumulative notional SELL: {cum_notional_sell:?}");
+                            }
                         }
 
                         let base_free =

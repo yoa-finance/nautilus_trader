@@ -24,7 +24,9 @@ use super::{
     stop_limit::StopLimitOrder, stop_market::StopMarketOrder,
     trailing_stop_limit::TrailingStopLimitOrder, trailing_stop_market::TrailingStopMarketOrder,
 };
-use crate::{events::OrderEventAny, identifiers::OrderListId, types::Price};
+use crate::{
+    enums::ContingencyType, events::OrderEventAny, identifiers::OrderListId, types::Price,
+};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[enum_dispatch(Order)]
@@ -111,6 +113,52 @@ impl OrderAny {
             Self::TrailingStopLimit(o) => o.order_list_id = Some(id),
             Self::TrailingStopMarket(o) => o.order_list_id = Some(id),
         }
+    }
+
+    pub fn set_contingency_type(&mut self, contingency_type: ContingencyType) {
+        match self {
+            Self::Limit(o) => o.contingency_type = Some(contingency_type),
+            Self::LimitIfTouched(o) => o.contingency_type = Some(contingency_type),
+            Self::Market(o) => o.contingency_type = Some(contingency_type),
+            Self::MarketIfTouched(o) => o.contingency_type = Some(contingency_type),
+            Self::MarketToLimit(o) => o.contingency_type = Some(contingency_type),
+            Self::StopLimit(o) => o.contingency_type = Some(contingency_type),
+            Self::StopMarket(o) => o.contingency_type = Some(contingency_type),
+            Self::TrailingStopLimit(o) => o.contingency_type = Some(contingency_type),
+            Self::TrailingStopMarket(o) => o.contingency_type = Some(contingency_type),
+        }
+
+        match self {
+            Self::Limit(o) => update_init_contingency_type(&mut o.events, contingency_type),
+            Self::LimitIfTouched(o) => {
+                update_init_contingency_type(&mut o.events, contingency_type);
+            }
+            Self::Market(o) => update_init_contingency_type(&mut o.events, contingency_type),
+            Self::MarketIfTouched(o) => {
+                update_init_contingency_type(&mut o.events, contingency_type);
+            }
+            Self::MarketToLimit(o) => {
+                update_init_contingency_type(&mut o.events, contingency_type);
+            }
+            Self::StopLimit(o) => {
+                update_init_contingency_type(&mut o.events, contingency_type);
+            }
+            Self::StopMarket(o) => {
+                update_init_contingency_type(&mut o.events, contingency_type);
+            }
+            Self::TrailingStopLimit(o) => {
+                update_init_contingency_type(&mut o.events, contingency_type);
+            }
+            Self::TrailingStopMarket(o) => {
+                update_init_contingency_type(&mut o.events, contingency_type);
+            }
+        }
+    }
+}
+
+fn update_init_contingency_type(events: &mut [OrderEventAny], contingency_type: ContingencyType) {
+    if let Some(OrderEventAny::Initialized(init)) = events.first_mut() {
+        init.contingency_type = Some(contingency_type);
     }
 }
 

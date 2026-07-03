@@ -1578,6 +1578,7 @@ fn test_add_order_list() {
     let order_list_id = OrderListId::new("OL-001");
     let order_list = OrderList::new(
         order_list_id,
+        nautilus_model::enums::OrderListType::Standard,
         instrument.id(),
         order.strategy_id(),
         vec![order.client_order_id()],
@@ -1611,6 +1612,7 @@ fn test_add_order_list_when_already_exists_errors() {
     let order_list_id = OrderListId::new("OL-001");
     let order_list = OrderList::new(
         order_list_id,
+        nautilus_model::enums::OrderListType::Standard,
         instrument.id(),
         order.strategy_id(),
         vec![order.client_order_id()],
@@ -4188,6 +4190,7 @@ fn test_purge_closed_orders_also_purges_order_lists() {
         .build();
     let order_list = OrderList::new(
         order_list_id,
+        nautilus_model::enums::OrderListType::Standard,
         instrument.id(),
         order1.strategy_id(),
         vec![order1.client_order_id(), order2.client_order_id()],
@@ -4272,6 +4275,7 @@ fn test_purge_closed_orders_does_not_purge_order_list_with_open_orders() {
         .build();
     let order_list = OrderList::new(
         order_list_id,
+        nautilus_model::enums::OrderListType::Standard,
         instrument.id(),
         order1.strategy_id(),
         vec![order1.client_order_id(), order2.client_order_id()],

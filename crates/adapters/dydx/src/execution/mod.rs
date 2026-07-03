@@ -3543,6 +3543,7 @@ mod tests {
 
         let order_list = OrderList::new(
             OrderListId::from("OL-1"),
+            nautilus_model::enums::OrderListType::Standard,
             instrument_id,
             order.strategy_id(),
             vec![order.client_order_id()],

@@ -112,6 +112,12 @@ enum ContingencyType {
     ouo @3;  # One-Updates-the-Other
 }
 
+enum OrderListType {
+    standard @0;
+    oco @1;
+    opoco @2;
+}
+
 enum PositionSide {
     noPositionSide @0;
     flat @1;

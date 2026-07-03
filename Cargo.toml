@@ -71,7 +71,7 @@ homepage = "https://nautilustrader.io"
 nautilus-analysis = { package = "stratneo-nautilus-analysis", path = "crates/analysis", version = "0.58.0" }
 nautilus-backtest = { package = "stratneo-nautilus-backtest", path = "crates/backtest", version = "0.58.2" }
 nautilus-cli = { path = "crates/cli", version = "0.58.0" }
-nautilus-common = { package = "stratneo-nautilus-common", path = "crates/common", version = "0.58.2" }
+nautilus-common = { package = "stratneo-nautilus-common", path = "crates/common", version = "0.58.3" }
 nautilus-core = { package = "stratneo-nautilus-core", path = "crates/core", version = "0.58.0" }
 nautilus-cryptography = { package = "stratneo-nautilus-cryptography", path = "crates/cryptography", version = "0.58.0" }
 nautilus-data = { package = "stratneo-nautilus-data", path = "crates/data", version = "0.58.0" }
@@ -79,18 +79,18 @@ nautilus-execution = { package = "stratneo-nautilus-execution", path = "crates/e
 nautilus-indicators = { package = "stratneo-nautilus-indicators", path = "crates/indicators", version = "0.58.0" }
 nautilus-infrastructure = { path = "crates/infrastructure", version = "0.58.0" }
 nautilus-live = { package = "stratneo-nautilus-live", path = "crates/live", version = "0.58.2", default-features = false }
-nautilus-model = { package = "stratneo-nautilus-model", path = "crates/model", version = "0.58.0" }
+nautilus-model = { package = "stratneo-nautilus-model", path = "crates/model", version = "0.58.1" }
 nautilus-network = { package = "stratneo-nautilus-network", path = "crates/network", version = "0.58.0" }
 nautilus-persistence = { package = "stratneo-nautilus-persistence", path = "crates/persistence", version = "0.58.0" }
 nautilus-persistence-macros = { package = "stratneo-nautilus-persistence-macros", path = "crates/persistence/macros", version = "0.58.0" }
 nautilus-plugin = { path = "crates/plugin", version = "0.58.0", default-features = false }
 nautilus-portfolio = { package = "stratneo-nautilus-portfolio", path = "crates/portfolio", version = "0.58.0" }
 nautilus-pyo3 = { path = "crates/pyo3", version = "0.58.0" }
-nautilus-risk = { package = "stratneo-nautilus-risk", path = "crates/risk", version = "0.58.2" }
-nautilus-serialization = { package = "stratneo-nautilus-serialization", path = "crates/serialization", version = "0.58.0" }
+nautilus-risk = { package = "stratneo-nautilus-risk", path = "crates/risk", version = "0.58.3" }
+nautilus-serialization = { package = "stratneo-nautilus-serialization", path = "crates/serialization", version = "0.58.1" }
 nautilus-system = { package = "stratneo-nautilus-system", path = "crates/system", version = "0.58.2" }
 nautilus-testkit = { path = "crates/testkit", version = "0.58.0" }
-nautilus-trading = { package = "stratneo-nautilus-trading", path = "crates/trading", version = "0.58.0" }
+nautilus-trading = { package = "stratneo-nautilus-trading", path = "crates/trading", version = "0.58.1" }
 
 # -----------------------------------------------------------------------------
 # Adapters
@@ -99,7 +99,7 @@ nautilus-trading = { package = "stratneo-nautilus-trading", path = "crates/tradi
 # -----------------------------------------------------------------------------
 nautilus-architect-ax = { path = "crates/adapters/architect_ax", version = "0.58.0" }
 nautilus-betfair = { path = "crates/adapters/betfair", version = "0.58.0", default-features = false }
-nautilus-binance = { package = "stratneo-nautilus-binance", path = "crates/adapters/binance", version = "0.59.4-stratneo.3", default-features = false }
+nautilus-binance = { package = "stratneo-nautilus-binance", path = "crates/adapters/binance", version = "0.59.4-stratneo.4", default-features = false }
 nautilus-bitmex = { path = "crates/adapters/bitmex", version = "0.58.0", default-features = false }
 nautilus-blockchain = { path = "crates/adapters/blockchain", version = "0.58.0" }
 nautilus-bybit = { path = "crates/adapters/bybit", version = "0.58.0", default-features = false }

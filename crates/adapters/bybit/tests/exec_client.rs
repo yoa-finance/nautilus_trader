@@ -1300,6 +1300,7 @@ async fn test_exec_client_submit_order_list_demo() {
 
     let order_list = OrderList::new(
         OrderListId::from("test-list-1"),
+        nautilus_model::enums::OrderListType::Standard,
         instrument_id,
         strategy_id,
         vec![cid1, cid2],
@@ -1811,6 +1812,7 @@ async fn test_exec_client_submit_order_list_denies_all_on_invalid_leg() {
 
     let order_list = OrderList::new(
         OrderListId::from("test-deny-list-1"),
+        nautilus_model::enums::OrderListType::Standard,
         instrument_id,
         strategy_id,
         vec![cid1, cid2],

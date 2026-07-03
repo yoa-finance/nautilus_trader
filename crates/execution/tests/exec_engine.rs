@@ -771,6 +771,7 @@ fn test_submit_order_list_denied_with_custom_position_id_under_netting(
 
     let order_list = OrderList::new(
         OrderListId::from("L-001"),
+        nautilus_model::enums::OrderListType::Standard,
         instrument.id,
         strategy_id,
         vec![
@@ -873,6 +874,7 @@ fn test_submit_order_list_denies_mixed_instruments_with_position_id_regardless_o
 
     let order_list = OrderList::new(
         OrderListId::from("L-MIXED-POS"),
+        nautilus_model::enums::OrderListType::Standard,
         instrument_a.id,
         strategy_id,
         vec![order_a.client_order_id(), order_b.client_order_id()],
@@ -978,6 +980,7 @@ fn test_submit_order_list_mixed_instruments_routes_per_order_own_book(
 
     let order_list = OrderList::new(
         OrderListId::from("L-OWN-BOOK"),
+        nautilus_model::enums::OrderListType::Standard,
         instrument_a.id(),
         strategy_id,
         vec![order_a.client_order_id(), order_b.client_order_id()],
@@ -2338,6 +2341,7 @@ fn test_submit_bracket_order_list_with_all_duplicate_client_order_id_logs_does_n
     let orders = [entry.clone(), stop_loss.clone(), take_profit.clone()];
     let order_list = OrderList::new(
         OrderListId::from("1"),
+        nautilus_model::enums::OrderListType::Standard,
         instrument.id,
         strategy_id,
         vec![
@@ -12088,6 +12092,7 @@ fn test_submit_order_list_adds_missing_orders_to_cache_from_inits(
     let orders = [entry.clone(), stop_loss.clone()];
     let order_list = OrderList::new(
         OrderListId::from("1"),
+        nautilus_model::enums::OrderListType::Standard,
         instrument.id,
         strategy_id,
         orders.iter().map(|o| o.client_order_id()).collect(),
@@ -12182,6 +12187,7 @@ fn test_submit_order_list_denies_cached_orders_when_missing_order_has_no_init(
 
     let order_list = OrderList::new(
         OrderListId::from("1"),
+        nautilus_model::enums::OrderListType::Standard,
         instrument.id,
         strategy_id,
         vec![entry.client_order_id(), stop_loss.client_order_id()],
@@ -12430,6 +12436,7 @@ fn test_submit_order_list_with_no_client_denies_all_orders(execution_engine: Exe
 
     let order_list = OrderList::new(
         OrderListId::from("1"),
+        nautilus_model::enums::OrderListType::Standard,
         instrument.id,
         strategy_id,
         vec![entry.client_order_id(), stop_loss.client_order_id()],

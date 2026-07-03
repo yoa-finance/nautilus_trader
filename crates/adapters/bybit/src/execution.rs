@@ -2476,6 +2476,7 @@ mod tests {
 
         let order_list = OrderList::new(
             OrderListId::from("OL-WS-SEND-FAIL"),
+            nautilus_model::enums::OrderListType::Standard,
             instrument_id,
             strategy_id,
             vec![client_order_id_1, client_order_id_2],

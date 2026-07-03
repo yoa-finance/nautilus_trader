@@ -20,7 +20,10 @@ use std::{cell::RefCell, rc::Rc};
 use indexmap::IndexMap;
 use nautilus_core::{UUID4, UnixNanos};
 use nautilus_model::{
-    enums::{ContingencyType, OrderSide, OrderType, TimeInForce, TrailingOffsetType, TriggerType},
+    enums::{
+        ContingencyType, OrderListType, OrderSide, OrderType, TimeInForce, TrailingOffsetType,
+        TriggerType,
+    },
     identifiers::{
         ClientOrderId, ExecAlgorithmId, InstrumentId, OrderListId, StrategyId, TraderId,
     },
@@ -681,7 +684,12 @@ impl OrderFactory {
     /// filters out the empty case and bails on mixed venues before reaching
     /// this constructor.
     #[must_use]
-    pub fn create_list(&mut self, orders: &mut [OrderAny], ts_init: UnixNanos) -> OrderList {
+    pub fn create_list(
+        &mut self,
+        order_list_type: OrderListType,
+        orders: &mut [OrderAny],
+        ts_init: UnixNanos,
+    ) -> OrderList {
         let instrument_id = orders
             .first()
             .expect("OrderFactory::create_list requires non-empty orders")
@@ -707,6 +715,7 @@ impl OrderFactory {
 
         OrderList::new(
             order_list_id,
+            order_list_type,
             instrument_id,
             self.strategy_id,
             order_ids,
@@ -1213,7 +1222,8 @@ pub mod tests {
     use nautilus_core::UnixNanos;
     use nautilus_model::{
         enums::{
-            ContingencyType, OrderSide, OrderType, TimeInForce, TrailingOffsetType, TriggerType,
+            ContingencyType, OrderListType, OrderSide, OrderType, TimeInForce, TrailingOffsetType,
+            TriggerType,
         },
         identifiers::{
             ClientOrderId, InstrumentId, OrderListId,
@@ -2206,7 +2216,8 @@ pub mod tests {
         );
 
         let mut orders = vec![binance, bybit];
-        let _ = order_factory.create_list(&mut orders, UnixNanos::default());
+        let _ =
+            order_factory.create_list(OrderListType::Standard, &mut orders, UnixNanos::default());
     }
 
     #[rstest]
@@ -2249,7 +2260,8 @@ pub mod tests {
         );
 
         let mut orders = vec![entry.clone(), sl.clone()];
-        let order_list = order_factory.create_list(&mut orders, UnixNanos::default());
+        let order_list =
+            order_factory.create_list(OrderListType::Standard, &mut orders, UnixNanos::default());
 
         assert_eq!(order_list.len(), 2);
         assert_eq!(

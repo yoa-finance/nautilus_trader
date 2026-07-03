@@ -2129,6 +2129,7 @@ fn make_submit_order_list_cmd(instrument_id: InstrumentId, orders: &[OrderAny]) 
     let strategy_id = StrategyId::from("S-001");
     let order_list = OrderList::new(
         OrderListId::from("OL-001"),
+        nautilus_model::enums::OrderListType::Standard,
         instrument_id,
         strategy_id,
         orders.iter().map(Order::client_order_id).collect(),

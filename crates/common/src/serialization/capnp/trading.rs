@@ -19,7 +19,7 @@ use nautilus_core::{Params, UUID4, UnixNanos};
 use nautilus_model::identifiers::{ClientId, InstrumentId, StrategyId, TraderId};
 use nautilus_serialization::{
     base_capnp,
-    capnp::{ToCapnp, order_side_to_capnp},
+    capnp::{ToCapnp, order_list_type_to_capnp, order_side_to_capnp},
     trading_capnp,
 };
 
@@ -331,6 +331,7 @@ impl<'a> ToCapnp<'a> for SubmitOrderList {
             let order_init_builder = order_inits_builder.reborrow().get(i as u32);
             order_init.to_capnp(order_init_builder);
         }
+        builder.set_order_list_type(order_list_type_to_capnp(self.order_list.order_list_type));
 
         if let Some(ref position_id) = self.position_id {
             let position_id_builder = builder.reborrow().init_position_id();
@@ -390,7 +391,7 @@ mod tests {
     use capnp::message::Builder;
     use nautilus_core::UnixNanos;
     use nautilus_model::{
-        enums::{OrderSide, OrderType},
+        enums::{OrderListType, OrderSide, OrderType},
         identifiers::{
             AccountId, ClientId, ClientOrderId, InstrumentId, OrderListId, StrategyId, TraderId,
         },
@@ -918,6 +919,7 @@ mod tests {
         let order_inits: Vec<_> = orders.iter().map(|o| o.init_event().clone()).collect();
         let order_list = OrderList::new(
             OrderListId::new("OL-001"),
+            OrderListType::Oco,
             InstrumentId::from("BTCUSDT.BINANCE"),
             order1.strategy_id(),
             vec![order1.client_order_id(), orders[1].client_order_id()],
@@ -951,6 +953,10 @@ mod tests {
         assert!(reader.has_header());
         assert!(reader.has_order_inits());
         assert_eq!(reader.get_order_inits().unwrap().len(), 2);
+        assert_eq!(
+            reader.get_order_list_type().unwrap(),
+            nautilus_serialization::enums_capnp::OrderListType::Oco
+        );
     }
 
     #[rstest]

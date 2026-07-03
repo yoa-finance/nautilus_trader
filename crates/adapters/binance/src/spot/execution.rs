@@ -48,7 +48,7 @@ use nautilus_core::{
 use nautilus_live::{ExecutionClientCore, ExecutionEventEmitter};
 use nautilus_model::{
     accounts::AccountAny,
-    enums::{LiquiditySide, OmsType, OrderSide, OrderType},
+    enums::{LiquiditySide, OmsType, OrderListType, OrderSide, OrderType},
     events::{
         AccountState, OrderAccepted, OrderCancelRejected, OrderCanceled, OrderEventAny,
         OrderFilled, OrderModifyRejected, OrderRejected, OrderUpdated,
@@ -115,9 +115,6 @@ use crate::{
     },
 };
 
-const OCO_CONTINGENCY_TYPE_PARAM: &str = "contingency_type";
-const OCO_CONTINGENCY_TYPE_VALUE: &str = "OCO";
-const OPOCO_CONTINGENCY_TYPE_VALUE: &str = "OPOCO";
 const ORDER_LIST_CANCEL_PARAM: &str = "order_list_cancel";
 const ORDER_LIST_CLIENT_ORDER_ID_PARAM: &str = "list_client_order_id";
 const ORDER_LIST_ID_PARAM: &str = "order_list_id";
@@ -1011,7 +1008,11 @@ impl ExecutionClient for BinanceSpotExecutionClient {
             }
         }
 
-        let params = match build_spot_order_list_params(cmd.params.as_ref(), &orders) {
+        let params = match build_spot_order_list_params(
+            cmd.order_list.order_list_type,
+            cmd.params.as_ref(),
+            &orders,
+        ) {
             Ok(params) => params,
             Err(err) => {
                 let reason = err.to_string();
@@ -2156,23 +2157,19 @@ impl BinanceSpotOrderListParams {
 }
 
 fn build_spot_order_list_params(
+    order_list_type: OrderListType,
     command_params: Option<&nautilus_core::params::Params>,
     orders: &[nautilus_model::orders::OrderAny],
 ) -> anyhow::Result<BinanceSpotOrderListParams> {
-    match order_list_contingency_type(command_params) {
-        Some(value) if value.eq_ignore_ascii_case(OCO_CONTINGENCY_TYPE_VALUE) => {
+    match order_list_type {
+        OrderListType::Oco => {
             build_oco_order_list_params(command_params, orders).map(BinanceSpotOrderListParams::Oco)
         }
-        Some(value) if value.eq_ignore_ascii_case(OPOCO_CONTINGENCY_TYPE_VALUE) => {
-            build_opoco_order_list_params(command_params, orders)
-                .map(BinanceSpotOrderListParams::Opoco)
+        OrderListType::Opoco => build_opoco_order_list_params(command_params, orders)
+            .map(BinanceSpotOrderListParams::Opoco),
+        OrderListType::Standard => {
+            anyhow::bail!("Binance Spot submit_order_list requires OCO or OPOCO order_list_type")
         }
-        Some(value) => anyhow::bail!(
-            "Binance Spot submit_order_list does not support params.{OCO_CONTINGENCY_TYPE_PARAM}={value}; supported values are OCO and OPOCO"
-        ),
-        None => anyhow::bail!(
-            "Binance Spot submit_order_list requires params.{OCO_CONTINGENCY_TYPE_PARAM}=OCO or OPOCO"
-        ),
     }
 }
 
@@ -2180,13 +2177,6 @@ fn build_oco_order_list_params(
     command_params: Option<&nautilus_core::params::Params>,
     orders: &[nautilus_model::orders::OrderAny],
 ) -> anyhow::Result<NewOrderListOcoParams> {
-    if !has_oco_contingency_param(command_params) {
-        anyhow::bail!(
-            "Binance Spot submit_order_list only supports params.{OCO_CONTINGENCY_TYPE_PARAM}=\
-             {OCO_CONTINGENCY_TYPE_VALUE}"
-        );
-    }
-
     if orders.len() != 2 {
         anyhow::bail!(
             "Binance Spot OCO order list requires exactly 2 child orders, received {}",
@@ -2324,13 +2314,6 @@ fn build_opoco_order_list_params(
     command_params: Option<&nautilus_core::params::Params>,
     orders: &[nautilus_model::orders::OrderAny],
 ) -> anyhow::Result<NewOrderListOpocoParams> {
-    if !has_opoco_contingency_param(command_params) {
-        anyhow::bail!(
-            "Binance Spot submit_order_list only supports params.{OCO_CONTINGENCY_TYPE_PARAM}=\
-             {OPOCO_CONTINGENCY_TYPE_VALUE} for native OPOCO"
-        );
-    }
-
     if orders.len() != 3 {
         anyhow::bail!(
             "Binance Spot OPOCO order list requires exactly 3 child orders, received {}",
@@ -2525,20 +2508,6 @@ fn build_opoco_order_list_params(
     }
 
     Ok(params)
-}
-
-fn has_oco_contingency_param(params: Option<&nautilus_core::params::Params>) -> bool {
-    order_list_contingency_type(params)
-        .is_some_and(|value| value.eq_ignore_ascii_case(OCO_CONTINGENCY_TYPE_VALUE))
-}
-
-fn has_opoco_contingency_param(params: Option<&nautilus_core::params::Params>) -> bool {
-    order_list_contingency_type(params)
-        .is_some_and(|value| value.eq_ignore_ascii_case(OPOCO_CONTINGENCY_TYPE_VALUE))
-}
-
-fn order_list_contingency_type(params: Option<&nautilus_core::params::Params>) -> Option<&str> {
-    params.and_then(|params| params.get_str(OCO_CONTINGENCY_TYPE_PARAM))
 }
 
 fn order_list_client_order_id(params: Option<&nautilus_core::params::Params>) -> Option<&str> {
@@ -3361,16 +3330,12 @@ mod tests {
     }
 
     #[rstest]
-    fn test_build_oco_order_list_params_rejects_missing_oco_param() {
+    fn test_build_oco_order_list_params_accepts_without_params() {
         let orders = sell_oco_orders("0.001", "0.001");
 
-        let error = build_oco_order_list_params(None, &orders).unwrap_err();
+        let request = build_oco_order_list_params(None, &orders).unwrap();
 
-        assert!(
-            error
-                .to_string()
-                .contains("only supports params.contingency_type=OCO")
-        );
+        assert_eq!(request.side, BinanceSide::Sell);
     }
 
     #[rstest]
@@ -3510,10 +3475,13 @@ mod tests {
             ),
         ];
 
-        let request = match build_spot_order_list_params(Some(&params), &orders).unwrap() {
-            BinanceSpotOrderListParams::Opoco(request) => request,
-            BinanceSpotOrderListParams::Oco(_) => panic!("expected OPOCO params"),
-        };
+        let request =
+            match build_spot_order_list_params(OrderListType::Opoco, Some(&params), &orders)
+                .unwrap()
+            {
+                BinanceSpotOrderListParams::Opoco(request) => request,
+                BinanceSpotOrderListParams::Oco(_) => panic!("expected OPOCO params"),
+            };
 
         assert_eq!(request.symbol, "BTCUSDT");
         assert_eq!(request.working_side, BinanceSide::Buy);
@@ -3606,20 +3574,16 @@ mod tests {
     }
 
     #[rstest]
-    fn test_build_spot_order_list_params_rejects_unknown_contingency_type() {
-        let mut params = Params::new();
-        params.insert(
-            OCO_CONTINGENCY_TYPE_PARAM.to_string(),
-            Value::String("OTOCO".to_string()),
-        );
+    fn test_build_spot_order_list_params_rejects_standard_order_list_type() {
         let orders = sell_oco_orders("0.001", "0.001");
 
-        let error = build_spot_order_list_params(Some(&params), &orders).unwrap_err();
+        let error =
+            build_spot_order_list_params(OrderListType::Standard, None, &orders).unwrap_err();
 
         assert!(
             error
                 .to_string()
-                .contains("supported values are OCO and OPOCO")
+                .contains("requires OCO or OPOCO order_list_type")
         );
     }
 
@@ -3956,21 +3920,11 @@ mod tests {
     }
 
     fn oco_order_list_params() -> Params {
-        let mut params = Params::new();
-        params.insert(
-            OCO_CONTINGENCY_TYPE_PARAM.to_string(),
-            Value::String(OCO_CONTINGENCY_TYPE_VALUE.to_string()),
-        );
-        params
+        Params::new()
     }
 
     fn opoco_order_list_params() -> Params {
-        let mut params = Params::new();
-        params.insert(
-            OCO_CONTINGENCY_TYPE_PARAM.to_string(),
-            Value::String(OPOCO_CONTINGENCY_TYPE_VALUE.to_string()),
-        );
-        params
+        Params::new()
     }
 
     fn sell_oco_orders(target_qty: &str, stop_qty: &str) -> Vec<OrderAny> {

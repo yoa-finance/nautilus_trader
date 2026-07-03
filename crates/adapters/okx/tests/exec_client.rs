@@ -1264,6 +1264,7 @@ fn test_submit_order_list_builds_individual_commands() {
 
     let order_list = OrderList::new(
         OrderListId::new("OL-001"),
+        nautilus_model::enums::OrderListType::Standard,
         instrument_id,
         strategy_id,
         vec![cid1, cid2, cid3],
@@ -1335,6 +1336,7 @@ fn test_submit_order_list_single_order() {
 
     let order_list = OrderList::new(
         OrderListId::new("OL-001"),
+        nautilus_model::enums::OrderListType::Standard,
         instrument_id,
         strategy_id,
         vec![cid],
@@ -2118,6 +2120,7 @@ async fn test_submit_order_list_denies_every_leg_when_any_clord_id_invalid() {
 
     let order_list = OrderList::new(
         OrderListId::new("OL-001"),
+        nautilus_model::enums::OrderListType::Standard,
         instrument_id,
         strategy_id,
         vec![cid_valid_a, cid_invalid, cid_valid_b],

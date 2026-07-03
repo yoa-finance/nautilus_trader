@@ -35,7 +35,7 @@ use nautilus_common::{
 };
 use nautilus_core::{Params, UUID4};
 use nautilus_model::{
-    enums::{OrderSide, OrderStatus, PositionSide, TimeInForce, TriggerType},
+    enums::{OrderListType, OrderSide, OrderStatus, PositionSide, TimeInForce, TriggerType},
     events::{
         OrderAccepted, OrderCancelRejected, OrderDenied, OrderEmulated, OrderEventAny,
         OrderExpired, OrderInitialized, OrderModifyRejected, OrderPendingCancel,
@@ -188,6 +188,7 @@ pub trait Strategy: DataActor {
     /// or order list submission fails.
     fn submit_order_list(
         &mut self,
+        order_list_type: OrderListType,
         mut orders: Vec<OrderAny>,
         position_id: Option<PositionId>,
         client_id: Option<ClientId>,
@@ -241,9 +242,10 @@ pub trait Strategy: DataActor {
 
         // TODO: Replace with fluent builder API for order list construction
         let order_list = if orders.first().is_some_and(|o| o.order_list_id().is_some()) {
-            OrderList::from_orders(&orders, ts_init)
+            OrderList::from_orders(order_list_type, &orders, ts_init)
         } else {
-            core.order_factory().create_list(&mut orders, ts_init)
+            core.order_factory()
+                .create_list(order_list_type, &mut orders, ts_init)
         };
 
         if let Err(e) = order_list.validate() {
@@ -2590,7 +2592,7 @@ mod tests {
         msgbus::subscribe_order_events(topic.clone().into(), event_handler.clone(), None);
 
         strategy
-            .submit_order_list(orders.clone(), None, None, None)
+            .submit_order_list(OrderListType::Standard, orders.clone(), None, None, None)
             .unwrap();
 
         msgbus::unsubscribe_order_events(topic.into(), &event_handler);
@@ -2664,7 +2666,7 @@ mod tests {
         msgbus::subscribe_order_events(topic.clone().into(), event_handler.clone(), None);
 
         strategy
-            .submit_order_list(orders.clone(), None, None, None)
+            .submit_order_list(OrderListType::Standard, orders.clone(), None, None, None)
             .unwrap();
 
         msgbus::unsubscribe_order_events(topic.into(), &event_handler);
@@ -2711,7 +2713,7 @@ mod tests {
             make_initialized_market_order("O-20250208-LIST-002"),
         ];
         strategy
-            .submit_order_list(no_params_orders, None, None, None)
+            .submit_order_list(OrderListType::Standard, no_params_orders, None, None, None)
             .unwrap();
 
         let mut params = Params::new();
@@ -2724,7 +2726,13 @@ mod tests {
             make_initialized_market_order("O-20250208-LIST-004"),
         ];
         strategy
-            .submit_order_list(param_orders, None, None, Some(params.clone()))
+            .submit_order_list(
+                OrderListType::Standard,
+                param_orders,
+                None,
+                None,
+                Some(params.clone()),
+            )
             .unwrap();
 
         let risk_messages = risk_messages.get_messages();
@@ -3960,7 +3968,8 @@ mod tests {
 
         let topic = format!("events.order.{}", orders[0].strategy_id());
         msgbus::subscribe_order_events(topic.clone().into(), event_handler.clone(), None);
-        let result = strategy.submit_order_list(orders.clone(), None, None, None);
+        let result =
+            strategy.submit_order_list(OrderListType::Standard, orders.clone(), None, None, None);
 
         msgbus::unsubscribe_order_events(topic.into(), &event_handler);
 
@@ -4015,7 +4024,8 @@ mod tests {
             get_typed_message_saving_handler(Some(Ustr::from("events.order.list_invalid")));
 
         msgbus::subscribe_order_events(topic.clone().into(), event_handler.clone(), None);
-        let result = strategy.submit_order_list(vec![order], None, None, None);
+        let result =
+            strategy.submit_order_list(OrderListType::Standard, vec![order], None, None, None);
 
         msgbus::unsubscribe_order_events(topic.into(), &event_handler);
 
@@ -4058,7 +4068,13 @@ mod tests {
             None,
         ));
 
-        let result = strategy.submit_order_list(vec![binance_order, bybit_order], None, None, None);
+        let result = strategy.submit_order_list(
+            OrderListType::Standard,
+            vec![binance_order, bybit_order],
+            None,
+            None,
+            None,
+        );
 
         let err = result.unwrap_err();
         let msg = err.to_string();

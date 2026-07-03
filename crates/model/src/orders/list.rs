@@ -23,6 +23,7 @@ use nautilus_core::UnixNanos;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    enums::OrderListType,
     identifiers::{ClientOrderId, InstrumentId, OrderListId, StrategyId},
     orders::{Order, OrderAny},
 };
@@ -48,6 +49,7 @@ use crate::{
 )]
 pub struct OrderList {
     pub id: OrderListId,
+    pub order_list_type: OrderListType,
     pub instrument_id: InstrumentId,
     pub strategy_id: StrategyId,
     pub client_order_ids: Vec<ClientOrderId>,
@@ -64,6 +66,7 @@ impl OrderList {
     #[must_use]
     pub fn new(
         order_list_id: OrderListId,
+        order_list_type: OrderListType,
         instrument_id: InstrumentId,
         strategy_id: StrategyId,
         client_order_ids: Vec<ClientOrderId>,
@@ -71,6 +74,7 @@ impl OrderList {
     ) -> Self {
         Self {
             id: order_list_id,
+            order_list_type,
             instrument_id,
             strategy_id,
             client_order_ids,
@@ -97,7 +101,11 @@ impl OrderList {
     /// filters out the empty case and bails on mixed venues before
     /// reaching this constructor.
     #[must_use]
-    pub fn from_orders(orders: &[OrderAny], ts_init: UnixNanos) -> Self {
+    pub fn from_orders(
+        order_list_type: OrderListType,
+        orders: &[OrderAny],
+        ts_init: UnixNanos,
+    ) -> Self {
         let first = orders
             .first()
             .expect("OrderList::from_orders requires non-empty orders");
@@ -122,6 +130,7 @@ impl OrderList {
 
         Self {
             id: order_list_id,
+            order_list_type,
             instrument_id,
             strategy_id,
             client_order_ids,
@@ -183,12 +192,18 @@ impl Display for OrderList {
             f,
             "OrderList(\
             id={}, \
+            order_list_type={}, \
             instrument_id={}, \
             strategy_id={}, \
             client_order_ids={:?}, \
             ts_init={}\
             )",
-            self.id, self.instrument_id, self.strategy_id, self.client_order_ids, self.ts_init,
+            self.id,
+            self.order_list_type,
+            self.instrument_id,
+            self.strategy_id,
+            self.client_order_ids,
+            self.ts_init,
         )
     }
 }
@@ -232,6 +247,7 @@ mod tests {
 
         let order_list = OrderList::new(
             OrderListId::from("OL-001"),
+            OrderListType::Standard,
             InstrumentId::from("AUD/USD.SIM"),
             StrategyId::from("S-001"),
             orders,
@@ -239,7 +255,7 @@ mod tests {
         );
 
         assert!(order_list.to_string().starts_with(
-            "OrderList(id=OL-001, instrument_id=AUD/USD.SIM, strategy_id=S-001, client_order_ids="
+            "OrderList(id=OL-001, order_list_type=STANDARD, instrument_id=AUD/USD.SIM, strategy_id=S-001, client_order_ids="
         ));
     }
 
@@ -266,7 +282,8 @@ mod tests {
         let order_list_id = OrderListId::from("OL-MIXED-001");
         let orders = create_orders_for_instrument(&["AUD/USD.SIM", "EUR/USD.SIM"], order_list_id);
 
-        let order_list = OrderList::from_orders(&orders, UnixNanos::default());
+        let order_list =
+            OrderList::from_orders(OrderListType::Standard, &orders, UnixNanos::default());
 
         assert_eq!(order_list.len(), 2);
         assert_eq!(order_list.instrument_id, InstrumentId::from("AUD/USD.SIM"));
@@ -279,7 +296,7 @@ mod tests {
         let orders =
             create_orders_for_instrument(&["AUD/USD.SIM", "EUR/USD.IDEALPRO"], order_list_id);
 
-        let _ = OrderList::from_orders(&orders, UnixNanos::default());
+        let _ = OrderList::from_orders(OrderListType::Standard, &orders, UnixNanos::default());
     }
 
     #[rstest]
@@ -287,7 +304,8 @@ mod tests {
         let order_list_id = OrderListId::from("OL-002");
         let orders = create_orders(3, order_list_id);
 
-        let order_list = OrderList::from_orders(&orders, UnixNanos::default());
+        let order_list =
+            OrderList::from_orders(OrderListType::Standard, &orders, UnixNanos::default());
 
         assert_eq!(order_list.id, order_list_id);
         assert_eq!(order_list.len(), 3);
@@ -301,6 +319,7 @@ mod tests {
 
         let order_list1 = OrderList::new(
             OrderListId::from("OL-006"),
+            OrderListType::Standard,
             InstrumentId::from("AUD/USD.SIM"),
             StrategyId::from("S-001"),
             orders.clone(),
@@ -309,6 +328,7 @@ mod tests {
 
         let order_list2 = OrderList::new(
             OrderListId::from("OL-006"),
+            OrderListType::Standard,
             InstrumentId::from("AUD/USD.SIM"),
             StrategyId::from("S-001"),
             orders,
@@ -324,6 +344,7 @@ mod tests {
 
         let order_list1 = OrderList::new(
             OrderListId::from("OL-007"),
+            OrderListType::Standard,
             InstrumentId::from("AUD/USD.SIM"),
             StrategyId::from("S-001"),
             orders.clone(),
@@ -332,6 +353,7 @@ mod tests {
 
         let order_list2 = OrderList::new(
             OrderListId::from("OL-008"),
+            OrderListType::Standard,
             InstrumentId::from("AUD/USD.SIM"),
             StrategyId::from("S-001"),
             orders,
@@ -348,6 +370,7 @@ mod tests {
 
         let order_list = OrderList::new(
             OrderListId::from("OL-009"),
+            OrderListType::Standard,
             InstrumentId::from("AUD/USD.SIM"),
             StrategyId::from("S-001"),
             orders,
@@ -365,6 +388,7 @@ mod tests {
 
         let order_list = OrderList::new(
             OrderListId::from("OL-010"),
+            OrderListType::Standard,
             InstrumentId::from("AUD/USD.SIM"),
             StrategyId::from("S-001"),
             orders,
@@ -381,6 +405,7 @@ mod tests {
 
         let order_list1 = OrderList::new(
             OrderListId::from("OL-011"),
+            OrderListType::Standard,
             InstrumentId::from("AUD/USD.SIM"),
             StrategyId::from("S-001"),
             orders.clone(),
@@ -389,6 +414,7 @@ mod tests {
 
         let order_list2 = OrderList::new(
             OrderListId::from("OL-011"),
+            OrderListType::Standard,
             InstrumentId::from("AUD/USD.SIM"),
             StrategyId::from("S-001"),
             orders,
@@ -408,6 +434,7 @@ mod tests {
         let orders = create_client_order_ids(3);
         let order_list = OrderList::new(
             OrderListId::from("OL-VALID-001"),
+            OrderListType::Standard,
             InstrumentId::from("AUD/USD.SIM"),
             StrategyId::from("S-001"),
             orders,
@@ -422,6 +449,7 @@ mod tests {
     fn test_validate_rejects_empty_list() {
         let order_list = OrderList::new(
             OrderListId::from("OL-EMPTY-001"),
+            OrderListType::Standard,
             InstrumentId::from("AUD/USD.SIM"),
             StrategyId::from("S-001"),
             Vec::new(),
@@ -439,6 +467,7 @@ mod tests {
         let id = ClientOrderId::from("O-001");
         let order_list = OrderList::new(
             OrderListId::from("OL-DUP-001"),
+            OrderListType::Standard,
             InstrumentId::from("AUD/USD.SIM"),
             StrategyId::from("S-001"),
             vec![id, id],

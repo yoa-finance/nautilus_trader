@@ -2175,6 +2175,7 @@ async fn test_submit_order_list_delegates_per_order() {
 
     let order_list = OrderList::new(
         OrderListId::from("OL-1"),
+        nautilus_model::enums::OrderListType::Standard,
         instrument_id,
         StrategyId::from("S-1"),
         vec![order_a.client_order_id(), order_b.client_order_id()],

@@ -179,6 +179,7 @@ fn submit_order_list_rejects_all_orders_when_client_not_ready() {
     let order2 = create_test_limit_order(ClientOrderId::from("O-IB-002"));
     let order_list = OrderList::new(
         OrderListId::from("OL-IB-001"),
+        nautilus_model::enums::OrderListType::Standard,
         order1.instrument_id(),
         order1.strategy_id(),
         vec![order1.client_order_id(), order2.client_order_id()],
