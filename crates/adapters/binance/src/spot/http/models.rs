@@ -28,8 +28,11 @@ use rust_decimal::Decimal;
 use serde::Deserialize;
 
 use crate::{
-    common::enums::{
-        BinanceOrderStatus, BinanceSelfTradePreventionMode, BinanceSide, BinanceTimeInForce,
+    common::{
+        enums::{
+            BinanceOrderStatus, BinanceSelfTradePreventionMode, BinanceSide, BinanceTimeInForce,
+        },
+        time::unix_nanos_from_micros,
     },
     spot::sbe::spot::{
         order_side::OrderSide, order_status::OrderStatus, order_type::OrderType,
@@ -434,8 +437,15 @@ pub struct BinanceAccountInfo {
 
 impl BinanceAccountInfo {
     /// Converts this Binance account info to a Nautilus [`AccountState`].
-    #[must_use]
-    pub fn to_account_state(&self, account_id: AccountId, ts_init: UnixNanos) -> AccountState {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the account update timestamp cannot be represented as nanoseconds.
+    pub fn to_account_state(
+        &self,
+        account_id: AccountId,
+        ts_init: UnixNanos,
+    ) -> anyhow::Result<AccountState> {
         let mut balances = Vec::with_capacity(self.balances.len());
 
         for asset in &self.balances {
@@ -463,9 +473,13 @@ impl BinanceAccountInfo {
             balances.push(zero_balance);
         }
 
-        let ts_event = UnixNanos::from_micros(self.update_time as u64);
+        let ts_event = unix_nanos_from_micros(
+            self.update_time,
+            "account.update_time",
+            "spot_sbe_account_response",
+        )?;
 
-        AccountState::new(
+        Ok(AccountState::new(
             account_id,
             AccountType::Cash,
             balances,
@@ -475,7 +489,7 @@ impl BinanceAccountInfo {
             ts_event,
             ts_init,
             None, // No base currency for spot
-        )
+        ))
     }
 }
 
@@ -906,6 +920,38 @@ mod tests {
         assert_eq!(response.symbol, "BTCUSDT");
         assert_eq!(response.maker_commission, "0.001");
         assert_eq!(response.taker_commission, "0.001");
+    }
+
+    #[rstest]
+    fn test_account_info_to_account_state_rejects_invalid_update_time() {
+        let account = BinanceAccountInfo {
+            commission_exponent: -8,
+            maker_commission_mantissa: 0,
+            taker_commission_mantissa: 0,
+            buyer_commission_mantissa: 0,
+            seller_commission_mantissa: 0,
+            can_trade: true,
+            can_withdraw: true,
+            can_deposit: true,
+            require_self_trade_prevention: false,
+            prevent_sor: false,
+            update_time: 1_783_095_241_795_039_412,
+            account_type: "SPOT".to_string(),
+            balances: vec![],
+        };
+
+        let error = account
+            .to_account_state(
+                AccountId::from("BINANCE-SPOT-001"),
+                UnixNanos::from(1_700_000_000_000_000_000u64),
+            )
+            .unwrap_err();
+        let message = error.to_string();
+
+        assert!(message.contains("context=spot_sbe_account_response"));
+        assert!(message.contains("field=account.update_time"));
+        assert!(message.contains("unit=microseconds"));
+        assert!(message.contains("raw_value=1783095241795039412"));
     }
 
     #[rstest]

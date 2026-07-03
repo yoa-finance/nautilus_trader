@@ -94,6 +94,7 @@ use crate::{
             parse_required_decimal, parse_required_price_at_precision,
             parse_required_quantity_at_precision,
         },
+        time::{unix_nanos_from_micros, unix_nanos_from_millis},
     },
     config::BinanceExecClientConfig,
     spot::{
@@ -301,46 +302,67 @@ impl BinanceSpotExecutionClient {
             let response = match result {
                 Ok(Ok(response)) => response,
                 Ok(Err(e)) => {
-                    let due_post_only = e
-                        .downcast_ref::<BinanceSpotHttpError>()
-                        .is_some_and(is_spot_post_only_rejection);
                     let reason = format!("submit-order-error: {e}");
-                    dispatch_state.cleanup_terminal(client_order_id);
-                    let rejected = OrderRejected::new(
-                        trader_id,
-                        strategy_id,
+                    if is_definite_submit_failure(&e) {
+                        let due_post_only = e
+                            .downcast_ref::<BinanceSpotHttpError>()
+                            .is_some_and(is_spot_post_only_rejection);
+                        dispatch_state.cleanup_terminal(client_order_id);
+                        let rejected = OrderRejected::new(
+                            trader_id,
+                            strategy_id,
+                            instrument_id,
+                            client_order_id,
+                            account_id,
+                            reason.into(),
+                            UUID4::new(),
+                            ts_init,
+                            clock.get_time_ns(),
+                            false,
+                            due_post_only,
+                        );
+                        event_emitter.send_order_event(OrderEventAny::Rejected(rejected));
+                        return Err(e);
+                    }
+
+                    if reconcile_ambiguous_submit(
+                        &http_client,
+                        &event_emitter,
+                        &dispatch_state,
+                        &seen_trade_ids,
+                        account_id,
                         instrument_id,
                         client_order_id,
-                        account_id,
-                        reason.into(),
-                        UUID4::new(),
+                        strategy_id,
                         ts_init,
-                        clock.get_time_ns(),
-                        false,
-                        due_post_only,
-                    );
-                    event_emitter.send_order_event(OrderEventAny::Rejected(rejected));
+                        &reason,
+                    )
+                    .await
+                    {
+                        return Ok(());
+                    }
                     return Err(e);
                 }
                 Err(_) => {
                     let reason = format!(
                         "submit-order-ack-timeout: no venue ack within {BINANCE_SPOT_SUBMIT_ACK_TIMEOUT_MS}ms"
                     );
-                    dispatch_state.cleanup_terminal(client_order_id);
-                    let rejected = OrderRejected::new(
-                        trader_id,
-                        strategy_id,
+                    if reconcile_ambiguous_submit(
+                        &http_client,
+                        &event_emitter,
+                        &dispatch_state,
+                        &seen_trade_ids,
+                        account_id,
                         instrument_id,
                         client_order_id,
-                        account_id,
-                        reason.clone().into(),
-                        UUID4::new(),
+                        strategy_id,
                         ts_init,
-                        clock.get_time_ns(),
-                        false,
-                        false,
-                    );
-                    event_emitter.send_order_event(OrderEventAny::Rejected(rejected));
+                        &reason,
+                    )
+                    .await
+                    {
+                        return Ok(());
+                    }
                     anyhow::bail!("{reason}");
                 }
             };
@@ -1072,7 +1094,13 @@ impl ExecutionClient for BinanceSpotExecutionClient {
 
                         let ts_event = acceptance
                             .transact_time
-                            .map(|millis| UnixNanos::from_millis(millis as u64))
+                            .and_then(|millis| {
+                                checked_unix_nanos_from_millis(
+                                    millis,
+                                    "acceptance.transact_time",
+                                    "spot_http_order_list_acceptance",
+                                )
+                            })
                             .unwrap_or_else(|| clock.get_time_ns());
                         if dispatch_state
                             .insert_accepted(acceptance.client_order_id, acceptance.venue_order_id)
@@ -1717,8 +1745,10 @@ fn dispatch_ws_trading_message(
         }
         BinanceSpotWsTradingMessage::AccountPosition(position) => {
             let ts_init = clock.get_time_ns();
-            let state = parse_spot_account_position(&position, account_id, ts_init);
-            emitter.send_account_state(state);
+            match parse_spot_account_position(&position, account_id, ts_init) {
+                Ok(state) => emitter.send_account_state(state),
+                Err(e) => log::error!("Failed to parse account position: {e}"),
+            }
         }
         BinanceSpotWsTradingMessage::BalanceUpdate(update) => {
             log::info!(
@@ -1954,41 +1984,91 @@ fn dispatch_http_order_list_cancel_result(
 }
 
 fn checked_unix_nanos_from_micros(value: i64, field: &str, context: &str) -> Option<UnixNanos> {
-    if value < 0 {
-        log::warn!(
-            "binance_timestamp_fallback context={context} field={field} value={value} reason=negative_microseconds"
-        );
-        return None;
-    }
-
-    let value = value as u64;
-    if value > u64::MAX / 1_000 {
-        log::warn!(
-            "binance_timestamp_fallback context={context} field={field} value={value} reason=unix_nanos_overflow"
-        );
-        return None;
-    }
-
-    Some(UnixNanos::from_micros(value))
+    unix_nanos_from_micros(value, field, context)
+        .inspect_err(|e| log::warn!("binance_timestamp_fallback {e}"))
+        .ok()
 }
 
 fn checked_unix_nanos_from_millis(value: i64, field: &str, context: &str) -> Option<UnixNanos> {
-    if value < 0 {
-        log::warn!(
-            "binance_timestamp_fallback context={context} field={field} value={value} reason=negative_milliseconds"
+    unix_nanos_from_millis(value, field, context)
+        .inspect_err(|e| log::warn!("binance_timestamp_fallback {e}"))
+        .ok()
+}
+
+#[expect(clippy::too_many_arguments)]
+async fn reconcile_ambiguous_submit(
+    http_client: &BinanceSpotHttpClient,
+    event_emitter: &ExecutionEventEmitter,
+    dispatch_state: &WsDispatchState,
+    seen_trade_ids: &Arc<Mutex<FifoCache<(Ustr, i64), 10_000>>>,
+    account_id: AccountId,
+    instrument_id: InstrumentId,
+    client_order_id: ClientOrderId,
+    strategy_id: StrategyId,
+    ts_init: UnixNanos,
+    reason: &str,
+) -> bool {
+    log::error!(
+        "Ambiguous submit failure for {client_order_id}, attempting order status reconciliation: {reason}"
+    );
+
+    let report = match http_client
+        .request_order_status_report(account_id, instrument_id, None, Some(client_order_id))
+        .await
+    {
+        Ok(Some(report)) => report,
+        Ok(None) => {
+            log::warn!(
+                "Ambiguous submit reconciliation found no venue order for {client_order_id}; leaving order pending for recovery"
+            );
+            return false;
+        }
+        Err(err) => {
+            log::error!(
+                "Ambiguous submit reconciliation failed for {client_order_id}; leaving order pending for recovery: {err}"
+            );
+            return false;
+        }
+    };
+
+    let venue_order_id = report.venue_order_id;
+    if dispatch_state.insert_accepted(client_order_id, venue_order_id) {
+        let accepted = OrderAccepted::new(
+            event_emitter.trader_id(),
+            strategy_id,
+            instrument_id,
+            client_order_id,
+            venue_order_id,
+            account_id,
+            UUID4::new(),
+            report.ts_accepted,
+            ts_init,
+            false,
         );
-        return None;
+        event_emitter.send_order_event(OrderEventAny::Accepted(accepted));
     }
 
-    let value = value as u64;
-    if value > u64::MAX / 1_000_000 {
-        log::warn!(
-            "binance_timestamp_fallback context={context} field={field} value={value} reason=unix_nanos_overflow"
-        );
-        return None;
-    }
-
-    Some(UnixNanos::from_millis(value))
+    let fills = match http_client
+        .request_fill_reports(
+            account_id,
+            instrument_id,
+            Some(venue_order_id),
+            None,
+            None,
+            None,
+        )
+        .await
+    {
+        Ok(fills) => retain_unseen_fill_reports(&report, fills, seen_trade_ids),
+        Err(err) => {
+            log::warn!(
+                "Ambiguous submit fill reconciliation failed for {client_order_id}; emitting status without fills: {err}"
+            );
+            Vec::new()
+        }
+    };
+    event_emitter.send_order_with_fills(report, fills);
+    true
 }
 
 fn cancel_all_terminal_symbol(
@@ -2054,8 +2134,13 @@ fn dispatch_list_status(
         list_status.orders.len(),
     );
 
-    let ts_event = UnixNanos::from_millis(list_status.event_time as u64);
     let ts_init = clock.get_time_ns();
+    let ts_event = checked_unix_nanos_from_millis(
+        list_status.event_time,
+        "list_status.event_time",
+        "spot_json_list_status",
+    )
+    .unwrap_or(ts_init);
     let is_rejected = list_status.list_order_status == ListOrderStatus::Reject
         || !list_status.reject_reason.is_empty();
     let reject_reason = if list_status.reject_reason.is_empty() {
@@ -2681,7 +2766,12 @@ fn dispatch_tracked_execution_report(
     ts_init: UnixNanos,
 ) {
     let venue_order_id = VenueOrderId::new(report.order_id.to_string());
-    let ts_event = UnixNanos::from_millis(report.event_time as u64);
+    let ts_event = checked_unix_nanos_from_millis(
+        report.event_time,
+        "execution_report.event_time",
+        "spot_json_execution_report_dispatch",
+    )
+    .unwrap_or(ts_init);
 
     match report.execution_type {
         BinanceSpotExecutionType::New => {
@@ -3149,6 +3239,10 @@ fn is_spot_post_only_rejection(error: &BinanceSpotHttpError) -> bool {
 fn is_structured_venue_rejection(err: &anyhow::Error) -> bool {
     err.downcast_ref::<BinanceSpotHttpError>()
         .is_some_and(|be| matches!(be, BinanceSpotHttpError::BinanceError { .. }))
+}
+
+fn is_definite_submit_failure(err: &anyhow::Error) -> bool {
+    is_structured_venue_rejection(err) || is_local_command_failure(err)
 }
 
 fn is_local_command_failure(err: &anyhow::Error) -> bool {
@@ -4580,6 +4674,38 @@ mod tests {
         #[case] expected: bool,
     ) {
         assert_eq!(is_spot_post_only_rejection(&error), expected);
+    }
+
+    #[rstest]
+    #[case::venue_rejection(
+        anyhow::anyhow!(BinanceSpotHttpError::BinanceError {
+            code: -2010,
+            message: "Account has insufficient balance".to_string(),
+        }),
+        true,
+    )]
+    #[case::local_validation(
+        anyhow::anyhow!(BinanceSpotHttpError::ValidationError("invalid order".to_string())),
+        true,
+    )]
+    #[case::response_parse_error(
+        anyhow::anyhow!(BinanceSpotHttpError::ResponseParseError(
+            "invalid Binance timestamp context=spot_sbe_new_order_response field=response.transact_time unit=microseconds raw_value=1783095241795039412 reason=unix_nanos_overflow".to_string(),
+        )),
+        false,
+    )]
+    #[case::sbe_decode_error(
+        anyhow::anyhow!(BinanceSpotHttpError::SbeDecodeError(
+            crate::spot::sbe::SbeDecodeError::UnknownTemplateId(999),
+        )),
+        false,
+    )]
+    #[case::network_error(
+        anyhow::anyhow!(BinanceSpotHttpError::NetworkError("connection reset".to_string())),
+        false,
+    )]
+    fn test_is_definite_submit_failure(#[case] error: anyhow::Error, #[case] expected: bool) {
+        assert_eq!(is_definite_submit_failure(&error), expected);
     }
 
     #[rstest]

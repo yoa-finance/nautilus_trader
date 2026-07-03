@@ -529,6 +529,7 @@ impl BinanceRawSpotHttpClient {
         let mut headers = HashMap::new();
         headers.insert("User-Agent".to_string(), NAUTILUS_USER_AGENT.to_string());
         headers.insert("Accept".to_string(), "application/json".to_string());
+        headers.insert("X-MBX-TIME-UNIT".to_string(), "MILLISECOND".to_string());
 
         if let Some(cred) = credential {
             headers.insert(
@@ -1781,7 +1782,7 @@ impl BinanceSpotHttpClient {
         let ts_init = self.clock.get_time_ns();
         let params = AccountInfoParams::default();
         let account_info = self.inner.account(&params).await?;
-        Ok(account_info.to_account_state(account_id, ts_init))
+        account_info.to_account_state(account_id, ts_init)
     }
 
     /// Requests the status of a specific order.

@@ -343,9 +343,13 @@ impl BinanceSpotDataClient {
                 let symbol = Ustr::from(&event.symbol);
                 let cache = ws_instruments.load();
                 if let Some(instrument) = cache.get(&symbol) {
-                    let trades = parse_trades_event(event, instrument);
-                    for data in trades {
-                        Self::send_data(data_sender, data);
+                    match parse_trades_event(event, instrument) {
+                        Ok(trades) => {
+                            for data in trades {
+                                Self::send_data(data_sender, data);
+                            }
+                        }
+                        Err(e) => log::warn!("Failed to parse Spot SBE trades: {e}"),
                     }
                 }
             }
@@ -353,35 +357,46 @@ impl BinanceSpotDataClient {
                 let symbol = Ustr::from(&event.symbol);
                 let cache = ws_instruments.load();
                 if let Some(instrument) = cache.get(&symbol) {
-                    let quote = parse_bbo_event(event, instrument);
-                    Self::send_data(data_sender, Data::from(quote));
+                    match parse_bbo_event(event, instrument) {
+                        Ok(quote) => Self::send_data(data_sender, Data::from(quote)),
+                        Err(e) => log::warn!("Failed to parse Spot SBE best bid/ask: {e}"),
+                    }
                 }
             }
             BinanceSpotWsMessage::DepthSnapshot(ref event) => {
                 let symbol = Ustr::from(&event.symbol);
                 let cache = ws_instruments.load();
-                if let Some(instrument) = cache.get(&symbol)
-                    && let Some(deltas) = parse_depth_snapshot(event, instrument)
-                {
-                    Self::send_data(data_sender, Data::Deltas(OrderBookDeltas_API::new(deltas)));
+                if let Some(instrument) = cache.get(&symbol) {
+                    match parse_depth_snapshot(event, instrument) {
+                        Ok(Some(deltas)) => Self::send_data(
+                            data_sender,
+                            Data::Deltas(OrderBookDeltas_API::new(deltas)),
+                        ),
+                        Ok(None) => {}
+                        Err(e) => log::warn!("Failed to parse Spot SBE depth snapshot: {e}"),
+                    }
                 }
             }
             BinanceSpotWsMessage::DepthDiff(ref event) => {
                 let symbol = Ustr::from(&event.symbol);
                 let cache = ws_instruments.load();
-                if let Some(instrument) = cache.get(&symbol)
-                    && let Some(deltas) = parse_depth_diff(event, instrument)
-                {
-                    let first_update_id = event.first_book_update_id as u64;
-                    let final_update_id = event.last_book_update_id as u64;
+                if let Some(instrument) = cache.get(&symbol) {
+                    match parse_depth_diff(event, instrument) {
+                        Ok(Some(deltas)) => {
+                            let first_update_id = event.first_book_update_id as u64;
+                            let final_update_id = event.last_book_update_id as u64;
 
-                    Self::route_depth_diff(
-                        data_sender,
-                        book_buffers,
-                        deltas,
-                        first_update_id,
-                        final_update_id,
-                    );
+                            Self::route_depth_diff(
+                                data_sender,
+                                book_buffers,
+                                deltas,
+                                first_update_id,
+                                final_update_id,
+                            );
+                        }
+                        Ok(None) => {}
+                        Err(e) => log::warn!("Failed to parse Spot SBE depth diff: {e}"),
+                    }
                 }
             }
             BinanceSpotWsMessage::ServerShutdown(ref msg) => {
