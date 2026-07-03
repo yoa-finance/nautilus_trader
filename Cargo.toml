@@ -75,11 +75,11 @@ nautilus-common = { package = "stratneo-nautilus-common", path = "crates/common"
 nautilus-core = { package = "stratneo-nautilus-core", path = "crates/core", version = "0.58.0" }
 nautilus-cryptography = { package = "stratneo-nautilus-cryptography", path = "crates/cryptography", version = "0.58.0" }
 nautilus-data = { package = "stratneo-nautilus-data", path = "crates/data", version = "0.58.0" }
-nautilus-execution = { package = "stratneo-nautilus-execution", path = "crates/execution", version = "0.58.2" }
+nautilus-execution = { package = "stratneo-nautilus-execution", path = "crates/execution", version = "0.58.3" }
 nautilus-indicators = { package = "stratneo-nautilus-indicators", path = "crates/indicators", version = "0.58.0" }
 nautilus-infrastructure = { path = "crates/infrastructure", version = "0.58.0" }
 nautilus-live = { package = "stratneo-nautilus-live", path = "crates/live", version = "0.58.2", default-features = false }
-nautilus-model = { package = "stratneo-nautilus-model", path = "crates/model", version = "0.58.1" }
+nautilus-model = { package = "stratneo-nautilus-model", path = "crates/model", version = "0.58.2" }
 nautilus-network = { package = "stratneo-nautilus-network", path = "crates/network", version = "0.58.0" }
 nautilus-persistence = { package = "stratneo-nautilus-persistence", path = "crates/persistence", version = "0.58.0" }
 nautilus-persistence-macros = { package = "stratneo-nautilus-persistence-macros", path = "crates/persistence/macros", version = "0.58.0" }
@@ -90,7 +90,7 @@ nautilus-risk = { package = "stratneo-nautilus-risk", path = "crates/risk", vers
 nautilus-serialization = { package = "stratneo-nautilus-serialization", path = "crates/serialization", version = "0.58.1" }
 nautilus-system = { package = "stratneo-nautilus-system", path = "crates/system", version = "0.58.2" }
 nautilus-testkit = { path = "crates/testkit", version = "0.58.0" }
-nautilus-trading = { package = "stratneo-nautilus-trading", path = "crates/trading", version = "0.58.1" }
+nautilus-trading = { package = "stratneo-nautilus-trading", path = "crates/trading", version = "0.58.2" }
 
 # -----------------------------------------------------------------------------
 # Adapters
@@ -99,7 +99,7 @@ nautilus-trading = { package = "stratneo-nautilus-trading", path = "crates/tradi
 # -----------------------------------------------------------------------------
 nautilus-architect-ax = { path = "crates/adapters/architect_ax", version = "0.58.0" }
 nautilus-betfair = { path = "crates/adapters/betfair", version = "0.58.0", default-features = false }
-nautilus-binance = { package = "stratneo-nautilus-binance", path = "crates/adapters/binance", version = "0.59.4-stratneo.6", default-features = false }
+nautilus-binance = { package = "stratneo-nautilus-binance", path = "crates/adapters/binance", version = "0.59.4-stratneo.7", default-features = false }
 nautilus-bitmex = { path = "crates/adapters/bitmex", version = "0.58.0", default-features = false }
 nautilus-blockchain = { path = "crates/adapters/blockchain", version = "0.58.0" }
 nautilus-bybit = { path = "crates/adapters/bybit", version = "0.58.0", default-features = false }

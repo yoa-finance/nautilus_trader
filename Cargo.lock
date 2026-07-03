@@ -8877,7 +8877,7 @@ dependencies = [
 
 [[package]]
 name = "stratneo-nautilus-binance"
-version = "0.59.4-stratneo.6"
+version = "0.59.4-stratneo.7"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
@@ -9055,7 +9055,7 @@ dependencies = [
 
 [[package]]
 name = "stratneo-nautilus-execution"
-version = "0.58.2"
+version = "0.58.3"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
@@ -9137,7 +9137,7 @@ dependencies = [
 
 [[package]]
 name = "stratneo-nautilus-model"
-version = "0.58.1"
+version = "0.58.2"
 dependencies = [
  "ahash 0.8.12",
  "alloy-primitives",
@@ -9393,7 +9393,7 @@ dependencies = [
 
 [[package]]
 name = "stratneo-nautilus-trading"
-version = "0.58.1"
+version = "0.58.2"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
