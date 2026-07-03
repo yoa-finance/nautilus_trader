@@ -86,7 +86,7 @@ use crate::{
         credential::resolve_credentials,
         dispatch::{
             OrderIdentity, PendingOperation, PendingRequest, WsDispatchState,
-            ensure_accepted_emitted,
+            emit_order_accepted_once, ensure_accepted_emitted,
         },
         encoder::{decode_broker_id, encode_binance_client_order_id},
         enums::{BinanceSide, BinanceTimeInForce},
@@ -345,21 +345,22 @@ impl BinanceSpotExecutionClient {
                 }
             };
 
-            dispatch_state.insert_accepted(client_order_id);
             let report = response.status;
-            let accepted = OrderAccepted::new(
-                trader_id,
-                strategy_id,
-                instrument_id,
-                client_order_id,
-                report.venue_order_id,
-                account_id,
-                UUID4::new(),
-                ts_init,
-                ts_init,
-                false,
-            );
-            event_emitter.send_order_event(OrderEventAny::Accepted(accepted));
+            if dispatch_state.insert_accepted(client_order_id, report.venue_order_id) {
+                let accepted = OrderAccepted::new(
+                    trader_id,
+                    strategy_id,
+                    instrument_id,
+                    client_order_id,
+                    report.venue_order_id,
+                    account_id,
+                    UUID4::new(),
+                    ts_init,
+                    ts_init,
+                    false,
+                );
+                event_emitter.send_order_event(OrderEventAny::Accepted(accepted));
+            }
             let fills = retain_unseen_fill_reports(&report, response.fills, &seen_trade_ids);
             event_emitter.send_order_with_fills(report, fills);
             Ok(())
@@ -1073,12 +1074,15 @@ impl ExecutionClient for BinanceSpotExecutionClient {
                             .transact_time
                             .map(|millis| UnixNanos::from_millis(millis as u64))
                             .unwrap_or_else(|| clock.get_time_ns());
-                        event_emitter.emit_order_accepted(
-                            order,
-                            acceptance.venue_order_id,
-                            ts_event,
-                        );
-                        dispatch_state.insert_accepted(acceptance.client_order_id);
+                        if dispatch_state
+                            .insert_accepted(acceptance.client_order_id, acceptance.venue_order_id)
+                        {
+                            event_emitter.emit_order_accepted(
+                                order,
+                                acceptance.venue_order_id,
+                                ts_event,
+                            );
+                        }
                     }
                 }
                 Err(err) => {
@@ -2095,25 +2099,17 @@ fn dispatch_list_status(
             continue;
         }
 
-        if dispatch_state.has_emitted_accepted(&client_order_id) {
-            continue;
-        }
-
         let venue_order_id = VenueOrderId::new(child.order_id.to_string());
-        dispatch_state.insert_accepted(client_order_id);
-        let accepted = OrderAccepted::new(
-            emitter.trader_id(),
-            identity.strategy_id,
-            identity.instrument_id,
+        emit_order_accepted_once(
             client_order_id,
-            venue_order_id,
             account_id,
-            UUID4::new(),
+            venue_order_id,
+            &identity,
+            emitter,
+            dispatch_state,
             ts_event,
             ts_init,
-            false,
         );
-        emitter.send_order_event(OrderEventAny::Accepted(accepted));
     }
 }
 
@@ -2735,20 +2731,16 @@ fn dispatch_tracked_execution_report(
                 emitter.send_order_event(OrderEventAny::Updated(updated));
                 return;
             }
-            state.insert_accepted(client_order_id);
-            let accepted = OrderAccepted::new(
-                emitter.trader_id(),
-                identity.strategy_id,
-                identity.instrument_id,
+            emit_order_accepted_once(
                 client_order_id,
-                venue_order_id,
                 account_id,
-                UUID4::new(),
+                venue_order_id,
+                identity,
+                emitter,
+                state,
                 ts_event,
                 ts_init,
-                false,
             );
-            emitter.send_order_event(OrderEventAny::Accepted(accepted));
         }
         BinanceSpotExecutionType::Trade => {
             let dedup_key = (report.symbol, report.trade_id);
@@ -3647,7 +3639,7 @@ mod tests {
         let client_order_id = ClientOrderId::from("TARGET");
         let dispatch_state =
             create_tracked_dispatch_state(client_order_id, InstrumentId::from("BTCUSDT.BINANCE"));
-        dispatch_state.insert_accepted(client_order_id);
+        dispatch_state.insert_accepted(client_order_id, VenueOrderId::from("TARGET-VENUE"));
         dispatch_state.pending_requests.insert(
             "req-cancel-all".to_string(),
             PendingRequest {
@@ -4082,6 +4074,32 @@ mod tests {
         .expect("valid executionReport NEW fixture")
     }
 
+    fn oco_list_status_exec_started(
+        client_order_id: ClientOrderId,
+        venue_order_id: i64,
+    ) -> BinanceSpotListStatusMsg {
+        BinanceSpotListStatusMsg {
+            event_time: 1_709_654_400_123,
+            transact_time: 1_709_654_400_124,
+            order_list_id: 42,
+            contingency_type: ContingencyType::Oco,
+            list_status_type: ListStatusType::ExecStarted,
+            list_order_status: ListOrderStatus::Executing,
+            subscription_id: None,
+            symbol: Ustr::from("BTCUSDT"),
+            list_client_order_id: "LIST".to_string(),
+            reject_reason: String::new(),
+            orders: vec![BinanceSpotListStatusOrder {
+                order_id: venue_order_id,
+                symbol: Ustr::from("BTCUSDT"),
+                client_order_id: encode_broker_id(
+                    &client_order_id,
+                    BINANCE_NAUTILUS_SPOT_BROKER_ID,
+                ),
+            }],
+        }
+    }
+
     #[rstest]
     fn test_oco_child_acceptances_merge_partial_order_reports_with_orders() {
         let target_id = ClientOrderId::from("TARGET");
@@ -4311,6 +4329,144 @@ mod tests {
     }
 
     #[rstest]
+    fn test_http_list_status_and_execution_report_new_emit_single_accepted() {
+        let clock = get_atomic_clock_realtime();
+        let (emitter, mut rx) = create_test_emitter(clock);
+        let http_client = create_test_http_client(clock);
+        let client_order_id = ClientOrderId::from("STOP");
+        let venue_order_id = VenueOrderId::new("1001");
+        let dispatch_state = create_tracked_dispatch_state_with_order_type(
+            client_order_id,
+            InstrumentId::from("BTCUSDT.BINANCE"),
+            OrderType::StopMarket,
+        );
+        let identity = dispatch_state
+            .order_identities
+            .get(&client_order_id)
+            .expect("tracked identity")
+            .clone();
+        let ws_authenticated = tokio::sync::Notify::new();
+        let seen_trade_ids = Arc::new(Mutex::new(FifoCache::new()));
+
+        emit_order_accepted_once(
+            client_order_id,
+            AccountId::from("BINANCE-001"),
+            venue_order_id,
+            &identity,
+            &emitter,
+            &dispatch_state,
+            clock.get_time_ns(),
+            clock.get_time_ns(),
+        );
+
+        match rx.try_recv().expect("HTTP OrderAccepted event expected") {
+            ExecutionEvent::Order(OrderEventAny::Accepted(event)) => {
+                assert_eq!(event.client_order_id, client_order_id);
+                assert_eq!(event.venue_order_id, venue_order_id);
+            }
+            other => panic!("Expected OrderAccepted event, was {other:?}"),
+        }
+
+        let list_status = oco_list_status_exec_started(client_order_id, 1001);
+        dispatch_list_status(
+            &list_status,
+            &emitter,
+            AccountId::from("BINANCE-001"),
+            &dispatch_state,
+            clock,
+        );
+
+        let report =
+            execution_report_new(client_order_id, "STOP_LOSS", "0.00000000", "90000.00000000");
+        dispatch_ws_trading_message(
+            BinanceSpotWsTradingMessage::ExecutionReport(Box::new(report)),
+            &emitter,
+            &http_client,
+            AccountId::from("BINANCE-001"),
+            clock,
+            &dispatch_state,
+            &ws_authenticated,
+            &seen_trade_ids,
+        );
+
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[rstest]
+    fn test_cleanup_keeps_accepted_ledger_and_replacement_can_emit_new_accepted() {
+        let clock = get_atomic_clock_realtime();
+        let (emitter, mut rx) = create_test_emitter(clock);
+        let original_client_order_id = ClientOrderId::from("STOP-1");
+        let replacement_client_order_id = ClientOrderId::from("STOP-2");
+        let dispatch_state = create_tracked_dispatch_state_with_order_type(
+            original_client_order_id,
+            InstrumentId::from("BTCUSDT.BINANCE"),
+            OrderType::StopMarket,
+        );
+        let original_identity = dispatch_state
+            .order_identities
+            .get(&original_client_order_id)
+            .expect("tracked identity")
+            .clone();
+
+        emit_order_accepted_once(
+            original_client_order_id,
+            AccountId::from("BINANCE-001"),
+            VenueOrderId::new("1001"),
+            &original_identity,
+            &emitter,
+            &dispatch_state,
+            clock.get_time_ns(),
+            clock.get_time_ns(),
+        );
+        assert!(matches!(
+            rx.try_recv().expect("initial accepted"),
+            ExecutionEvent::Order(OrderEventAny::Accepted(_))
+        ));
+
+        dispatch_state.cleanup_terminal(original_client_order_id);
+        dispatch_state
+            .order_identities
+            .insert(original_client_order_id, original_identity.clone());
+        dispatch_list_status(
+            &oco_list_status_exec_started(original_client_order_id, 1001),
+            &emitter,
+            AccountId::from("BINANCE-001"),
+            &dispatch_state,
+            clock,
+        );
+        assert!(rx.try_recv().is_err());
+
+        dispatch_state.order_identities.insert(
+            replacement_client_order_id,
+            OrderIdentity {
+                instrument_id: original_identity.instrument_id,
+                strategy_id: original_identity.strategy_id,
+                order_side: original_identity.order_side,
+                order_type: original_identity.order_type,
+                price: original_identity.price,
+                quantity: original_identity.quantity,
+            },
+        );
+        dispatch_list_status(
+            &oco_list_status_exec_started(replacement_client_order_id, 1002),
+            &emitter,
+            AccountId::from("BINANCE-001"),
+            &dispatch_state,
+            clock,
+        );
+
+        match rx.try_recv().expect("replacement OrderAccepted expected") {
+            ExecutionEvent::Order(OrderEventAny::Accepted(event)) => {
+                assert_eq!(event.client_order_id, replacement_client_order_id);
+                assert_eq!(event.venue_order_id, VenueOrderId::new("1002"));
+            }
+            other => panic!("Expected OrderAccepted event, was {other:?}"),
+        }
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[rstest]
     fn test_pending_modify_new_emits_limit_order_updated() {
         let clock = get_atomic_clock_realtime();
         let (emitter, mut rx) = create_test_emitter(clock);
@@ -4321,7 +4477,7 @@ mod tests {
         let ws_authenticated = tokio::sync::Notify::new();
         let seen_trade_ids = Arc::new(Mutex::new(FifoCache::new()));
 
-        dispatch_state.insert_accepted(client_order_id);
+        dispatch_state.insert_accepted(client_order_id, VenueOrderId::from("LIMIT-VENUE"));
         dispatch_state.insert_pending_update(client_order_id);
         let report = execution_report_new(client_order_id, "LIMIT", "90123.45000000", "0.00000000");
 
@@ -4360,7 +4516,7 @@ mod tests {
         let ws_authenticated = tokio::sync::Notify::new();
         let seen_trade_ids = Arc::new(Mutex::new(FifoCache::new()));
 
-        dispatch_state.insert_accepted(client_order_id);
+        dispatch_state.insert_accepted(client_order_id, VenueOrderId::from("STOP-VENUE"));
         dispatch_state.insert_pending_update(client_order_id);
         let report =
             execution_report_new(client_order_id, "STOP_LOSS", "0.00000000", "90000.00000000");

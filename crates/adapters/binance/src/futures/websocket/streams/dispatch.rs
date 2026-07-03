@@ -28,9 +28,7 @@ use nautilus_core::{AtomicSet, MUTEX_POISONED, UUID4, UnixNanos, time::AtomicTim
 use nautilus_live::ExecutionEventEmitter;
 use nautilus_model::{
     enums::LiquiditySide,
-    events::{
-        OrderAccepted, OrderCanceled, OrderEventAny, OrderExpired, OrderFilled, OrderUpdated,
-    },
+    events::{OrderCanceled, OrderEventAny, OrderExpired, OrderFilled, OrderUpdated},
     identifiers::{AccountId, ClientOrderId, InstrumentId, PositionId, TradeId, VenueOrderId},
     reports::{FillReport, OrderStatusReport},
     types::{Currency, Money, Price, Quantity},
@@ -53,7 +51,9 @@ use super::{
 use crate::{
     common::{
         consts::BINANCE_NAUTILUS_FUTURES_BROKER_ID,
-        dispatch::{OrderIdentity, WsDispatchState, ensure_accepted_emitted},
+        dispatch::{
+            OrderIdentity, WsDispatchState, emit_order_accepted_once, ensure_accepted_emitted,
+        },
         encoder::decode_broker_id,
         enums::{BinancePositionSide, BinanceProductType},
         parse::{
@@ -375,20 +375,16 @@ pub(crate) fn dispatch_order_update(
                     log::debug!("Skipping duplicate Accepted for {client_order_id}");
                     return;
                 }
-                dispatch_state.insert_accepted(client_order_id);
-                let accepted = OrderAccepted::new(
-                    emitter.trader_id(),
-                    identity.strategy_id,
-                    identity.instrument_id,
+                emit_order_accepted_once(
                     client_order_id,
-                    venue_order_id,
                     account_id,
-                    UUID4::new(),
+                    venue_order_id,
+                    &identity,
+                    emitter,
+                    dispatch_state,
                     ts_event,
                     ts_init,
-                    false,
                 );
-                emitter.send_order_event(OrderEventAny::Accepted(accepted));
 
                 emit_order_delta_if_changed(
                     order,
@@ -1799,7 +1795,10 @@ mod tests {
 
         // Pre-seed the accepted flag so ensure_accepted_emitted does not
         // synthesize an OrderAccepted ahead of the terminal event.
-        dispatch_state.insert_accepted(ClientOrderId::from("TEST"));
+        dispatch_state.insert_accepted(
+            ClientOrderId::from("TEST"),
+            VenueOrderId::from("TEST-VENUE"),
+        );
         let seen_trade_ids = Arc::new(Mutex::new(FifoCache::new()));
 
         dispatch_order_update(

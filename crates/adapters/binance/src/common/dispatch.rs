@@ -83,9 +83,16 @@ pub struct WsDispatchState {
     pub pending_requests: DashMap<String, PendingRequest>,
     live_exit_cancel_gates: Mutex<HashMap<String, CancelAllGate>>,
     emitted_accepted: Mutex<FifoCache<ClientOrderId, 10_000>>,
+    emitted_accepted_events: Box<Mutex<FifoCache<AcceptedOrderKey, 10_000>>>,
     pending_updates: Mutex<FifoCache<ClientOrderId, 10_000>>,
     filled_orders: Mutex<FifoCache<ClientOrderId, 10_000>>,
     adapter_fatal_reason: Mutex<Option<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct AcceptedOrderKey {
+    client_order_id: ClientOrderId,
+    venue_order_id: VenueOrderId,
 }
 
 #[derive(Debug)]
@@ -101,6 +108,7 @@ impl Default for WsDispatchState {
             pending_requests: DashMap::new(),
             live_exit_cancel_gates: Mutex::new(HashMap::new()),
             emitted_accepted: Mutex::new(FifoCache::new()),
+            emitted_accepted_events: Box::new(Mutex::new(FifoCache::new())),
             pending_updates: Mutex::new(FifoCache::new()),
             filled_orders: Mutex::new(FifoCache::new()),
             adapter_fatal_reason: Mutex::new(None),
@@ -118,8 +126,23 @@ impl WsDispatchState {
     }
 
     /// Marks an order as having emitted an OrderAccepted event.
-    pub fn insert_accepted(&self, cid: ClientOrderId) {
-        self.emitted_accepted.lock().expect(MUTEX_POISONED).add(cid);
+    pub fn insert_accepted(&self, cid: ClientOrderId, venue_order_id: VenueOrderId) -> bool {
+        let key = AcceptedOrderKey {
+            client_order_id: cid,
+            venue_order_id,
+        };
+        {
+            let mut emitted_accepted_events =
+                self.emitted_accepted_events.lock().expect(MUTEX_POISONED);
+            if emitted_accepted_events.contains(&key) {
+                return false;
+            }
+            emitted_accepted_events.add(key);
+        }
+        let mut emitted_accepted = self.emitted_accepted.lock().expect(MUTEX_POISONED);
+        let was_emitted_for_client = emitted_accepted.contains(&cid);
+        emitted_accepted.add(cid);
+        !was_emitted_for_client
     }
 
     pub fn insert_pending_update(&self, cid: ClientOrderId) {
@@ -201,10 +224,6 @@ impl WsDispatchState {
     /// Removes all tracking state for a terminal order.
     pub fn cleanup_terminal(&self, cid: ClientOrderId) {
         self.order_identities.remove(&cid);
-        self.emitted_accepted
-            .lock()
-            .expect(MUTEX_POISONED)
-            .remove(&cid);
         self.pending_updates
             .lock()
             .expect(MUTEX_POISONED)
@@ -219,6 +238,38 @@ impl WsDispatchState {
 /// Synthesizes and emits OrderAccepted if one has not yet been emitted.
 ///
 /// Handles fast-filling orders that skip the New state on Binance.
+pub fn emit_order_accepted_once(
+    client_order_id: ClientOrderId,
+    account_id: AccountId,
+    venue_order_id: VenueOrderId,
+    identity: &OrderIdentity,
+    emitter: &ExecutionEventEmitter,
+    state: &WsDispatchState,
+    ts_event: UnixNanos,
+    ts_init: UnixNanos,
+) -> bool {
+    if !state.insert_accepted(client_order_id, venue_order_id) {
+        return false;
+    }
+    let accepted = OrderAccepted::new(
+        emitter.trader_id(),
+        identity.strategy_id,
+        identity.instrument_id,
+        client_order_id,
+        venue_order_id,
+        account_id,
+        UUID4::new(),
+        ts_event,
+        ts_init,
+        false,
+    );
+    emitter.send_order_event(OrderEventAny::Accepted(accepted));
+    true
+}
+
+/// Synthesizes and emits OrderAccepted if one has not yet been emitted.
+///
+/// Handles fast-filling orders that skip the New state on Binance.
 pub fn ensure_accepted_emitted(
     client_order_id: ClientOrderId,
     account_id: AccountId,
@@ -228,23 +279,16 @@ pub fn ensure_accepted_emitted(
     state: &WsDispatchState,
     ts_init: UnixNanos,
 ) {
-    if state.has_emitted_accepted(&client_order_id) {
-        return;
-    }
-    state.insert_accepted(client_order_id);
-    let accepted = OrderAccepted::new(
-        emitter.trader_id(),
-        identity.strategy_id,
-        identity.instrument_id,
+    emit_order_accepted_once(
         client_order_id,
-        venue_order_id,
         account_id,
-        UUID4::new(),
+        venue_order_id,
+        identity,
+        emitter,
+        state,
         ts_init,
         ts_init,
-        false,
     );
-    emitter.send_order_event(OrderEventAny::Accepted(accepted));
 }
 
 #[cfg(test)]
