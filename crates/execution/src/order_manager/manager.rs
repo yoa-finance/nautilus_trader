@@ -230,6 +230,10 @@ impl OrderManager {
 
     /// Handles an order rejected event and manages any contingent orders.
     pub fn handle_order_rejected(&mut self, rejected: OrderRejected) {
+        if !self.active_local {
+            return;
+        }
+
         let cloned_order = self
             .cache
             .borrow()
@@ -250,6 +254,10 @@ impl OrderManager {
     }
 
     pub fn handle_order_canceled(&mut self, canceled: OrderCanceled) {
+        if !self.active_local {
+            return;
+        }
+
         let cloned_order = self
             .cache
             .borrow()
@@ -270,6 +278,10 @@ impl OrderManager {
     }
 
     pub fn handle_order_expired(&mut self, expired: OrderExpired) {
+        if !self.active_local {
+            return;
+        }
+
         let cloned_order = self
             .cache
             .borrow()
@@ -289,6 +301,10 @@ impl OrderManager {
     }
 
     pub fn handle_order_updated(&mut self, updated: OrderUpdated) {
+        if !self.active_local {
+            return;
+        }
+
         let cloned_order = self
             .cache
             .borrow()
@@ -308,6 +324,10 @@ impl OrderManager {
     }
 
     pub fn handle_order_filled(&mut self, filled: OrderFilled) {
+        if !self.active_local {
+            return;
+        }
+
         let order = if let Some(order) = self
             .cache
             .borrow()
@@ -442,6 +462,10 @@ impl OrderManager {
     }
 
     pub fn handle_contingencies(&mut self, order: &OrderAny) {
+        if !self.active_local {
+            return;
+        }
+
         let (filled_qty, leaves_qty, is_spawn_active) =
             if let Some(exec_spawn_id) = order.exec_spawn_id() {
                 if let (Some(filled), Some(leaves)) = (
@@ -525,6 +549,10 @@ impl OrderManager {
     }
 
     pub fn handle_contingencies_update(&mut self, order: &OrderAny) {
+        if !self.active_local {
+            return;
+        }
+
         let quantity = match order.exec_spawn_id() {
             Some(exec_spawn_id) => {
                 if let Some(qty) = self
@@ -917,6 +945,48 @@ mod tests {
                 .contains_key(&order.client_order_id()),
             "no-handler dispatch path should still remove the submit command",
         );
+    }
+
+    #[rstest]
+    fn test_contingency_handlers_noop_when_active_local_disabled() {
+        let (clock, cache, _emulator) = create_test_components();
+        let mut manager = OrderManager::new(clock, cache.clone(), false, None, None, None);
+        let instrument = InstrumentAny::CurrencyPair(audusd_sim());
+        let order = OrderTestBuilder::new(OrderType::Limit)
+            .instrument_id(instrument.id())
+            .client_order_id(ClientOrderId::from("O-CONTINGENT"))
+            .side(OrderSide::Buy)
+            .price(Price::from("1.00000"))
+            .quantity(Quantity::from(100_000))
+            .contingency_type(ContingencyType::Oco)
+            .build();
+        cache
+            .borrow_mut()
+            .add_order(order.clone(), None, None, false)
+            .unwrap();
+
+        let canceled = TestOrderEventStubs::canceled(&order, AccountId::from("ACCOUNT-001"), None);
+        manager.handle_event(&canceled);
+        let filled = match TestOrderEventStubs::filled(
+            &order,
+            &instrument,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(AccountId::from("ACCOUNT-001")),
+        ) {
+            OrderEventAny::Filled(event) => event,
+            event => panic!("expected OrderFilled, was {event:?}"),
+        };
+        manager.handle_order_filled(filled);
+        manager.handle_contingencies(&order);
+        manager.handle_contingencies_update(&order);
+
+        assert!(manager.submit_order_commands.is_empty());
     }
 
     #[rstest]

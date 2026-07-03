@@ -744,8 +744,20 @@ pub fn parse_order_status_report_sbe(
     // Determine post-only (limit maker orders are post-only)
     let post_only = order.order_type == SbeOrderType::LimitMaker;
 
-    let ts_accepted =
-        unix_nanos_from_micros(order.time, "order.time", "spot_sbe_order_status_response")?;
+    let ts_accepted = match unix_nanos_from_micros(
+        order.time,
+        "order.time",
+        "spot_sbe_order_status_response",
+    ) {
+        Ok(ts) => ts,
+        Err(error) if order.time < 0 => {
+            log::debug!(
+                "Binance Spot order status response has unavailable order.time, using update_time for ts_accepted: {error:#}"
+            );
+            ts_event
+        }
+        Err(error) => return Err(error),
+    };
 
     let mut report = OrderStatusReport::new(
         account_id,
@@ -1674,6 +1686,52 @@ mod tests {
             "microseconds",
             -1,
         );
+    }
+
+    #[rstest]
+    fn test_parse_order_status_report_sbe_falls_back_when_order_time_unavailable() {
+        let instrument = sample_spot_instrument();
+        let order = BinanceOrderResponse {
+            price_exponent: -2,
+            qty_exponent: -4,
+            order_id: 42,
+            order_list_id: Some(77),
+            price_mantissa: 12_345,
+            orig_qty_mantissa: 25_000,
+            executed_qty_mantissa: 10_000,
+            cummulative_quote_qty_mantissa: 123_450_000,
+            status: SbeOrderStatus::Canceled,
+            time_in_force: SbeTimeInForce::Gtc,
+            order_type: SbeOrderType::LimitMaker,
+            side: SbeOrderSide::Buy,
+            stop_price_mantissa: None,
+            iceberg_qty_mantissa: None,
+            time: i64::MIN,
+            update_time: 1_700_000_000_100_000,
+            is_working: false,
+            working_time: None,
+            orig_quote_order_qty_mantissa: 0,
+            self_trade_prevention_mode:
+                crate::spot::sbe::spot::self_trade_prevention_mode::SelfTradePreventionMode::None,
+            client_order_id: "client-123".to_string(),
+            symbol: "ETHUSDT".to_string(),
+            expiry_reason: None,
+        };
+        let ts_init = UnixNanos::from(1_700_000_001_000_000_000u64);
+
+        let report = parse_order_status_report_sbe(
+            &order,
+            sample_account_id(),
+            &instrument,
+            BINANCE_NAUTILUS_SPOT_BROKER_ID,
+            ts_init,
+        )
+        .expect("unavailable order.time should not fail status readback");
+
+        let update_time = UnixNanos::from(1_700_000_000_100_000_000u64);
+        assert_eq!(report.order_status, OrderStatus::Canceled);
+        assert_eq!(report.ts_accepted, update_time);
+        assert_eq!(report.ts_last, update_time);
     }
 
     #[rstest]

@@ -25,7 +25,10 @@ use super::{
     trailing_stop_limit::TrailingStopLimitOrder, trailing_stop_market::TrailingStopMarketOrder,
 };
 use crate::{
-    enums::ContingencyType, events::OrderEventAny, identifiers::OrderListId, types::Price,
+    enums::ContingencyType,
+    events::OrderEventAny,
+    identifiers::{ClientOrderId, OrderListId},
+    types::Price,
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -98,20 +101,126 @@ impl OrderAny {
         }
     }
 
-    // TODO: Does not update the OrderInitialized event in the order's
-    // event history. The init event will still carry the original
-    // order_list_id (typically None). Address with fluent builder API.
     pub fn set_order_list_id(&mut self, id: OrderListId) {
         match self {
-            Self::Limit(o) => o.order_list_id = Some(id),
-            Self::LimitIfTouched(o) => o.order_list_id = Some(id),
-            Self::Market(o) => o.order_list_id = Some(id),
-            Self::MarketIfTouched(o) => o.order_list_id = Some(id),
-            Self::MarketToLimit(o) => o.order_list_id = Some(id),
-            Self::StopLimit(o) => o.order_list_id = Some(id),
-            Self::StopMarket(o) => o.order_list_id = Some(id),
-            Self::TrailingStopLimit(o) => o.order_list_id = Some(id),
-            Self::TrailingStopMarket(o) => o.order_list_id = Some(id),
+            Self::Limit(o) => {
+                o.order_list_id = Some(id);
+                update_init_order_list_id(&mut o.events, id);
+            }
+            Self::LimitIfTouched(o) => {
+                o.order_list_id = Some(id);
+                update_init_order_list_id(&mut o.events, id);
+            }
+            Self::Market(o) => {
+                o.order_list_id = Some(id);
+                update_init_order_list_id(&mut o.events, id);
+            }
+            Self::MarketIfTouched(o) => {
+                o.order_list_id = Some(id);
+                update_init_order_list_id(&mut o.events, id);
+            }
+            Self::MarketToLimit(o) => {
+                o.order_list_id = Some(id);
+                update_init_order_list_id(&mut o.events, id);
+            }
+            Self::StopLimit(o) => {
+                o.order_list_id = Some(id);
+                update_init_order_list_id(&mut o.events, id);
+            }
+            Self::StopMarket(o) => {
+                o.order_list_id = Some(id);
+                update_init_order_list_id(&mut o.events, id);
+            }
+            Self::TrailingStopLimit(o) => {
+                o.order_list_id = Some(id);
+                update_init_order_list_id(&mut o.events, id);
+            }
+            Self::TrailingStopMarket(o) => {
+                o.order_list_id = Some(id);
+                update_init_order_list_id(&mut o.events, id);
+            }
+        }
+    }
+
+    pub fn set_linked_order_ids(&mut self, linked_order_ids: Vec<ClientOrderId>) {
+        match self {
+            Self::Limit(o) => {
+                o.linked_order_ids = Some(linked_order_ids.clone());
+                update_init_linked_order_ids(&mut o.events, linked_order_ids);
+            }
+            Self::LimitIfTouched(o) => {
+                o.linked_order_ids = Some(linked_order_ids.clone());
+                update_init_linked_order_ids(&mut o.events, linked_order_ids);
+            }
+            Self::Market(o) => {
+                o.linked_order_ids = Some(linked_order_ids.clone());
+                update_init_linked_order_ids(&mut o.events, linked_order_ids);
+            }
+            Self::MarketIfTouched(o) => {
+                o.linked_order_ids = Some(linked_order_ids.clone());
+                update_init_linked_order_ids(&mut o.events, linked_order_ids);
+            }
+            Self::MarketToLimit(o) => {
+                o.linked_order_ids = Some(linked_order_ids.clone());
+                update_init_linked_order_ids(&mut o.events, linked_order_ids);
+            }
+            Self::StopLimit(o) => {
+                o.linked_order_ids = Some(linked_order_ids.clone());
+                update_init_linked_order_ids(&mut o.events, linked_order_ids);
+            }
+            Self::StopMarket(o) => {
+                o.linked_order_ids = Some(linked_order_ids.clone());
+                update_init_linked_order_ids(&mut o.events, linked_order_ids);
+            }
+            Self::TrailingStopLimit(o) => {
+                o.linked_order_ids = Some(linked_order_ids.clone());
+                update_init_linked_order_ids(&mut o.events, linked_order_ids);
+            }
+            Self::TrailingStopMarket(o) => {
+                o.linked_order_ids = Some(linked_order_ids.clone());
+                update_init_linked_order_ids(&mut o.events, linked_order_ids);
+            }
+        }
+    }
+
+    pub fn set_parent_order_id(&mut self, parent_order_id: Option<ClientOrderId>) {
+        match self {
+            Self::Limit(o) => {
+                o.parent_order_id = parent_order_id;
+                update_init_parent_order_id(&mut o.events, parent_order_id);
+            }
+            Self::LimitIfTouched(o) => {
+                o.parent_order_id = parent_order_id;
+                update_init_parent_order_id(&mut o.events, parent_order_id);
+            }
+            Self::Market(o) => {
+                o.parent_order_id = parent_order_id;
+                update_init_parent_order_id(&mut o.events, parent_order_id);
+            }
+            Self::MarketIfTouched(o) => {
+                o.parent_order_id = parent_order_id;
+                update_init_parent_order_id(&mut o.events, parent_order_id);
+            }
+            Self::MarketToLimit(o) => {
+                o.parent_order_id = parent_order_id;
+                update_init_parent_order_id(&mut o.events, parent_order_id);
+            }
+            Self::StopLimit(o) => {
+                o.parent_order_id = parent_order_id;
+                update_init_parent_order_id(&mut o.events, parent_order_id);
+            }
+            Self::StopMarket(o) => {
+                o.parent_order_id = parent_order_id;
+                update_init_parent_order_id(&mut o.events, parent_order_id);
+            }
+            Self::TrailingStopLimit(o) => {
+                o.parent_order_id = parent_order_id;
+                update_init_parent_order_id(&mut o.events, parent_order_id);
+            }
+            Self::TrailingStopMarket(o) => {
+                o.parent_order_id = parent_order_id;
+                update_init_parent_order_id(&mut o.events, parent_order_id);
+            }
         }
     }
 
@@ -153,6 +262,30 @@ impl OrderAny {
                 update_init_contingency_type(&mut o.events, contingency_type);
             }
         }
+    }
+}
+
+fn update_init_order_list_id(events: &mut [OrderEventAny], id: OrderListId) {
+    if let Some(OrderEventAny::Initialized(init)) = events.first_mut() {
+        init.order_list_id = Some(id);
+    }
+}
+
+fn update_init_linked_order_ids(
+    events: &mut [OrderEventAny],
+    linked_order_ids: Vec<ClientOrderId>,
+) {
+    if let Some(OrderEventAny::Initialized(init)) = events.first_mut() {
+        init.linked_order_ids = Some(linked_order_ids);
+    }
+}
+
+fn update_init_parent_order_id(
+    events: &mut [OrderEventAny],
+    parent_order_id: Option<ClientOrderId>,
+) {
+    if let Some(OrderEventAny::Initialized(init)) = events.first_mut() {
+        init.parent_order_id = parent_order_id;
     }
 }
 
@@ -402,7 +535,7 @@ mod tests {
         events::{
             OrderEventAny, OrderInitialized, OrderUpdated, order::spec::OrderInitializedSpec,
         },
-        identifiers::{ClientOrderId, InstrumentId, StrategyId},
+        identifiers::{ClientOrderId, InstrumentId, OrderListId, StrategyId},
         orders::builder::OrderTestBuilder,
         types::{Price, Quantity},
     };
@@ -427,6 +560,33 @@ mod tests {
 
         // They should be equal because they have the same client_order_id
         assert_eq!(market_order, limit_order);
+    }
+
+    #[rstest]
+    fn test_order_any_metadata_mutators_update_init_event() {
+        let mut order = OrderTestBuilder::new(OrderType::Market)
+            .instrument_id(InstrumentId::from("BTC-USDT.BINANCE"))
+            .quantity(Quantity::from(10))
+            .client_order_id(ClientOrderId::from("ORDER-001"))
+            .build();
+
+        let order_list_id = OrderListId::from("OL-001");
+        let parent_order_id = ClientOrderId::from("ORDER-PARENT");
+        let linked_order_ids = vec![
+            ClientOrderId::from("ORDER-LINKED-1"),
+            ClientOrderId::from("ORDER-LINKED-2"),
+        ];
+
+        order.set_order_list_id(order_list_id);
+        order.set_parent_order_id(Some(parent_order_id));
+        order.set_linked_order_ids(linked_order_ids.clone());
+
+        assert_eq!(order.order_list_id(), Some(order_list_id));
+        assert_eq!(order.parent_order_id(), Some(parent_order_id));
+        assert_eq!(order.linked_order_ids(), Some(linked_order_ids.as_slice()));
+        assert_eq!(order.init_event().order_list_id, Some(order_list_id));
+        assert_eq!(order.init_event().parent_order_id, Some(parent_order_id));
+        assert_eq!(order.init_event().linked_order_ids, Some(linked_order_ids));
     }
 
     #[rstest]

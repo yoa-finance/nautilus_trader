@@ -35,7 +35,10 @@ use nautilus_common::{
 };
 use nautilus_core::{Params, UUID4};
 use nautilus_model::{
-    enums::{OrderListType, OrderSide, OrderStatus, PositionSide, TimeInForce, TriggerType},
+    enums::{
+        ContingencyType, OrderListType, OrderSide, OrderStatus, PositionSide, TimeInForce,
+        TriggerType,
+    },
     events::{
         OrderAccepted, OrderCancelRejected, OrderDenied, OrderEmulated, OrderEventAny,
         OrderExpired, OrderInitialized, OrderModifyRejected, OrderPendingCancel,
@@ -43,7 +46,8 @@ use nautilus_model::{
         OrderUpdated, PositionChanged, PositionClosed, PositionEvent, PositionOpened,
     },
     identifiers::{
-        AccountId, ClientId, ClientOrderId, InstrumentId, PositionId, StrategyId, TraderId,
+        AccountId, ClientId, ClientOrderId, InstrumentId, OrderListId, PositionId, StrategyId,
+        TraderId,
     },
     orders::{
         LIMIT_ORDER_TYPES, Order, OrderAny, OrderCore, OrderError, OrderList, STOP_ORDER_TYPES,
@@ -247,6 +251,7 @@ pub trait Strategy: DataActor {
             core.order_factory()
                 .create_list(order_list_type, &mut orders, ts_init)
         };
+        normalize_order_list_metadata(order_list.order_list_type, order_list.id, &mut orders)?;
 
         if let Err(e) = order_list.validate() {
             log::error!("OrderList denied: {e}");
@@ -1874,6 +1879,97 @@ pub trait Strategy: DataActor {
     }
 }
 
+fn normalize_order_list_metadata(
+    order_list_type: OrderListType,
+    order_list_id: OrderListId,
+    orders: &mut [OrderAny],
+) -> anyhow::Result<()> {
+    for order in orders.iter_mut() {
+        order.set_order_list_id(order_list_id);
+    }
+
+    match order_list_type {
+        OrderListType::Standard => Ok(()),
+        OrderListType::Oco => normalize_oco_order_list_metadata(orders),
+        OrderListType::Opoco => normalize_opoco_order_list_metadata(orders),
+    }
+}
+
+fn normalize_oco_order_list_metadata(orders: &mut [OrderAny]) -> anyhow::Result<()> {
+    if orders.len() != 2 {
+        anyhow::bail!(
+            "OrderList denied: OCO order list requires exactly 2 orders, received {}",
+            orders.len()
+        );
+    }
+
+    let first_id = orders[0].client_order_id();
+    let second_id = orders[1].client_order_id();
+
+    orders[0].set_contingency_type(ContingencyType::Oco);
+    orders[0].set_parent_order_id(None);
+    orders[0].set_linked_order_ids(vec![second_id]);
+
+    orders[1].set_contingency_type(ContingencyType::Oco);
+    orders[1].set_parent_order_id(None);
+    orders[1].set_linked_order_ids(vec![first_id]);
+
+    Ok(())
+}
+
+fn normalize_opoco_order_list_metadata(orders: &mut [OrderAny]) -> anyhow::Result<()> {
+    if orders.len() != 3 {
+        anyhow::bail!(
+            "OrderList denied: OPOCO order list requires exactly 3 orders, received {}",
+            orders.len()
+        );
+    }
+
+    let buy_count = orders
+        .iter()
+        .filter(|order| order.order_side() == OrderSide::Buy)
+        .count();
+    let sell_count = orders
+        .iter()
+        .filter(|order| order.order_side() == OrderSide::Sell)
+        .count();
+
+    let working_side = match (buy_count, sell_count) {
+        (1, 2) => OrderSide::Buy,
+        (2, 1) => OrderSide::Sell,
+        _ => anyhow::bail!(
+            "OrderList denied: OPOCO order list requires exactly one working-side order and two pending-side orders"
+        ),
+    };
+
+    let working_index = orders
+        .iter()
+        .position(|order| order.order_side() == working_side)
+        .expect("working side count checked above");
+    let pending_indices: Vec<usize> = (0..orders.len())
+        .filter(|index| *index != working_index)
+        .collect();
+    let working_id = orders[working_index].client_order_id();
+    let first_pending_index = pending_indices[0];
+    let second_pending_index = pending_indices[1];
+    let first_pending_id = orders[first_pending_index].client_order_id();
+    let second_pending_id = orders[second_pending_index].client_order_id();
+
+    orders[working_index].set_contingency_type(ContingencyType::Oto);
+    orders[working_index].set_parent_order_id(None);
+    orders[working_index].set_linked_order_ids(vec![first_pending_id, second_pending_id]);
+
+    orders[first_pending_index].set_contingency_type(ContingencyType::Oco);
+    orders[first_pending_index].set_parent_order_id(Some(working_id));
+    orders[first_pending_index].set_linked_order_ids(vec![second_pending_id]);
+
+    orders[second_pending_index].set_contingency_type(ContingencyType::Oco);
+    orders[second_pending_index].set_parent_order_id(Some(working_id));
+    orders[second_pending_index].set_linked_order_ids(vec![first_pending_id]);
+
+    Ok(())
+}
+
 fn publish_order_initialized(order: &OrderAny) {
     let topic = format!("events.order.{}", order.strategy_id());
     let event = OrderEventAny::Initialized(order.init_event().clone());
@@ -2202,12 +2298,19 @@ mod tests {
     }
 
     fn make_initialized_market_order(client_order_id: &str) -> OrderAny {
+        make_initialized_market_order_with_side(client_order_id, OrderSide::Buy)
+    }
+
+    fn make_initialized_market_order_with_side(
+        client_order_id: &str,
+        order_side: OrderSide,
+    ) -> OrderAny {
         OrderAny::Market(MarketOrder::new(
             TraderId::from("TRADER-001"),
             StrategyId::from("TEST-001"),
             InstrumentId::from("BTCUSDT.BINANCE"),
             ClientOrderId::from(client_order_id),
-            OrderSide::Buy,
+            order_side,
             Quantity::from(100_000),
             TimeInForce::Gtc,
             UUID4::new(),
@@ -2673,14 +2776,13 @@ mod tests {
 
         let event_messages = event_messages.borrow();
         assert_eq!(event_messages.len(), 2);
-        assert_eq!(
-            event_messages[0],
-            OrderEventAny::Initialized(orders[0].init_event().clone())
-        );
-        assert_eq!(
-            event_messages[1],
-            OrderEventAny::Initialized(orders[1].init_event().clone())
-        );
+        let (OrderEventAny::Initialized(init1), OrderEventAny::Initialized(init2)) =
+            (&event_messages[0], &event_messages[1])
+        else {
+            panic!("expected initialized events");
+        };
+        assert_eq!(init1.client_order_id, client_order_id1);
+        assert_eq!(init2.client_order_id, client_order_id2);
         assert_eq!(timeline.borrow().as_slice(), &["init1", "init2", "command"]);
 
         let cache = strategy.core.cache();
@@ -2688,12 +2790,134 @@ mod tests {
         let cached_order2 = cache.order(&client_order_id2).unwrap();
         let order_list_id = cached_order1.order_list_id().unwrap();
         assert_eq!(cached_order2.order_list_id(), Some(order_list_id));
+        assert_eq!(init1.order_list_id, Some(order_list_id));
+        assert_eq!(init2.order_list_id, Some(order_list_id));
 
         let order_list = cache.order_list(&order_list_id).unwrap();
         assert_eq!(
             order_list.client_order_ids.as_slice(),
             &[client_order_id1, client_order_id2]
         );
+    }
+
+    #[rstest]
+    fn test_submit_order_list_normalizes_oco_metadata_before_command() {
+        let mut strategy = create_test_strategy();
+        register_strategy(&mut strategy);
+        let (risk_handler, risk_messages): (_, TypedIntoMessageSavingHandler<TradingCommand>) =
+            get_typed_into_message_saving_handler(Some(Ustr::from("RiskEngine.queue_execute")));
+        msgbus::register_trading_command_endpoint(
+            MessagingSwitchboard::risk_engine_queue_execute(),
+            risk_handler,
+        );
+
+        let orders = vec![
+            make_initialized_market_order_with_side("O-OCO-TARGET", OrderSide::Sell),
+            make_initialized_market_order_with_side("O-OCO-STOP", OrderSide::Sell),
+        ];
+        let target_id = orders[0].client_order_id();
+        let stop_id = orders[1].client_order_id();
+
+        strategy
+            .submit_order_list(OrderListType::Oco, orders, None, None, None)
+            .unwrap();
+
+        let cache = strategy.core.cache();
+        let target = cache.order(&target_id).expect("target order");
+        let stop = cache.order(&stop_id).expect("stop order");
+        let order_list_id = target.order_list_id().expect("target order list id");
+        assert_eq!(stop.order_list_id(), Some(order_list_id));
+        assert_eq!(target.init_event().order_list_id, Some(order_list_id));
+        assert_eq!(stop.init_event().order_list_id, Some(order_list_id));
+        assert_eq!(target.contingency_type(), Some(ContingencyType::Oco));
+        assert_eq!(stop.contingency_type(), Some(ContingencyType::Oco));
+        assert_eq!(target.parent_order_id(), None);
+        assert_eq!(stop.parent_order_id(), None);
+        assert_eq!(target.linked_order_ids().unwrap(), &[stop_id]);
+        assert_eq!(stop.linked_order_ids().unwrap(), &[target_id]);
+
+        let risk_messages = risk_messages.get_messages();
+        assert_eq!(risk_messages.len(), 1);
+        let Some(TradingCommand::SubmitOrderList(command)) = risk_messages.first() else {
+            panic!("expected SubmitOrderList command");
+        };
+        assert_eq!(command.order_list.order_list_type, OrderListType::Oco);
+        assert_eq!(
+            command.order_inits[0].linked_order_ids.clone(),
+            Some(vec![stop_id])
+        );
+        assert_eq!(
+            command.order_inits[1].linked_order_ids.clone(),
+            Some(vec![target_id])
+        );
+        assert_eq!(command.order_inits[0].order_list_id, Some(order_list_id));
+        assert_eq!(command.order_inits[1].order_list_id, Some(order_list_id));
+    }
+
+    #[rstest]
+    fn test_submit_order_list_normalizes_opoco_metadata_before_command() {
+        let mut strategy = create_test_strategy();
+        register_strategy(&mut strategy);
+        let (risk_handler, risk_messages): (_, TypedIntoMessageSavingHandler<TradingCommand>) =
+            get_typed_into_message_saving_handler(Some(Ustr::from("RiskEngine.queue_execute")));
+        msgbus::register_trading_command_endpoint(
+            MessagingSwitchboard::risk_engine_queue_execute(),
+            risk_handler,
+        );
+
+        let orders = vec![
+            make_initialized_market_order_with_side("O-OPOCO-ENTRY", OrderSide::Buy),
+            make_initialized_market_order_with_side("O-OPOCO-TARGET", OrderSide::Sell),
+            make_initialized_market_order_with_side("O-OPOCO-STOP", OrderSide::Sell),
+        ];
+        let entry_id = orders[0].client_order_id();
+        let target_id = orders[1].client_order_id();
+        let stop_id = orders[2].client_order_id();
+
+        strategy
+            .submit_order_list(OrderListType::Opoco, orders, None, None, None)
+            .unwrap();
+
+        let cache = strategy.core.cache();
+        let entry = cache.order(&entry_id).expect("entry order");
+        let target = cache.order(&target_id).expect("target order");
+        let stop = cache.order(&stop_id).expect("stop order");
+        let order_list_id = entry.order_list_id().expect("entry order list id");
+        assert_eq!(target.order_list_id(), Some(order_list_id));
+        assert_eq!(stop.order_list_id(), Some(order_list_id));
+        assert_eq!(entry.contingency_type(), Some(ContingencyType::Oto));
+        assert_eq!(target.contingency_type(), Some(ContingencyType::Oco));
+        assert_eq!(stop.contingency_type(), Some(ContingencyType::Oco));
+        assert_eq!(entry.parent_order_id(), None);
+        assert_eq!(target.parent_order_id(), Some(entry_id));
+        assert_eq!(stop.parent_order_id(), Some(entry_id));
+        assert_eq!(entry.linked_order_ids().unwrap(), &[target_id, stop_id]);
+        assert_eq!(target.linked_order_ids().unwrap(), &[stop_id]);
+        assert_eq!(stop.linked_order_ids().unwrap(), &[target_id]);
+
+        let risk_messages = risk_messages.get_messages();
+        assert_eq!(risk_messages.len(), 1);
+        let Some(TradingCommand::SubmitOrderList(command)) = risk_messages.first() else {
+            panic!("expected SubmitOrderList command");
+        };
+        assert_eq!(command.order_list.order_list_type, OrderListType::Opoco);
+        assert_eq!(
+            command.order_inits[0].linked_order_ids.clone(),
+            Some(vec![target_id, stop_id])
+        );
+        assert_eq!(command.order_inits[1].parent_order_id, Some(entry_id));
+        assert_eq!(
+            command.order_inits[1].linked_order_ids.clone(),
+            Some(vec![stop_id])
+        );
+        assert_eq!(command.order_inits[2].parent_order_id, Some(entry_id));
+        assert_eq!(
+            command.order_inits[2].linked_order_ids.clone(),
+            Some(vec![target_id])
+        );
+        assert_eq!(command.order_inits[0].order_list_id, Some(order_list_id));
+        assert_eq!(command.order_inits[1].order_list_id, Some(order_list_id));
+        assert_eq!(command.order_inits[2].order_list_id, Some(order_list_id));
     }
 
     #[rstest]
