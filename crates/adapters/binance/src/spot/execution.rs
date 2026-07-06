@@ -17,6 +17,7 @@
 
 use std::{
     future::Future,
+    panic::{AssertUnwindSafe, catch_unwind},
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -88,7 +89,7 @@ use crate::{
             OrderIdentity, PendingOperation, PendingRequest, WsDispatchState,
             emit_order_accepted_once, ensure_accepted_emitted,
         },
-        encoder::{decode_broker_id, encode_binance_client_order_id},
+        encoder::{decode_client_order_id, encode_binance_client_order_id},
         enums::{BinanceSide, BinanceTimeInForce},
         parse::{
             parse_required_decimal, parse_required_price_at_precision,
@@ -650,16 +651,24 @@ impl ExecutionClient for BinanceSpotExecutionClient {
                         loop {
                             match ws_trading_clone.recv().await {
                                 Some(msg) => {
-                                    dispatch_ws_trading_message(
-                                        msg,
-                                        &emitter,
-                                        &http_client,
-                                        account_id,
-                                        clock,
-                                        &dispatch_state,
-                                        &ws_authenticated,
-                                        &seen_trade_ids,
-                                    );
+                                    let result = catch_unwind(AssertUnwindSafe(|| {
+                                        dispatch_ws_trading_message(
+                                            msg,
+                                            &emitter,
+                                            &http_client,
+                                            account_id,
+                                            clock,
+                                            &dispatch_state,
+                                            &ws_authenticated,
+                                            &seen_trade_ids,
+                                        );
+                                    }));
+
+                                    if result.is_err() {
+                                        log::error!(
+                                            "WS trading message dispatch panicked; skipping message and continuing"
+                                        );
+                                    }
                                 }
                                 None => {
                                     log::warn!("WS trading dispatch loop ended");
@@ -1498,10 +1507,21 @@ fn oco_child_acceptances(response: &BinanceOrderListResponse) -> Vec<OcoChildAcc
         Vec::with_capacity(response.order_reports.len().max(response.orders.len()));
 
     for report in &response.order_reports {
-        let client_order_id = ClientOrderId::from(decode_broker_id(
+        let client_order_id = match decode_client_order_id(
             &report.client_order_id,
             BINANCE_NAUTILUS_SPOT_BROKER_ID,
-        ));
+            "order_report.client_order_id",
+            "spot_http_order_list_acceptance",
+        ) {
+            Ok(client_order_id) => client_order_id,
+            Err(e) => {
+                log::error!(
+                    "Skipping malformed Spot OCO order report client_order_id for order_id={}: {e}",
+                    report.order_id
+                );
+                continue;
+            }
+        };
         seen.insert(client_order_id);
         acceptances.push(OcoChildAcceptance {
             client_order_id,
@@ -1511,10 +1531,21 @@ fn oco_child_acceptances(response: &BinanceOrderListResponse) -> Vec<OcoChildAcc
     }
 
     for order_ref in &response.orders {
-        let client_order_id = ClientOrderId::from(decode_broker_id(
+        let client_order_id = match decode_client_order_id(
             &order_ref.client_order_id,
             BINANCE_NAUTILUS_SPOT_BROKER_ID,
-        ));
+            "order.client_order_id",
+            "spot_http_order_list_acceptance",
+        ) {
+            Ok(client_order_id) => client_order_id,
+            Err(e) => {
+                log::error!(
+                    "Skipping malformed Spot OCO order reference client_order_id for order_id={}: {e}",
+                    order_ref.order_id
+                );
+                continue;
+            }
+        };
         if !seen.insert(client_order_id) {
             continue;
         }
@@ -1834,10 +1865,21 @@ fn dispatch_order_list_cancel_result(
     let ts_init = clock.get_time_ns();
 
     for report in &response.order_reports {
-        let client_order_id = ClientOrderId::from(decode_broker_id(
+        let client_order_id = match decode_client_order_id(
             &report.orig_client_order_id,
             BINANCE_NAUTILUS_SPOT_BROKER_ID,
-        ));
+            "order_report.orig_client_order_id",
+            "ws_order_list_cancel_report",
+        ) {
+            Ok(client_order_id) => client_order_id,
+            Err(e) => {
+                log::error!(
+                    "Skipping malformed WS order-list cancel report client_order_id for order_id={}: {e}",
+                    report.order_id
+                );
+                continue;
+            }
+        };
 
         let Some(identity) = dispatch_state
             .order_identities
@@ -1929,10 +1971,20 @@ fn dispatch_http_order_list_cancel_result(
     };
 
     for (venue_client_order_id, venue_order_id, transact_time) in canceled_children {
-        let client_order_id = ClientOrderId::from(decode_broker_id(
+        let client_order_id = match decode_client_order_id(
             venue_client_order_id,
             BINANCE_NAUTILUS_SPOT_BROKER_ID,
-        ));
+            "order_report.client_order_id",
+            "http_order_list_cancel_report",
+        ) {
+            Ok(client_order_id) => client_order_id,
+            Err(e) => {
+                log::error!(
+                    "Skipping malformed HTTP order-list cancel report client_order_id for order_id={venue_order_id}: {e}"
+                );
+                continue;
+            }
+        };
 
         let Some(identity) = dispatch_state
             .order_identities
@@ -2150,10 +2202,21 @@ fn dispatch_list_status(
     };
 
     for child in &list_status.orders {
-        let client_order_id = ClientOrderId::from(decode_broker_id(
+        let client_order_id = match decode_client_order_id(
             &child.client_order_id,
             BINANCE_NAUTILUS_SPOT_BROKER_ID,
-        ));
+            "list_status.child.client_order_id",
+            "spot_json_list_status",
+        ) {
+            Ok(client_order_id) => client_order_id,
+            Err(e) => {
+                log::error!(
+                    "Skipping malformed Spot list status child client_order_id for order_id={}: {e}",
+                    child.order_id
+                );
+                continue;
+            }
+        };
 
         let Some(identity) = dispatch_state
             .order_identities
@@ -2710,18 +2773,48 @@ fn dispatch_execution_report(
     let (price_precision, size_precision) = http_client
         .get_instrument(&symbol)
         .map_or((8, 8), |i| (i.price_precision(), i.size_precision()));
+    let venue_order_id = VenueOrderId::new(report.order_id.to_string());
 
-    let client_order_id = ClientOrderId::new(decode_broker_id(
+    let decoded_client_order_id = match decode_client_order_id(
         &report.client_order_id,
         BINANCE_NAUTILUS_SPOT_BROKER_ID,
-    ));
+        "execution_report.client_order_id",
+        "spot_json_execution_report_dispatch",
+    ) {
+        Ok(client_order_id) => Some(client_order_id),
+        Err(e) => {
+            log::error!(
+                "Malformed Spot execution report client_order_id for symbol={}, order_id={}, execution_type={:?}, status={:?}: {e}",
+                report.symbol,
+                report.order_id,
+                report.execution_type,
+                report.order_status,
+            );
+            None
+        }
+    };
 
-    let identity = dispatch_state
-        .order_identities
-        .get(&client_order_id)
-        .map(|r| r.clone());
+    let tracked_identity = decoded_client_order_id
+        .and_then(|client_order_id| {
+            dispatch_state
+                .order_identities
+                .get(&client_order_id)
+                .map(|entry| (client_order_id, entry.clone()))
+        })
+        .or_else(|| {
+            let fallback = dispatch_state.identity_for_venue_order(&venue_order_id);
+            if fallback.is_some() && decoded_client_order_id.is_none() {
+                log::warn!(
+                    "Routing Spot execution report by venue_order_id fallback: symbol={}, order_id={}, raw_client_order_id={:?}",
+                    report.symbol,
+                    report.order_id,
+                    report.client_order_id,
+                );
+            }
+            fallback
+        });
 
-    if let Some(identity) = identity {
+    if let Some((client_order_id, identity)) = tracked_identity {
         dispatch_tracked_execution_report(
             report,
             emitter,
@@ -2735,7 +2828,7 @@ fn dispatch_execution_report(
             size_precision,
             ts_init,
         );
-    } else {
+    } else if decoded_client_order_id.is_some() {
         dispatch_untracked_execution_report(
             report,
             emitter,
@@ -2746,6 +2839,14 @@ fn dispatch_execution_report(
             price_precision,
             size_precision,
             ts_init,
+        );
+    } else {
+        log::error!(
+            "Skipping Spot execution report with invalid client_order_id and no venue_order_id fallback: symbol={}, order_id={}, execution_type={:?}, status={:?}",
+            report.symbol,
+            report.order_id,
+            report.execution_type,
+            report.order_status,
         );
     }
 }
@@ -4168,6 +4269,91 @@ mod tests {
         .expect("valid executionReport NEW fixture")
     }
 
+    #[rstest]
+    fn test_dispatch_execution_report_uses_venue_order_id_fallback_for_empty_client_order_id() {
+        let clock = get_atomic_clock_realtime();
+        let (emitter, mut rx) = create_test_emitter(clock);
+        let http_client = create_test_http_client(clock);
+        let client_order_id = ClientOrderId::from("TARGET");
+        let venue_order_id = VenueOrderId::new("12345678");
+        let dispatch_state =
+            create_tracked_dispatch_state(client_order_id, InstrumentId::from("BTCUSDT.BINANCE"));
+        dispatch_state.insert_accepted(client_order_id, venue_order_id);
+        let ws_authenticated = tokio::sync::Notify::new();
+        let seen_trade_ids = Arc::new(Mutex::new(FifoCache::new()));
+
+        let mut report =
+            execution_report_new(client_order_id, "LIMIT", "90123.45000000", "0.00000000");
+        report.client_order_id.clear();
+        report.execution_type = BinanceSpotExecutionType::Canceled;
+        report.order_status = crate::common::enums::BinanceOrderStatus::Canceled;
+
+        dispatch_ws_trading_message(
+            BinanceSpotWsTradingMessage::ExecutionReport(Box::new(report)),
+            &emitter,
+            &http_client,
+            AccountId::from("BINANCE-001"),
+            clock,
+            &dispatch_state,
+            &ws_authenticated,
+            &seen_trade_ids,
+        );
+
+        match rx.try_recv().expect("OrderCanceled event expected") {
+            ExecutionEvent::Order(OrderEventAny::Canceled(event)) => {
+                assert_eq!(event.client_order_id, client_order_id);
+                assert_eq!(event.venue_order_id, Some(venue_order_id));
+            }
+            other => panic!("Expected OrderCanceled event, was {other:?}"),
+        }
+        assert!(
+            dispatch_state
+                .order_identities
+                .get(&client_order_id)
+                .is_none()
+        );
+        assert!(
+            dispatch_state
+                .venue_order_identities
+                .get(&venue_order_id)
+                .is_none()
+        );
+    }
+
+    #[rstest]
+    fn test_dispatch_execution_report_empty_client_order_id_without_fallback_does_not_panic() {
+        let clock = get_atomic_clock_realtime();
+        let (emitter, mut rx) = create_test_emitter(clock);
+        let http_client = create_test_http_client(clock);
+        let dispatch_state = WsDispatchState::default();
+        let ws_authenticated = tokio::sync::Notify::new();
+        let seen_trade_ids = Arc::new(Mutex::new(FifoCache::new()));
+
+        let mut report = execution_report_new(
+            ClientOrderId::from("UNKNOWN"),
+            "LIMIT",
+            "90123.45000000",
+            "0.00000000",
+        );
+        report.client_order_id.clear();
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            dispatch_ws_trading_message(
+                BinanceSpotWsTradingMessage::ExecutionReport(Box::new(report)),
+                &emitter,
+                &http_client,
+                AccountId::from("BINANCE-001"),
+                clock,
+                &dispatch_state,
+                &ws_authenticated,
+                &seen_trade_ids,
+            );
+        }));
+
+        assert!(result.is_ok());
+        assert!(rx.try_recv().is_err());
+    }
+
     fn oco_list_status_exec_started(
         client_order_id: ClientOrderId,
         venue_order_id: i64,
@@ -4249,6 +4435,53 @@ mod tests {
         assert_eq!(acceptances[1].client_order_id, stop_id);
         assert_eq!(acceptances[1].venue_order_id, VenueOrderId::new("1002"));
         assert_eq!(acceptances[1].transact_time, Some(1_709_654_400_124));
+    }
+
+    #[rstest]
+    fn test_oco_child_acceptances_skip_malformed_child_client_order_id() {
+        let stop_id = ClientOrderId::from("STOP");
+        let stop_wire = encode_broker_id(&stop_id, BINANCE_NAUTILUS_SPOT_BROKER_ID);
+        let response = BinanceOrderListResponse {
+            order_list_id: 42,
+            contingency_type: "OCO".to_string(),
+            list_status_type: "EXEC_STARTED".to_string(),
+            list_order_status: "EXECUTING".to_string(),
+            list_client_order_id: "LIST".to_string(),
+            transaction_time: Some(1_709_654_400_124),
+            symbol: "BTCUSDT".to_string(),
+            orders: vec![BinanceOrderListOrder {
+                symbol: "BTCUSDT".to_string(),
+                order_id: 1002,
+                client_order_id: stop_wire,
+            }],
+            order_reports: vec![BinanceOrderListOrderReport {
+                symbol: "BTCUSDT".to_string(),
+                order_id: 1001,
+                order_list_id: 42,
+                client_order_id: String::new(),
+                transact_time: Some(1_709_654_400_125),
+                price: None,
+                orig_qty: None,
+                executed_qty: None,
+                cummulative_quote_qty: None,
+                status: None,
+                order_type: None,
+                side: None,
+                time_in_force: None,
+                stop_price: None,
+                working_time: None,
+                self_trade_prevention_mode: None,
+            }],
+        };
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            oco_child_acceptances(&response)
+        }));
+
+        let acceptances = result.unwrap();
+        assert_eq!(acceptances.len(), 1);
+        assert_eq!(acceptances[0].client_order_id, stop_id);
+        assert_eq!(acceptances[0].venue_order_id, VenueOrderId::new("1002"));
     }
 
     #[rstest]

@@ -28,9 +28,7 @@ use nautilus_model::{
         AggressorSide, BarAggregation, LiquiditySide, OrderSide, OrderStatus, OrderType,
         TimeInForce, TriggerType,
     },
-    identifiers::{
-        AccountId, ClientOrderId, InstrumentId, OrderListId, Symbol, TradeId, Venue, VenueOrderId,
-    },
+    identifiers::{AccountId, InstrumentId, OrderListId, Symbol, TradeId, Venue, VenueOrderId},
     instruments::{
         Instrument, any::InstrumentAny, crypto_perpetual::CryptoPerpetual,
         currency_pair::CurrencyPair,
@@ -44,7 +42,7 @@ use serde_json::Value;
 use crate::{
     common::{
         consts::BINANCE,
-        encoder::decode_broker_id,
+        encoder::decode_client_order_id,
         enums::{BinanceContractStatus, BinanceKlineInterval, BinanceTradingStatus},
         time::unix_nanos_from_micros,
     },
@@ -762,10 +760,12 @@ pub fn parse_order_status_report_sbe(
     let mut report = OrderStatusReport::new(
         account_id,
         instrument_id,
-        Some(ClientOrderId::new(decode_broker_id(
+        Some(decode_client_order_id(
             &order.client_order_id,
             broker_id,
-        ))),
+            "order.client_order_id",
+            "spot_sbe_order_status_response",
+        )?),
         VenueOrderId::new(order.order_id.to_string()),
         order_side,
         order_type,
@@ -907,10 +907,12 @@ pub fn parse_new_order_response_sbe(
     let mut report = OrderStatusReport::new(
         account_id,
         instrument_id,
-        Some(ClientOrderId::new(decode_broker_id(
+        Some(decode_client_order_id(
             &response.client_order_id,
             broker_id,
-        ))),
+            "response.client_order_id",
+            "spot_sbe_new_order_response",
+        )?),
         VenueOrderId::new(response.order_id.to_string()),
         order_side,
         order_type,
@@ -1024,10 +1026,12 @@ fn parse_new_order_fill_report_sbe(
         last_px,
         commission,
         LiquiditySide::Taker,
-        Some(ClientOrderId::new(decode_broker_id(
+        Some(decode_client_order_id(
             &response.client_order_id,
             broker_id,
-        ))),
+            "response.client_order_id",
+            "spot_sbe_new_order_fill_report",
+        )?),
         None,
         ts_event + UnixNanos::from(index as u64),
         ts_init,
@@ -1193,6 +1197,7 @@ pub fn bar_spec_to_binance_interval(
 
 #[cfg(test)]
 mod tests {
+    use nautilus_model::identifiers::ClientOrderId;
     use rstest::rstest;
     use rust_decimal_macros::dec;
     use serde_json::json;

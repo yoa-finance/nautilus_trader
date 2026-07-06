@@ -79,7 +79,7 @@ use crate::{
             BINANCE_SPOT_RATE_LIMITS, BinanceRateLimitQuota,
         },
         credential::SigningCredential,
-        encoder::{decode_broker_id, encode_binance_client_order_id},
+        encoder::{decode_client_order_id, encode_binance_client_order_id},
         enums::{
             BinanceEnvironment, BinanceProductType, BinanceRateLimitInterval, BinanceRateLimitType,
             BinanceSide, BinanceTimeInForce,
@@ -2338,22 +2338,26 @@ impl BinanceSpotHttpClient {
                 BinanceSpotCancelAllItem::Order(response) => {
                     canceled_orders.push((
                         VenueOrderId::new(response.order_id.to_string()),
-                        ClientOrderId::new(decode_broker_id(
+                        decode_client_order_id(
                             &response.orig_client_order_id,
                             BINANCE_NAUTILUS_SPOT_BROKER_ID,
-                        )),
+                            "cancel_all.orig_client_order_id",
+                            "spot_http_cancel_all_order",
+                        )?,
                     ));
                 }
                 BinanceSpotCancelAllItem::OrderList(response) => {
-                    canceled_orders.extend(response.order_reports.into_iter().map(|report| {
-                        (
+                    for report in response.order_reports {
+                        canceled_orders.push((
                             VenueOrderId::new(report.order_id.to_string()),
-                            ClientOrderId::new(decode_broker_id(
+                            decode_client_order_id(
                                 &report.orig_client_order_id,
                                 BINANCE_NAUTILUS_SPOT_BROKER_ID,
-                            )),
-                        )
-                    }));
+                                "cancel_all.order_report.orig_client_order_id",
+                                "spot_http_cancel_all_order_list",
+                            )?,
+                        ));
+                    }
                 }
             }
         }

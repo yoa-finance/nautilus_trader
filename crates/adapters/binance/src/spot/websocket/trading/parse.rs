@@ -22,7 +22,7 @@ use nautilus_core::{UUID4, UnixNanos};
 use nautilus_model::{
     enums::{AccountType, LiquiditySide, OrderSide, OrderStatus, OrderType, TimeInForce},
     events::AccountState,
-    identifiers::{AccountId, ClientOrderId, InstrumentId, TradeId, VenueOrderId},
+    identifiers::{AccountId, InstrumentId, TradeId, VenueOrderId},
     reports::{FillReport, OrderStatusReport},
     types::{AccountBalance, Currency, Money, Price},
 };
@@ -31,7 +31,7 @@ use rust_decimal::Decimal;
 use super::user_data::{BinanceSpotAccountPositionMsg, BinanceSpotExecutionReport};
 use crate::common::{
     consts::BINANCE_NAUTILUS_SPOT_BROKER_ID,
-    encoder::decode_broker_id,
+    encoder::decode_client_order_id,
     enums::{BinanceOrderStatus, BinanceSide, BinanceTimeInForce},
     parse::{
         parse_required_decimal, parse_required_price_at_precision,
@@ -53,10 +53,12 @@ pub fn parse_spot_exec_report_to_order_status(
     account_id: AccountId,
     ts_init: UnixNanos,
 ) -> anyhow::Result<OrderStatusReport> {
-    let client_order_id = ClientOrderId::new(decode_broker_id(
+    let client_order_id = decode_client_order_id(
         &msg.client_order_id,
         BINANCE_NAUTILUS_SPOT_BROKER_ID,
-    ));
+        "execution_report.client_order_id",
+        "spot_json_execution_report_status",
+    )?;
     let venue_order_id = VenueOrderId::new(msg.order_id.to_string());
     let ts_event = unix_nanos_from_millis(
         msg.event_time,
@@ -147,10 +149,12 @@ pub fn parse_spot_exec_report_to_fill(
     account_id: AccountId,
     ts_init: UnixNanos,
 ) -> anyhow::Result<FillReport> {
-    let client_order_id = ClientOrderId::new(decode_broker_id(
+    let client_order_id = decode_client_order_id(
         &msg.client_order_id,
         BINANCE_NAUTILUS_SPOT_BROKER_ID,
-    ));
+        "execution_report.client_order_id",
+        "spot_json_execution_report_fill",
+    )?;
     let venue_order_id = VenueOrderId::new(msg.order_id.to_string());
     let trade_id = TradeId::new(msg.trade_id.to_string());
     let ts_event = unix_nanos_from_millis(
@@ -279,6 +283,7 @@ fn parse_time_in_force(tif: BinanceTimeInForce) -> TimeInForce {
 
 #[cfg(test)]
 mod tests {
+    use nautilus_model::identifiers::ClientOrderId;
     use nautilus_model::types::Quantity;
     use rstest::rstest;
 
@@ -523,6 +528,39 @@ mod tests {
 
         let error = result.unwrap_err().to_string();
         assert!(error.contains("commission"));
+    }
+
+    #[rstest]
+    fn test_parse_execution_report_empty_client_order_id_returns_error_without_panicking() {
+        let json = load_fixture_string("spot/user_data_json/execution_report_trade.json");
+        let mut msg: BinanceSpotExecutionReport = serde_json::from_str(&json).unwrap();
+        msg.client_order_id.clear();
+        let account_id = AccountId::from("BINANCE-001");
+        let ts_init = UnixNanos::from(1_000_000_000u64);
+
+        let status_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            parse_spot_exec_report_to_order_status(
+                &msg,
+                instrument_id(),
+                PRICE_PRECISION,
+                SIZE_PRECISION,
+                account_id,
+                ts_init,
+            )
+        }));
+        assert!(status_result.unwrap().is_err());
+
+        let fill_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            parse_spot_exec_report_to_fill(
+                &msg,
+                instrument_id(),
+                PRICE_PRECISION,
+                SIZE_PRECISION,
+                account_id,
+                ts_init,
+            )
+        }));
+        assert!(fill_result.unwrap().is_err());
     }
 
     #[rstest]

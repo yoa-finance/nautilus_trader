@@ -251,6 +251,28 @@ pub fn decode_broker_id(encoded: &str, broker_id: &str) -> String {
     }
 }
 
+/// Decodes a Binance client order ID into a Nautilus [`ClientOrderId`] without panicking.
+///
+/// Inbound venue data is not trusted: malformed or empty IDs are returned as
+/// contextual errors so dispatch code can skip the venue event or use an
+/// alternate routing key.
+pub fn decode_client_order_id(
+    encoded: &str,
+    broker_id: &str,
+    field: &str,
+    context: &str,
+) -> anyhow::Result<ClientOrderId> {
+    let decoded = decode_broker_id(encoded, broker_id);
+
+    ClientOrderId::new_checked(&decoded).map_err(|e| {
+        anyhow::anyhow!(
+            "invalid Binance client order id in {context}: field={field}, raw_len={}, raw={encoded:?}, decoded_len={}, decoded={decoded:?}: {e}",
+            encoded.len(),
+            decoded.len(),
+        )
+    })
+}
+
 fn build_encoded(prefix: &str, signal: u8, b62: &[u8]) -> String {
     let mut result = String::with_capacity(prefix.len() + 1 + b62.len());
     result.push_str(prefix);
@@ -661,6 +683,17 @@ mod tests {
     fn test_decode_different_prefix_returns_as_is() {
         let raw = "x-OTHERBROKER-T0000000000000";
         assert_eq!(decode_broker_id(raw, TEST_BROKER_ID), raw);
+    }
+
+    #[rstest]
+    fn test_decode_client_order_id_rejects_empty_without_panicking() {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            decode_client_order_id("", TEST_BROKER_ID, "client_order_id", "test_context")
+        }));
+
+        let error = result.unwrap().unwrap_err().to_string();
+        assert!(error.contains("test_context"));
+        assert!(error.contains("raw_len=0"));
     }
 
     #[rstest]

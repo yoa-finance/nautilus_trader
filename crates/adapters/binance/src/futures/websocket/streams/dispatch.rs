@@ -20,7 +20,10 @@
 //! external / untracked orders). Exchange-generated fills (liquidation, ADL,
 //! settlement) are routed through the reports path regardless of tracking.
 
-use std::sync::{Arc, Mutex};
+use std::{
+    panic::{AssertUnwindSafe, catch_unwind},
+    sync::{Arc, Mutex},
+};
 
 use futures_util::{Stream, StreamExt, pin_mut};
 use nautilus_common::{cache::fifo::FifoCache, live::get_runtime};
@@ -43,7 +46,7 @@ use super::{
         BinanceFuturesTradeLiteMsg, BinanceFuturesWsStreamsMessage, OrderUpdateData,
     },
     parse_exec::{
-        decode_algo_client_id, parse_futures_account_update,
+        decode_algo_client_id, decode_order_client_id, parse_futures_account_update,
         parse_futures_algo_update_to_order_status, parse_futures_order_update_to_fill,
         parse_futures_order_update_to_order_status,
     },
@@ -54,7 +57,7 @@ use crate::{
         dispatch::{
             OrderIdentity, WsDispatchState, emit_order_accepted_once, ensure_accepted_emitted,
         },
-        encoder::decode_broker_id,
+        encoder::decode_client_order_id,
         enums::{BinancePositionSide, BinanceProductType},
         parse::{
             parse_price_at_precision, parse_quantity_at_precision, price_at_precision,
@@ -111,7 +114,17 @@ where
                     // relies on this to flush events queued on the old stream
                     // before the new dispatcher takes over.
                     match msg {
-                        Some(message) => dispatch_fn(message, ctx.as_ref(), &recovery_tx),
+                        Some(message) => {
+                            let result = catch_unwind(AssertUnwindSafe(|| {
+                                dispatch_fn(message, ctx.as_ref(), &recovery_tx);
+                            }));
+
+                            if result.is_err() {
+                                log::error!(
+                                    "Futures user data stream dispatch panicked; skipping message and continuing"
+                                );
+                            }
+                        }
                         None => {
                             log::debug!("WS dispatch stream ended");
                             break;
@@ -315,11 +328,6 @@ pub(crate) fn dispatch_order_update(
         (id, 8, 8)
     };
 
-    let client_order_id = ClientOrderId::new(decode_broker_id(
-        &order.client_order_id,
-        BINANCE_NAUTILUS_FUTURES_BROKER_ID,
-    ));
-
     // Exchange-generated orders (liquidation/ADL/settlement) are routed through
     // reconciliation reports regardless of tracked/untracked state, because
     // they have no locally submitted identity
@@ -358,6 +366,20 @@ pub(crate) fn dispatch_order_update(
         );
         return;
     }
+
+    let client_order_id = match decode_order_client_id(order) {
+        Ok(client_order_id) => client_order_id,
+        Err(e) => {
+            log::error!(
+                "Skipping malformed Futures order update client_order_id: symbol={}, order_id={}, execution_type={:?}, status={:?}: {e}",
+                order.symbol,
+                order.order_id,
+                order.execution_type,
+                order.order_status,
+            );
+            return;
+        }
+    };
 
     let identity = dispatch_state
         .order_identities
@@ -882,10 +904,22 @@ pub(crate) fn dispatch_trade_lite(
         (id, 8, 8)
     };
 
-    let client_order_id = ClientOrderId::new(decode_broker_id(
+    let client_order_id = match decode_client_order_id(
         &msg.client_order_id,
         BINANCE_NAUTILUS_FUTURES_BROKER_ID,
-    ));
+        "trade_lite.client_order_id",
+        "futures_trade_lite",
+    ) {
+        Ok(client_order_id) => client_order_id,
+        Err(e) => {
+            log::error!(
+                "Skipping malformed Futures TRADE_LITE client_order_id: symbol={}, order_id={}: {e}",
+                msg.symbol,
+                msg.order_id,
+            );
+            return;
+        }
+    };
 
     let Some(identity) = dispatch_state
         .order_identities
@@ -1128,7 +1162,18 @@ pub(crate) fn dispatch_algo_update(
     let algo_data = &msg.algo_order;
     let ts_init = clock.get_time_ns();
     let ts_event = UnixNanos::from_millis(msg.event_time as u64);
-    let client_order_id = decode_algo_client_id(algo_data);
+    let client_order_id = match decode_algo_client_id(algo_data) {
+        Ok(client_order_id) => client_order_id,
+        Err(e) => {
+            log::error!(
+                "Skipping malformed Futures algo update client_algo_id: symbol={}, algo_id={}, status={:?}: {e}",
+                algo_data.symbol,
+                algo_data.algo_id,
+                algo_data.algo_status,
+            );
+            return;
+        }
+    };
 
     let symbol_ustr = ustr::Ustr::from(algo_data.symbol.as_str());
     let (instrument_id, _price_precision, _size_precision) =
@@ -1198,16 +1243,20 @@ pub(crate) fn dispatch_algo_update(
                 );
                 dispatch_state.cleanup_terminal(client_order_id);
                 emitter.send_order_event(OrderEventAny::Canceled(canceled));
-            } else if let Some(report) = parse_futures_algo_update_to_order_status(
-                algo_data,
-                msg.event_time,
-                instrument_id,
-                _price_precision,
-                _size_precision,
-                account_id,
-                ts_init,
-            ) {
-                emitter.send_order_status_report(report);
+            } else {
+                match parse_futures_algo_update_to_order_status(
+                    algo_data,
+                    msg.event_time,
+                    instrument_id,
+                    _price_precision,
+                    _size_precision,
+                    account_id,
+                    ts_init,
+                ) {
+                    Ok(Some(report)) => emitter.send_order_status_report(report),
+                    Ok(None) => {}
+                    Err(e) => log::error!("Failed to parse algo order status report: {e}"),
+                }
             }
         }
         BinanceAlgoStatus::Rejected => {
@@ -1224,16 +1273,20 @@ pub(crate) fn dispatch_algo_update(
                     ts_init,
                     false,
                 );
-            } else if let Some(report) = parse_futures_algo_update_to_order_status(
-                algo_data,
-                msg.event_time,
-                instrument_id,
-                _price_precision,
-                _size_precision,
-                account_id,
-                ts_init,
-            ) {
-                emitter.send_order_status_report(report);
+            } else {
+                match parse_futures_algo_update_to_order_status(
+                    algo_data,
+                    msg.event_time,
+                    instrument_id,
+                    _price_precision,
+                    _size_precision,
+                    account_id,
+                    ts_init,
+                ) {
+                    Ok(Some(report)) => emitter.send_order_status_report(report),
+                    Ok(None) => {}
+                    Err(e) => log::error!("Failed to parse algo order status report: {e}"),
+                }
             }
         }
         BinanceAlgoStatus::Finished => {

@@ -37,7 +37,7 @@ use super::messages::{
 };
 use crate::common::{
     consts::BINANCE_NAUTILUS_FUTURES_BROKER_ID,
-    encoder::decode_broker_id,
+    encoder::decode_client_order_id,
     enums::{
         BinanceAlgoStatus, BinanceFuturesOrderType, BinanceOrderStatus, BinanceSide,
         BinanceTimeInForce,
@@ -61,10 +61,12 @@ pub fn parse_futures_order_update_to_order_status(
     let order = &msg.order;
     let ts_event = UnixNanos::from_millis(msg.event_time as u64);
 
-    let client_order_id = ClientOrderId::new(decode_broker_id(
+    let client_order_id = decode_client_order_id(
         &order.client_order_id,
         BINANCE_NAUTILUS_FUTURES_BROKER_ID,
-    ));
+        "order.client_order_id",
+        "futures_order_update_status",
+    )?;
     let venue_order_id = VenueOrderId::new(order.order_id.to_string());
 
     let order_side = parse_side(order.side);
@@ -187,10 +189,12 @@ pub fn parse_futures_order_update_to_fill(
     let order = &msg.order;
     let ts_event = UnixNanos::from_millis(msg.event_time as u64);
 
-    let client_order_id = ClientOrderId::new(decode_broker_id(
+    let client_order_id = decode_client_order_id(
         &order.client_order_id,
         BINANCE_NAUTILUS_FUTURES_BROKER_ID,
-    ));
+        "order.client_order_id",
+        "futures_order_update_fill",
+    )?;
     let venue_order_id = VenueOrderId::new(order.order_id.to_string());
     let trade_id = TradeId::new(order.trade_id.to_string());
 
@@ -236,13 +240,21 @@ pub fn parse_futures_algo_update_to_order_status(
     size_precision: u8,
     account_id: AccountId,
     ts_init: UnixNanos,
-) -> Option<OrderStatusReport> {
+) -> anyhow::Result<Option<OrderStatusReport>> {
     let ts_event = UnixNanos::from_millis(event_time as u64);
 
-    let client_order_id = ClientOrderId::new(decode_broker_id(
+    let order_status = match algo_data.algo_status {
+        BinanceAlgoStatus::Canceled | BinanceAlgoStatus::Expired => OrderStatus::Canceled,
+        BinanceAlgoStatus::Rejected => OrderStatus::Rejected,
+        _ => return Ok(None),
+    };
+
+    let client_order_id = decode_client_order_id(
         &algo_data.client_algo_id,
         BINANCE_NAUTILUS_FUTURES_BROKER_ID,
-    ));
+        "algo.client_algo_id",
+        "futures_algo_update_status",
+    )?;
 
     let venue_order_id = algo_data
         .actual_order_id
@@ -252,12 +264,6 @@ pub fn parse_futures_algo_update_to_order_status(
             || VenueOrderId::new(algo_data.algo_id.to_string()),
             |id| VenueOrderId::new(id.clone()),
         );
-
-    let order_status = match algo_data.algo_status {
-        BinanceAlgoStatus::Canceled | BinanceAlgoStatus::Expired => OrderStatus::Canceled,
-        BinanceAlgoStatus::Rejected => OrderStatus::Rejected,
-        _ => return None,
-    };
 
     let order_side = parse_side(algo_data.side);
     let order_type = parse_futures_order_type(algo_data.order_type);
@@ -282,7 +288,7 @@ pub fn parse_futures_algo_update_to_order_status(
         None, // report_id
     );
 
-    Some(report)
+    Ok(Some(report))
 }
 
 /// Converts a Binance Futures account update to a Nautilus account state.
@@ -326,19 +332,23 @@ pub fn parse_futures_account_update(
 }
 
 /// Returns the decoded client order ID from an [`OrderUpdateData`].
-pub fn decode_order_client_id(order: &OrderUpdateData) -> ClientOrderId {
-    ClientOrderId::new(decode_broker_id(
+pub fn decode_order_client_id(order: &OrderUpdateData) -> anyhow::Result<ClientOrderId> {
+    decode_client_order_id(
         &order.client_order_id,
         BINANCE_NAUTILUS_FUTURES_BROKER_ID,
-    ))
+        "order.client_order_id",
+        "futures_order_update",
+    )
 }
 
 /// Returns the decoded client order ID from an [`AlgoOrderUpdateData`].
-pub fn decode_algo_client_id(algo: &AlgoOrderUpdateData) -> ClientOrderId {
-    ClientOrderId::new(decode_broker_id(
+pub fn decode_algo_client_id(algo: &AlgoOrderUpdateData) -> anyhow::Result<ClientOrderId> {
+    decode_client_order_id(
         &algo.client_algo_id,
         BINANCE_NAUTILUS_FUTURES_BROKER_ID,
-    ))
+        "algo.client_algo_id",
+        "futures_algo_update",
+    )
 }
 
 fn parse_side(side: BinanceSide) -> OrderSide {
@@ -488,6 +498,42 @@ mod tests {
     }
 
     #[rstest]
+    fn test_parse_order_update_empty_client_order_id_returns_error_without_panicking() {
+        let mut msg: BinanceFuturesOrderUpdateMsg =
+            load_user_data_fixture("order_update_trade.json");
+        msg.order.client_order_id.clear();
+        let ts_init = UnixNanos::from(1_000_000_000u64);
+
+        let status_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            parse_futures_order_update_to_order_status(
+                &msg,
+                instrument_id(),
+                PRICE_PRECISION,
+                SIZE_PRECISION,
+                account_id(),
+                false,
+                ts_init,
+            )
+        }));
+        assert!(status_result.unwrap().is_err());
+
+        let fill_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            parse_futures_order_update_to_fill(
+                &msg,
+                account_id(),
+                instrument_id(),
+                PRICE_PRECISION,
+                SIZE_PRECISION,
+                None,
+                None,
+                None,
+                ts_init,
+            )
+        }));
+        assert!(fill_result.unwrap().is_err());
+    }
+
+    #[rstest]
     fn test_parse_account_update() {
         let msg: BinanceFuturesAccountUpdateMsg = load_user_data_fixture("account_update.json");
         let ts_init = UnixNanos::from(1_000_000_000u64);
@@ -549,6 +595,7 @@ mod tests {
             account_id(),
             ts_init,
         )
+        .unwrap()
         .unwrap();
 
         assert_eq!(report.account_id, account_id());
@@ -586,7 +633,8 @@ mod tests {
             SIZE_PRECISION,
             account_id(),
             UnixNanos::default(),
-        );
+        )
+        .unwrap();
 
         assert!(report.is_none());
     }
@@ -597,9 +645,21 @@ mod tests {
         let original = ClientOrderId::from("O-20200101-000000-000-000-1");
         msg.order.client_order_id = encode_broker_id(&original, BINANCE_NAUTILUS_FUTURES_BROKER_ID);
 
-        let decoded = decode_order_client_id(&msg.order);
+        let decoded = decode_order_client_id(&msg.order).unwrap();
 
         assert_eq!(decoded, original);
+    }
+
+    #[rstest]
+    fn test_decode_order_client_id_rejects_empty_without_panicking() {
+        let mut msg: BinanceFuturesOrderUpdateMsg = load_user_data_fixture("order_update_new.json");
+        msg.order.client_order_id.clear();
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            decode_order_client_id(&msg.order)
+        }));
+
+        assert!(result.unwrap().is_err());
     }
 
     #[rstest]
@@ -610,9 +670,22 @@ mod tests {
         msg.algo_order.client_algo_id =
             encode_broker_id(&original, BINANCE_NAUTILUS_FUTURES_BROKER_ID);
 
-        let decoded = decode_algo_client_id(&msg.algo_order);
+        let decoded = decode_algo_client_id(&msg.algo_order).unwrap();
 
         assert_eq!(decoded, original);
+    }
+
+    #[rstest]
+    fn test_decode_algo_client_id_rejects_empty_without_panicking() {
+        let mut msg: BinanceFuturesAlgoUpdateMsg =
+            load_user_data_fixture("algo_update_canceled.json");
+        msg.algo_order.client_algo_id.clear();
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            decode_algo_client_id(&msg.algo_order)
+        }));
+
+        assert!(result.unwrap().is_err());
     }
 
     #[rstest]

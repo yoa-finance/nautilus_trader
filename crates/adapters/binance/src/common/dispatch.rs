@@ -80,6 +80,7 @@ pub struct OrderIdentity {
 #[derive(Debug)]
 pub struct WsDispatchState {
     pub order_identities: DashMap<ClientOrderId, OrderIdentity>,
+    pub venue_order_identities: DashMap<VenueOrderId, ClientOrderId>,
     pub pending_requests: DashMap<String, PendingRequest>,
     live_exit_cancel_gates: Mutex<HashMap<String, CancelAllGate>>,
     emitted_accepted: Mutex<FifoCache<ClientOrderId, 10_000>>,
@@ -105,6 +106,7 @@ impl Default for WsDispatchState {
     fn default() -> Self {
         Self {
             order_identities: DashMap::new(),
+            venue_order_identities: DashMap::new(),
             pending_requests: DashMap::new(),
             live_exit_cancel_gates: Mutex::new(HashMap::new()),
             emitted_accepted: Mutex::new(FifoCache::new()),
@@ -127,6 +129,8 @@ impl WsDispatchState {
 
     /// Marks an order as having emitted an OrderAccepted event.
     pub fn insert_accepted(&self, cid: ClientOrderId, venue_order_id: VenueOrderId) -> bool {
+        self.venue_order_identities.insert(venue_order_id, cid);
+
         let key = AcceptedOrderKey {
             client_order_id: cid,
             venue_order_id,
@@ -143,6 +147,18 @@ impl WsDispatchState {
         let was_emitted_for_client = emitted_accepted.contains(&cid);
         emitted_accepted.add(cid);
         !was_emitted_for_client
+    }
+
+    pub fn identity_for_venue_order(
+        &self,
+        venue_order_id: &VenueOrderId,
+    ) -> Option<(ClientOrderId, OrderIdentity)> {
+        let client_order_id = *self.venue_order_identities.get(venue_order_id)?;
+        let identity = self
+            .order_identities
+            .get(&client_order_id)
+            .map(|entry| entry.clone())?;
+        Some((client_order_id, identity))
     }
 
     pub fn insert_pending_update(&self, cid: ClientOrderId) {
@@ -224,6 +240,8 @@ impl WsDispatchState {
     /// Removes all tracking state for a terminal order.
     pub fn cleanup_terminal(&self, cid: ClientOrderId) {
         self.order_identities.remove(&cid);
+        self.venue_order_identities
+            .retain(|_, mapped_cid| mapped_cid != &cid);
         self.pending_updates
             .lock()
             .expect(MUTEX_POISONED)
