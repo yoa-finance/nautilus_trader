@@ -283,8 +283,7 @@ fn parse_time_in_force(tif: BinanceTimeInForce) -> TimeInForce {
 
 #[cfg(test)]
 mod tests {
-    use nautilus_model::identifiers::ClientOrderId;
-    use nautilus_model::types::Quantity;
+    use nautilus_model::{identifiers::ClientOrderId, types::Quantity};
     use rstest::rstest;
 
     use super::*;

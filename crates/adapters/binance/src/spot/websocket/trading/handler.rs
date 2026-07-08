@@ -1399,16 +1399,18 @@ mod tests {
     use rstest::rstest;
 
     use super::*;
-    use crate::common::consts::{
-        BINANCE_SPOT_SBE_WS_API_DEMO_URL, BINANCE_SPOT_SBE_WS_API_TESTNET_URL,
-        BINANCE_SPOT_SBE_WS_API_URL,
-    };
-    use crate::spot::sbe::spot::{
-        Encoder, WriteBuf, bool_enum::BoolEnum, cancel_open_orders_response_codec,
-        cancel_order_list_response_codec, contingency_type::ContingencyType,
-        list_order_status::ListOrderStatus, list_status_event_codec,
-        list_status_type::ListStatusType, order_side::OrderSide, order_status::OrderStatus,
-        order_type::OrderType, time_in_force::TimeInForce, web_socket_response_codec,
+    use crate::{
+        common::consts::{
+            BINANCE_SPOT_SBE_WS_API_DEMO_URL, BINANCE_SPOT_SBE_WS_API_TESTNET_URL,
+            BINANCE_SPOT_SBE_WS_API_URL,
+        },
+        spot::sbe::spot::{
+            Encoder, WriteBuf, bool_enum::BoolEnum, cancel_open_orders_response_codec,
+            cancel_order_list_response_codec, contingency_type::ContingencyType,
+            list_order_status::ListOrderStatus, list_status_event_codec,
+            list_status_type::ListStatusType, order_side::OrderSide, order_status::OrderStatus,
+            order_type::OrderType, time_in_force::TimeInForce, web_socket_response_codec,
+        },
     };
 
     fn encode_list_status() -> Vec<u8> {

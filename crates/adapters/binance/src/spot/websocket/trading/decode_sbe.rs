@@ -16,7 +16,7 @@
 //! SBE decoders for Binance Spot user data stream events.
 //!
 //! Decodes templates 601 (BalanceUpdateEvent), 603 (ExecutionReportEvent), and
-//! 607 (OutboundAccountPositionEvent) from schema 3:4 binary payloads into the
+//! 607 (OutboundAccountPositionEvent) from schema 3:5 binary payloads into the
 //! venue-level structs defined in [`super::user_data`].
 //! The existing JSON parse functions in [`super::parse`] then convert these to Nautilus types.
 
@@ -30,15 +30,17 @@ use super::user_data::{
 };
 use crate::{
     common::enums::{BinanceOrderStatus, BinanceSide, BinanceTimeInForce},
-    spot::http::models::{
-        BinanceSpotOrderListCancelResult, BinanceSpotOrderListChild,
-        BinanceSpotOrderListChildReport,
-    },
-    spot::sbe::spot::{
-        ReadBuf, balance_update_event_codec, bool_enum, cancel_order_list_response_codec,
-        execution_report_event_codec, execution_type, list_status_event_codec,
-        message_header_codec, order_side, order_status, order_type,
-        outbound_account_position_event_codec, time_in_force,
+    spot::{
+        http::models::{
+            BinanceSpotOrderListCancelResult, BinanceSpotOrderListChild,
+            BinanceSpotOrderListChildReport,
+        },
+        sbe::spot::{
+            ReadBuf, balance_update_event_codec, bool_enum, cancel_order_list_response_codec,
+            execution_report_event_codec, execution_type, list_status_event_codec,
+            message_header_codec, order_side, order_status, order_type,
+            outbound_account_position_event_codec, time_in_force,
+        },
     },
 };
 

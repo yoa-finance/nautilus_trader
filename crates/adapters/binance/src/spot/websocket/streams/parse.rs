@@ -23,10 +23,12 @@ use nautilus_model::{
     types::{Price, Quantity},
 };
 
-use crate::common::time::unix_nanos_from_micros;
-use crate::spot::sbe::stream::{
-    BestBidAskStreamEvent, DepthDiffStreamEvent, DepthSnapshotStreamEvent, MessageHeader,
-    StreamDecodeError, TradesStreamEvent, template_id,
+use crate::{
+    common::time::unix_nanos_from_micros,
+    spot::sbe::stream::{
+        BestBidAskStreamEvent, DepthDiffStreamEvent, DepthSnapshotStreamEvent, MessageHeader,
+        StreamDecodeError, TradesStreamEvent, template_id,
+    },
 };
 
 /// Decoded market data message.

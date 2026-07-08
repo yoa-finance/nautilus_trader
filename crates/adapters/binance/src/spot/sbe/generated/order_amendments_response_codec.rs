@@ -1,11 +1,11 @@
-pub use decoder::OrderListResponseDecoder;
-pub use encoder::OrderListResponseEncoder;
+pub use decoder::OrderAmendmentsResponseDecoder;
+pub use encoder::OrderAmendmentsResponseEncoder;
 
 use super::*;
 pub use super::{SBE_SCHEMA_ID, SBE_SCHEMA_VERSION, SBE_SEMANTIC_VERSION};
 
-pub const SBE_BLOCK_LENGTH: u16 = 19;
-pub const SBE_TEMPLATE_ID: u16 = 313;
+pub const SBE_BLOCK_LENGTH: u16 = 0;
+pub const SBE_TEMPLATE_ID: u16 = 316;
 
 pub mod encoder {
     use message_header_codec::*;
@@ -13,21 +13,21 @@ pub mod encoder {
     use super::*;
 
     #[derive(Debug, Default)]
-    pub struct OrderListResponseEncoder<'a> {
+    pub struct OrderAmendmentsResponseEncoder<'a> {
         buf: WriteBuf<'a>,
         initial_offset: usize,
         offset: usize,
         limit: usize,
     }
 
-    impl<'a> Writer<'a> for OrderListResponseEncoder<'a> {
+    impl<'a> Writer<'a> for OrderAmendmentsResponseEncoder<'a> {
         #[inline]
         fn get_buf_mut(&mut self) -> &mut WriteBuf<'a> {
             &mut self.buf
         }
     }
 
-    impl<'a> Encoder<'a> for OrderListResponseEncoder<'a> {
+    impl<'a> Encoder<'a> for OrderAmendmentsResponseEncoder<'a> {
         #[inline]
         fn get_limit(&self) -> usize {
             self.limit
@@ -39,7 +39,7 @@ pub mod encoder {
         }
     }
 
-    impl<'a> OrderListResponseEncoder<'a> {
+    impl<'a> OrderAmendmentsResponseEncoder<'a> {
         pub fn wrap(mut self, buf: WriteBuf<'a>, offset: usize) -> Self {
             let limit = offset + SBE_BLOCK_LENGTH as usize;
             self.buf = buf;
@@ -63,98 +63,27 @@ pub mod encoder {
             header
         }
 
-        /// primitive field 'orderListId'
-        /// - min value: -9223372036854775807
-        /// - max value: 9223372036854775807
-        /// - null value: -9223372036854775808_i64
-        /// - characterEncoding: null
-        /// - semanticType: null
-        /// - encodedOffset: 0
-        /// - encodedLength: 8
-        /// - version: 0
-        #[inline]
-        pub fn order_list_id(&mut self, value: i64) {
-            let offset = self.offset;
-            self.get_buf_mut().put_i64_at(offset, value);
-        }
-
-        /// REQUIRED enum
-        #[inline]
-        pub fn contingency_type(&mut self, value: contingency_type::ContingencyType) {
-            let offset = self.offset + 8;
-            self.get_buf_mut().put_u8_at(offset, value as u8)
-        }
-
-        /// REQUIRED enum
-        #[inline]
-        pub fn list_status_type(&mut self, value: list_status_type::ListStatusType) {
-            let offset = self.offset + 9;
-            self.get_buf_mut().put_u8_at(offset, value as u8)
-        }
-
-        /// REQUIRED enum
-        #[inline]
-        pub fn list_order_status(&mut self, value: list_order_status::ListOrderStatus) {
-            let offset = self.offset + 10;
-            self.get_buf_mut().put_u8_at(offset, value as u8)
-        }
-
-        /// primitive field 'transactionTime'
-        /// - min value: -9223372036854775807
-        /// - max value: 9223372036854775807
-        /// - null value: -9223372036854775808_i64
-        /// - characterEncoding: null
-        /// - semanticType: null
-        /// - encodedOffset: 11
-        /// - encodedLength: 8
-        /// - version: 0
-        #[inline]
-        pub fn transaction_time(&mut self, value: i64) {
-            let offset = self.offset + 11;
-            self.get_buf_mut().put_i64_at(offset, value);
-        }
-
         /// GROUP ENCODER (id=100)
         #[inline]
-        pub fn orders_encoder(
+        pub fn amendments_encoder(
             self,
-            count: u16,
-            orders_encoder: OrdersEncoder<Self>,
-        ) -> OrdersEncoder<Self> {
-            orders_encoder.wrap(self, count)
-        }
-
-        /// VAR_DATA ENCODER - character encoding: 'UTF-8'
-        #[inline]
-        pub fn list_client_order_id(&mut self, value: &str) {
-            let limit = self.get_limit();
-            let data_length = value.len();
-            self.set_limit(limit + 1 + data_length);
-            self.get_buf_mut().put_u8_at(limit, data_length as u8);
-            self.get_buf_mut().put_slice_at(limit + 1, value.as_bytes());
-        }
-
-        /// VAR_DATA ENCODER - character encoding: 'UTF-8'
-        #[inline]
-        pub fn symbol(&mut self, value: &str) {
-            let limit = self.get_limit();
-            let data_length = value.len();
-            self.set_limit(limit + 1 + data_length);
-            self.get_buf_mut().put_u8_at(limit, data_length as u8);
-            self.get_buf_mut().put_slice_at(limit + 1, value.as_bytes());
+            count: u32,
+            amendments_encoder: AmendmentsEncoder<Self>,
+        ) -> AmendmentsEncoder<Self> {
+            amendments_encoder.wrap(self, count)
         }
     }
 
     #[derive(Debug, Default)]
-    pub struct OrdersEncoder<P> {
+    pub struct AmendmentsEncoder<P> {
         parent: Option<P>,
-        count: u16,
+        count: u32,
         index: usize,
         offset: usize,
         initial_limit: usize,
     }
 
-    impl<'a, P> Writer<'a> for OrdersEncoder<P>
+    impl<'a, P> Writer<'a> for AmendmentsEncoder<P>
     where
         P: Writer<'a> + Default,
     {
@@ -168,7 +97,7 @@ pub mod encoder {
         }
     }
 
-    impl<'a, P> Encoder<'a> for OrdersEncoder<P>
+    impl<'a, P> Encoder<'a> for AmendmentsEncoder<P>
     where
         P: Encoder<'a> + Default,
     {
@@ -186,18 +115,18 @@ pub mod encoder {
         }
     }
 
-    impl<'a, P> OrdersEncoder<P>
+    impl<'a, P> AmendmentsEncoder<P>
     where
         P: Encoder<'a> + Default,
     {
         #[inline]
-        pub fn wrap(mut self, mut parent: P, count: u16) -> Self {
+        pub fn wrap(mut self, mut parent: P, count: u32) -> Self {
             let initial_limit = parent.get_limit();
-            parent.set_limit(initial_limit + 4);
+            parent.set_limit(initial_limit + 6);
             parent
                 .get_buf_mut()
                 .put_u16_at(initial_limit, Self::block_length());
-            parent.get_buf_mut().put_u16_at(initial_limit + 2, count);
+            parent.get_buf_mut().put_u32_at(initial_limit + 2, count);
             self.parent = Some(parent);
             self.count = count;
             self.index = usize::MAX;
@@ -208,7 +137,7 @@ pub mod encoder {
 
         #[inline]
         pub fn block_length() -> u16 {
-            8
+            41
         }
 
         #[inline]
@@ -248,6 +177,81 @@ pub mod encoder {
             self.get_buf_mut().put_i64_at(offset, value);
         }
 
+        /// primitive field 'executionId'
+        /// - min value: -9223372036854775807
+        /// - max value: 9223372036854775807
+        /// - null value: -9223372036854775808_i64
+        /// - characterEncoding: null
+        /// - semanticType: null
+        /// - encodedOffset: 8
+        /// - encodedLength: 8
+        /// - version: 0
+        #[inline]
+        pub fn execution_id(&mut self, value: i64) {
+            let offset = self.offset + 8;
+            self.get_buf_mut().put_i64_at(offset, value);
+        }
+
+        /// primitive field 'qtyExponent'
+        /// - min value: -127
+        /// - max value: 127
+        /// - null value: -128_i8
+        /// - characterEncoding: null
+        /// - semanticType: null
+        /// - encodedOffset: 16
+        /// - encodedLength: 1
+        /// - version: 0
+        #[inline]
+        pub fn qty_exponent(&mut self, value: i8) {
+            let offset = self.offset + 16;
+            self.get_buf_mut().put_i8_at(offset, value);
+        }
+
+        /// primitive field 'origQty'
+        /// - min value: -9223372036854775807
+        /// - max value: 9223372036854775807
+        /// - null value: -9223372036854775808_i64
+        /// - characterEncoding: null
+        /// - semanticType: null
+        /// - encodedOffset: 17
+        /// - encodedLength: 8
+        /// - version: 0
+        #[inline]
+        pub fn orig_qty(&mut self, value: i64) {
+            let offset = self.offset + 17;
+            self.get_buf_mut().put_i64_at(offset, value);
+        }
+
+        /// primitive field 'newQty'
+        /// - min value: -9223372036854775807
+        /// - max value: 9223372036854775807
+        /// - null value: -9223372036854775808_i64
+        /// - characterEncoding: null
+        /// - semanticType: null
+        /// - encodedOffset: 25
+        /// - encodedLength: 8
+        /// - version: 0
+        #[inline]
+        pub fn new_qty(&mut self, value: i64) {
+            let offset = self.offset + 25;
+            self.get_buf_mut().put_i64_at(offset, value);
+        }
+
+        /// primitive field 'time'
+        /// - min value: -9223372036854775807
+        /// - max value: 9223372036854775807
+        /// - null value: -9223372036854775808_i64
+        /// - characterEncoding: null
+        /// - semanticType: null
+        /// - encodedOffset: 33
+        /// - encodedLength: 8
+        /// - version: 0
+        #[inline]
+        pub fn time(&mut self, value: i64) {
+            let offset = self.offset + 33;
+            self.get_buf_mut().put_i64_at(offset, value);
+        }
+
         /// VAR_DATA ENCODER - character encoding: 'UTF-8'
         #[inline]
         pub fn symbol(&mut self, value: &str) {
@@ -260,7 +264,17 @@ pub mod encoder {
 
         /// VAR_DATA ENCODER - character encoding: 'UTF-8'
         #[inline]
-        pub fn client_order_id(&mut self, value: &str) {
+        pub fn orig_client_order_id(&mut self, value: &str) {
+            let limit = self.get_limit();
+            let data_length = value.len();
+            self.set_limit(limit + 1 + data_length);
+            self.get_buf_mut().put_u8_at(limit, data_length as u8);
+            self.get_buf_mut().put_slice_at(limit + 1, value.as_bytes());
+        }
+
+        /// VAR_DATA ENCODER - character encoding: 'UTF-8'
+        #[inline]
+        pub fn new_client_order_id(&mut self, value: &str) {
             let limit = self.get_limit();
             let data_length = value.len();
             self.set_limit(limit + 1 + data_length);
@@ -276,7 +290,7 @@ pub mod decoder {
     use super::*;
 
     #[derive(Clone, Copy, Debug, Default)]
-    pub struct OrderListResponseDecoder<'a> {
+    pub struct OrderAmendmentsResponseDecoder<'a> {
         buf: ReadBuf<'a>,
         initial_offset: usize,
         offset: usize,
@@ -285,21 +299,21 @@ pub mod decoder {
         pub acting_version: u16,
     }
 
-    impl ActingVersion for OrderListResponseDecoder<'_> {
+    impl ActingVersion for OrderAmendmentsResponseDecoder<'_> {
         #[inline]
         fn acting_version(&self) -> u16 {
             self.acting_version
         }
     }
 
-    impl<'a> Reader<'a> for OrderListResponseDecoder<'a> {
+    impl<'a> Reader<'a> for OrderAmendmentsResponseDecoder<'a> {
         #[inline]
         fn get_buf(&self) -> &ReadBuf<'a> {
             &self.buf
         }
     }
 
-    impl<'a> Decoder<'a> for OrderListResponseDecoder<'a> {
+    impl<'a> Decoder<'a> for OrderAmendmentsResponseDecoder<'a> {
         #[inline]
         fn get_limit(&self) -> usize {
             self.limit
@@ -311,7 +325,7 @@ pub mod decoder {
         }
     }
 
-    impl<'a> OrderListResponseDecoder<'a> {
+    impl<'a> OrderAmendmentsResponseDecoder<'a> {
         pub fn wrap(
             mut self,
             buf: ReadBuf<'a>,
@@ -347,83 +361,23 @@ pub mod decoder {
             )
         }
 
-        /// primitive field - 'REQUIRED'
-        #[inline]
-        pub fn order_list_id(&self) -> i64 {
-            self.get_buf().get_i64_at(self.offset)
-        }
-
-        /// REQUIRED enum
-        #[inline]
-        pub fn contingency_type(&self) -> contingency_type::ContingencyType {
-            self.get_buf().get_u8_at(self.offset + 8).into()
-        }
-
-        /// REQUIRED enum
-        #[inline]
-        pub fn list_status_type(&self) -> list_status_type::ListStatusType {
-            self.get_buf().get_u8_at(self.offset + 9).into()
-        }
-
-        /// REQUIRED enum
-        #[inline]
-        pub fn list_order_status(&self) -> list_order_status::ListOrderStatus {
-            self.get_buf().get_u8_at(self.offset + 10).into()
-        }
-
-        /// primitive field - 'REQUIRED'
-        #[inline]
-        pub fn transaction_time(&self) -> i64 {
-            self.get_buf().get_i64_at(self.offset + 11)
-        }
-
         /// GROUP DECODER (id=100)
         #[inline]
-        pub fn orders_decoder(self) -> OrdersDecoder<Self> {
-            OrdersDecoder::default().wrap(self)
-        }
-
-        /// VAR_DATA DECODER - character encoding: 'UTF-8'
-        #[inline]
-        pub fn list_client_order_id_decoder(&mut self) -> (usize, usize) {
-            let offset = self.get_limit();
-            let data_length = self.get_buf().get_u8_at(offset) as usize;
-            self.set_limit(offset + 1 + data_length);
-            (offset + 1, data_length)
-        }
-
-        #[inline]
-        pub fn list_client_order_id_slice(&'a self, coordinates: (usize, usize)) -> &'a [u8] {
-            debug_assert!(self.get_limit() >= coordinates.0 + coordinates.1);
-            self.get_buf().get_slice_at(coordinates.0, coordinates.1)
-        }
-
-        /// VAR_DATA DECODER - character encoding: 'UTF-8'
-        #[inline]
-        pub fn symbol_decoder(&mut self) -> (usize, usize) {
-            let offset = self.get_limit();
-            let data_length = self.get_buf().get_u8_at(offset) as usize;
-            self.set_limit(offset + 1 + data_length);
-            (offset + 1, data_length)
-        }
-
-        #[inline]
-        pub fn symbol_slice(&'a self, coordinates: (usize, usize)) -> &'a [u8] {
-            debug_assert!(self.get_limit() >= coordinates.0 + coordinates.1);
-            self.get_buf().get_slice_at(coordinates.0, coordinates.1)
+        pub fn amendments_decoder(self) -> AmendmentsDecoder<Self> {
+            AmendmentsDecoder::default().wrap(self)
         }
     }
 
     #[derive(Debug, Default)]
-    pub struct OrdersDecoder<P> {
+    pub struct AmendmentsDecoder<P> {
         parent: Option<P>,
         block_length: u16,
-        count: u16,
+        count: u32,
         index: usize,
         offset: usize,
     }
 
-    impl<'a, P> ActingVersion for OrdersDecoder<P>
+    impl<'a, P> ActingVersion for AmendmentsDecoder<P>
     where
         P: Reader<'a> + ActingVersion + Default,
     {
@@ -433,7 +387,7 @@ pub mod decoder {
         }
     }
 
-    impl<'a, P> Reader<'a> for OrdersDecoder<P>
+    impl<'a, P> Reader<'a> for AmendmentsDecoder<P>
     where
         P: Reader<'a> + Default,
     {
@@ -443,7 +397,7 @@ pub mod decoder {
         }
     }
 
-    impl<'a, P> Decoder<'a> for OrdersDecoder<P>
+    impl<'a, P> Decoder<'a> for AmendmentsDecoder<P>
     where
         P: Decoder<'a> + ActingVersion + Default,
     {
@@ -461,15 +415,15 @@ pub mod decoder {
         }
     }
 
-    impl<'a, P> OrdersDecoder<P>
+    impl<'a, P> AmendmentsDecoder<P>
     where
         P: Decoder<'a> + ActingVersion + Default,
     {
         pub fn wrap(mut self, mut parent: P) -> Self {
             let initial_offset = parent.get_limit();
             let block_length = parent.get_buf().get_u16_at(initial_offset);
-            let count = parent.get_buf().get_u16_at(initial_offset + 2);
-            parent.set_limit(initial_offset + 4);
+            let count = parent.get_buf().get_u32_at(initial_offset + 2);
+            parent.set_limit(initial_offset + 6);
             self.parent = Some(parent);
             self.block_length = block_length;
             self.count = count;
@@ -478,7 +432,7 @@ pub mod decoder {
             self
         }
 
-        /// group token - Token{signal=BEGIN_GROUP, name='orders', referencedName='null', description='null', packageName='null', id=100, version=0, deprecated=0, encodedLength=8, offset=19, componentTokenCount=21, encoding=Encoding{presence=REQUIRED, primitiveType=null, byteOrder=LITTLE_ENDIAN, minValue=null, maxValue=null, nullValue=null, constValue=null, characterEncoding='null', epoch='null', timeUnit=null, semanticType='null'}}
+        /// group token - Token{signal=BEGIN_GROUP, name='amendments', referencedName='null', description='null', packageName='null', id=100, version=0, deprecated=0, encodedLength=41, offset=0, componentTokenCount=42, encoding=Encoding{presence=REQUIRED, primitiveType=null, byteOrder=LITTLE_ENDIAN, minValue=null, maxValue=null, nullValue=null, constValue=null, characterEncoding='null', epoch='null', timeUnit=null, semanticType='null'}}
         #[inline]
         pub fn parent(&mut self) -> SbeResult<P> {
             self.parent.take().ok_or(SbeErr::ParentNotSet)
@@ -490,7 +444,7 @@ pub mod decoder {
         }
 
         #[inline]
-        pub fn count(&self) -> u16 {
+        pub fn count(&self) -> u32 {
             self.count
         }
 
@@ -516,6 +470,36 @@ pub mod decoder {
             self.get_buf().get_i64_at(self.offset)
         }
 
+        /// primitive field - 'REQUIRED'
+        #[inline]
+        pub fn execution_id(&self) -> i64 {
+            self.get_buf().get_i64_at(self.offset + 8)
+        }
+
+        /// primitive field - 'REQUIRED'
+        #[inline]
+        pub fn qty_exponent(&self) -> i8 {
+            self.get_buf().get_i8_at(self.offset + 16)
+        }
+
+        /// primitive field - 'REQUIRED'
+        #[inline]
+        pub fn orig_qty(&self) -> i64 {
+            self.get_buf().get_i64_at(self.offset + 17)
+        }
+
+        /// primitive field - 'REQUIRED'
+        #[inline]
+        pub fn new_qty(&self) -> i64 {
+            self.get_buf().get_i64_at(self.offset + 25)
+        }
+
+        /// primitive field - 'REQUIRED'
+        #[inline]
+        pub fn time(&self) -> i64 {
+            self.get_buf().get_i64_at(self.offset + 33)
+        }
+
         /// VAR_DATA DECODER - character encoding: 'UTF-8'
         #[inline]
         pub fn symbol_decoder(&mut self) -> (usize, usize) {
@@ -536,7 +520,7 @@ pub mod decoder {
 
         /// VAR_DATA DECODER - character encoding: 'UTF-8'
         #[inline]
-        pub fn client_order_id_decoder(&mut self) -> (usize, usize) {
+        pub fn orig_client_order_id_decoder(&mut self) -> (usize, usize) {
             let offset = self.parent.as_ref().expect("parent missing").get_limit();
             let data_length = self.get_buf().get_u8_at(offset) as usize;
             self.parent
@@ -547,7 +531,25 @@ pub mod decoder {
         }
 
         #[inline]
-        pub fn client_order_id_slice(&'a self, coordinates: (usize, usize)) -> &'a [u8] {
+        pub fn orig_client_order_id_slice(&'a self, coordinates: (usize, usize)) -> &'a [u8] {
+            debug_assert!(self.get_limit() >= coordinates.0 + coordinates.1);
+            self.get_buf().get_slice_at(coordinates.0, coordinates.1)
+        }
+
+        /// VAR_DATA DECODER - character encoding: 'UTF-8'
+        #[inline]
+        pub fn new_client_order_id_decoder(&mut self) -> (usize, usize) {
+            let offset = self.parent.as_ref().expect("parent missing").get_limit();
+            let data_length = self.get_buf().get_u8_at(offset) as usize;
+            self.parent
+                .as_mut()
+                .unwrap()
+                .set_limit(offset + 1 + data_length);
+            (offset + 1, data_length)
+        }
+
+        #[inline]
+        pub fn new_client_order_id_slice(&'a self, coordinates: (usize, usize)) -> &'a [u8] {
             debug_assert!(self.get_limit() >= coordinates.0 + coordinates.1);
             self.get_buf().get_slice_at(coordinates.0, coordinates.1)
         }

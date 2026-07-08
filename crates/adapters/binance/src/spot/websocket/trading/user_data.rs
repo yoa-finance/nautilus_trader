@@ -23,10 +23,12 @@ use rust_decimal::Decimal;
 use serde::Deserialize;
 use ustr::Ustr;
 
-use crate::common::enums::{BinanceOrderStatus, BinanceSide, BinanceTimeInForce};
-use crate::spot::sbe::spot::{
-    contingency_type::ContingencyType, list_order_status::ListOrderStatus,
-    list_status_type::ListStatusType,
+use crate::{
+    common::enums::{BinanceOrderStatus, BinanceSide, BinanceTimeInForce},
+    spot::sbe::spot::{
+        contingency_type::ContingencyType, list_order_status::ListOrderStatus,
+        list_status_type::ListStatusType,
+    },
 };
 
 /// Spot-specific execution type for order updates.

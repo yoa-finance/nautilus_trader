@@ -66,17 +66,21 @@ use rust_decimal::Decimal;
 use tokio::task::JoinHandle;
 use ustr::Ustr;
 
-use super::http::models::{
-    BinanceSpotCancelAllItem, BinanceSpotCancelAllResult, BinanceSpotOrderListCancelResult,
-};
-use super::websocket::trading::{
-    client::BinanceSpotWsTradingClient,
-    messages::BinanceSpotWsTradingMessage,
-    parse::{
-        parse_spot_account_position, parse_spot_exec_report_to_fill,
-        parse_spot_exec_report_to_order_status,
+use super::{
+    http::models::{
+        BinanceSpotCancelAllItem, BinanceSpotCancelAllResult, BinanceSpotOrderListCancelResult,
     },
-    user_data::{BinanceSpotExecutionReport, BinanceSpotExecutionType, BinanceSpotListStatusMsg},
+    websocket::trading::{
+        client::BinanceSpotWsTradingClient,
+        messages::BinanceSpotWsTradingMessage,
+        parse::{
+            parse_spot_account_position, parse_spot_exec_report_to_fill,
+            parse_spot_exec_report_to_order_status,
+        },
+        user_data::{
+            BinanceSpotExecutionReport, BinanceSpotExecutionType, BinanceSpotListStatusMsg,
+        },
+    },
 };
 use crate::{
     common::{

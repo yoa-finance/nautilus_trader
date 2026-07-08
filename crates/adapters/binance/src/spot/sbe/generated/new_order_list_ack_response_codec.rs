@@ -233,7 +233,6 @@ pub mod encoder {
             if index >= self.count as usize {
                 return Ok(None);
             }
-
             if let Some(parent) = self.parent.as_mut() {
                 self.offset = parent.get_limit();
                 parent.set_limit(self.offset + Self::block_length() as usize);
@@ -358,7 +357,6 @@ pub mod encoder {
             if index >= self.count as usize {
                 return Ok(None);
             }
-
             if let Some(parent) = self.parent.as_mut() {
                 self.offset = parent.get_limit();
                 parent.set_limit(self.offset + Self::block_length() as usize);
@@ -672,7 +670,6 @@ pub mod decoder {
             if index >= self.count as usize {
                 return Ok(None);
             }
-
             if let Some(parent) = self.parent.as_mut() {
                 self.offset = parent.get_limit();
                 parent.set_limit(self.offset + self.block_length as usize);
@@ -812,7 +809,6 @@ pub mod decoder {
             if index >= self.count as usize {
                 return Ok(None);
             }
-
             if let Some(parent) = self.parent.as_mut() {
                 self.offset = parent.get_limit();
                 parent.set_limit(self.offset + self.block_length as usize);

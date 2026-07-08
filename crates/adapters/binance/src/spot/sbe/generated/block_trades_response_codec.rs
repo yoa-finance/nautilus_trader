@@ -1,11 +1,11 @@
-pub use decoder::KlinesResponseDecoder;
-pub use encoder::KlinesResponseEncoder;
+pub use decoder::BlockTradesResponseDecoder;
+pub use encoder::BlockTradesResponseEncoder;
 
 use super::*;
 pub use super::{SBE_SCHEMA_ID, SBE_SCHEMA_VERSION, SBE_SEMANTIC_VERSION};
 
 pub const SBE_BLOCK_LENGTH: u16 = 2;
-pub const SBE_TEMPLATE_ID: u16 = 203;
+pub const SBE_TEMPLATE_ID: u16 = 219;
 
 pub mod encoder {
     use message_header_codec::*;
@@ -13,21 +13,21 @@ pub mod encoder {
     use super::*;
 
     #[derive(Debug, Default)]
-    pub struct KlinesResponseEncoder<'a> {
+    pub struct BlockTradesResponseEncoder<'a> {
         buf: WriteBuf<'a>,
         initial_offset: usize,
         offset: usize,
         limit: usize,
     }
 
-    impl<'a> Writer<'a> for KlinesResponseEncoder<'a> {
+    impl<'a> Writer<'a> for BlockTradesResponseEncoder<'a> {
         #[inline]
         fn get_buf_mut(&mut self) -> &mut WriteBuf<'a> {
             &mut self.buf
         }
     }
 
-    impl<'a> Encoder<'a> for KlinesResponseEncoder<'a> {
+    impl<'a> Encoder<'a> for BlockTradesResponseEncoder<'a> {
         #[inline]
         fn get_limit(&self) -> usize {
             self.limit
@@ -39,7 +39,7 @@ pub mod encoder {
         }
     }
 
-    impl<'a> KlinesResponseEncoder<'a> {
+    impl<'a> BlockTradesResponseEncoder<'a> {
         pub fn wrap(mut self, buf: WriteBuf<'a>, offset: usize) -> Self {
             let limit = offset + SBE_BLOCK_LENGTH as usize;
             self.buf = buf;
@@ -95,17 +95,17 @@ pub mod encoder {
 
         /// GROUP ENCODER (id=100)
         #[inline]
-        pub fn klines_encoder(
+        pub fn block_trades_encoder(
             self,
             count: u32,
-            klines_encoder: KlinesEncoder<Self>,
-        ) -> KlinesEncoder<Self> {
-            klines_encoder.wrap(self, count)
+            block_trades_encoder: BlockTradesEncoder<Self>,
+        ) -> BlockTradesEncoder<Self> {
+            block_trades_encoder.wrap(self, count)
         }
     }
 
     #[derive(Debug, Default)]
-    pub struct KlinesEncoder<P> {
+    pub struct BlockTradesEncoder<P> {
         parent: Option<P>,
         count: u32,
         index: usize,
@@ -113,7 +113,7 @@ pub mod encoder {
         initial_limit: usize,
     }
 
-    impl<'a, P> Writer<'a> for KlinesEncoder<P>
+    impl<'a, P> Writer<'a> for BlockTradesEncoder<P>
     where
         P: Writer<'a> + Default,
     {
@@ -127,7 +127,7 @@ pub mod encoder {
         }
     }
 
-    impl<'a, P> Encoder<'a> for KlinesEncoder<P>
+    impl<'a, P> Encoder<'a> for BlockTradesEncoder<P>
     where
         P: Encoder<'a> + Default,
     {
@@ -145,7 +145,7 @@ pub mod encoder {
         }
     }
 
-    impl<'a, P> KlinesEncoder<P>
+    impl<'a, P> BlockTradesEncoder<P>
     where
         P: Encoder<'a> + Default,
     {
@@ -167,7 +167,7 @@ pub mod encoder {
 
         #[inline]
         pub fn block_length() -> u16 {
-            120
+            41
         }
 
         #[inline]
@@ -192,7 +192,7 @@ pub mod encoder {
             }
         }
 
-        /// primitive field 'openTime'
+        /// primitive field 'id'
         /// - min value: -9223372036854775807
         /// - max value: 9223372036854775807
         /// - null value: -9223372036854775808_i64
@@ -200,14 +200,14 @@ pub mod encoder {
         /// - semanticType: null
         /// - encodedOffset: 0
         /// - encodedLength: 8
-        /// - version: 0
+        /// - version: 4
         #[inline]
-        pub fn open_time(&mut self, value: i64) {
+        pub fn id(&mut self, value: i64) {
             let offset = self.offset;
             self.get_buf_mut().put_i64_at(offset, value);
         }
 
-        /// primitive field 'openPrice'
+        /// primitive field 'price'
         /// - min value: -9223372036854775807
         /// - max value: 9223372036854775807
         /// - null value: -9223372036854775808_i64
@@ -217,12 +217,12 @@ pub mod encoder {
         /// - encodedLength: 8
         /// - version: 0
         #[inline]
-        pub fn open_price(&mut self, value: i64) {
+        pub fn price(&mut self, value: i64) {
             let offset = self.offset + 8;
             self.get_buf_mut().put_i64_at(offset, value);
         }
 
-        /// primitive field 'highPrice'
+        /// primitive field 'qty'
         /// - min value: -9223372036854775807
         /// - max value: 9223372036854775807
         /// - null value: -9223372036854775808_i64
@@ -232,12 +232,12 @@ pub mod encoder {
         /// - encodedLength: 8
         /// - version: 0
         #[inline]
-        pub fn high_price(&mut self, value: i64) {
+        pub fn qty(&mut self, value: i64) {
             let offset = self.offset + 16;
             self.get_buf_mut().put_i64_at(offset, value);
         }
 
-        /// primitive field 'lowPrice'
+        /// primitive field 'quoteQty'
         /// - min value: -9223372036854775807
         /// - max value: 9223372036854775807
         /// - null value: -9223372036854775808_i64
@@ -247,12 +247,12 @@ pub mod encoder {
         /// - encodedLength: 8
         /// - version: 0
         #[inline]
-        pub fn low_price(&mut self, value: i64) {
+        pub fn quote_qty(&mut self, value: i64) {
             let offset = self.offset + 24;
             self.get_buf_mut().put_i64_at(offset, value);
         }
 
-        /// primitive field 'closePrice'
+        /// primitive field 'time'
         /// - min value: -9223372036854775807
         /// - max value: 9223372036854775807
         /// - null value: -9223372036854775808_i64
@@ -262,283 +262,16 @@ pub mod encoder {
         /// - encodedLength: 8
         /// - version: 0
         #[inline]
-        pub fn close_price(&mut self, value: i64) {
+        pub fn time(&mut self, value: i64) {
             let offset = self.offset + 32;
             self.get_buf_mut().put_i64_at(offset, value);
         }
 
+        /// REQUIRED enum
         #[inline]
-        pub fn volume_at(&mut self, index: usize, value: u8) {
+        pub fn is_buyer_maker(&mut self, value: bool_enum::BoolEnum) {
             let offset = self.offset + 40;
-            let buf = self.get_buf_mut();
-            buf.put_u8_at(offset + index, value);
-        }
-
-        /// primitive array field 'volume'
-        /// - min value: 0
-        /// - max value: 254
-        /// - null value: 0xff_u8
-        /// - characterEncoding: null
-        /// - semanticType: null
-        /// - encodedOffset: 40
-        /// - encodedLength: 16
-        /// - version: 0
-        #[inline]
-        pub fn volume(&mut self, value: &[u8]) {
-            debug_assert_eq!(16, value.len());
-            let offset = self.offset + 40;
-            let buf = self.get_buf_mut();
-            buf.put_slice_at(offset, value);
-        }
-
-        /// primitive array field 'volume' from an Iterator
-        /// - min value: 0
-        /// - max value: 254
-        /// - null value: 0xff_u8
-        /// - characterEncoding: null
-        /// - semanticType: null
-        /// - encodedOffset: 40
-        /// - encodedLength: 16
-        /// - version: 0
-        #[inline]
-        pub fn volume_from_iter(&mut self, iter: impl Iterator<Item = u8>) {
-            let offset = self.offset + 40;
-            let buf = self.get_buf_mut();
-            for (i, v) in iter.enumerate() {
-                buf.put_u8_at(offset + i, v);
-            }
-        }
-
-        /// primitive array field 'volume' with zero padding
-        /// - min value: 0
-        /// - max value: 254
-        /// - null value: 0xff_u8
-        /// - characterEncoding: null
-        /// - semanticType: null
-        /// - encodedOffset: 40
-        /// - encodedLength: 16
-        /// - version: 0
-        #[inline]
-        pub fn volume_zero_padded(&mut self, value: &[u8]) {
-            let iter = value
-                .iter()
-                .copied()
-                .chain(std::iter::repeat(0_u8))
-                .take(16);
-            self.volume_from_iter(iter);
-        }
-
-        /// primitive field 'closeTime'
-        /// - min value: -9223372036854775807
-        /// - max value: 9223372036854775807
-        /// - null value: -9223372036854775808_i64
-        /// - characterEncoding: null
-        /// - semanticType: null
-        /// - encodedOffset: 56
-        /// - encodedLength: 8
-        /// - version: 0
-        #[inline]
-        pub fn close_time(&mut self, value: i64) {
-            let offset = self.offset + 56;
-            self.get_buf_mut().put_i64_at(offset, value);
-        }
-
-        #[inline]
-        pub fn quote_volume_at(&mut self, index: usize, value: u8) {
-            let offset = self.offset + 64;
-            let buf = self.get_buf_mut();
-            buf.put_u8_at(offset + index, value);
-        }
-
-        /// primitive array field 'quoteVolume'
-        /// - min value: 0
-        /// - max value: 254
-        /// - null value: 0xff_u8
-        /// - characterEncoding: null
-        /// - semanticType: null
-        /// - encodedOffset: 64
-        /// - encodedLength: 16
-        /// - version: 0
-        #[inline]
-        pub fn quote_volume(&mut self, value: &[u8]) {
-            debug_assert_eq!(16, value.len());
-            let offset = self.offset + 64;
-            let buf = self.get_buf_mut();
-            buf.put_slice_at(offset, value);
-        }
-
-        /// primitive array field 'quoteVolume' from an Iterator
-        /// - min value: 0
-        /// - max value: 254
-        /// - null value: 0xff_u8
-        /// - characterEncoding: null
-        /// - semanticType: null
-        /// - encodedOffset: 64
-        /// - encodedLength: 16
-        /// - version: 0
-        #[inline]
-        pub fn quote_volume_from_iter(&mut self, iter: impl Iterator<Item = u8>) {
-            let offset = self.offset + 64;
-            let buf = self.get_buf_mut();
-            for (i, v) in iter.enumerate() {
-                buf.put_u8_at(offset + i, v);
-            }
-        }
-
-        /// primitive array field 'quoteVolume' with zero padding
-        /// - min value: 0
-        /// - max value: 254
-        /// - null value: 0xff_u8
-        /// - characterEncoding: null
-        /// - semanticType: null
-        /// - encodedOffset: 64
-        /// - encodedLength: 16
-        /// - version: 0
-        #[inline]
-        pub fn quote_volume_zero_padded(&mut self, value: &[u8]) {
-            let iter = value
-                .iter()
-                .copied()
-                .chain(std::iter::repeat(0_u8))
-                .take(16);
-            self.quote_volume_from_iter(iter);
-        }
-
-        /// primitive field 'numTrades'
-        /// - min value: -9223372036854775807
-        /// - max value: 9223372036854775807
-        /// - null value: -9223372036854775808_i64
-        /// - characterEncoding: null
-        /// - semanticType: null
-        /// - encodedOffset: 80
-        /// - encodedLength: 8
-        /// - version: 0
-        #[inline]
-        pub fn num_trades(&mut self, value: i64) {
-            let offset = self.offset + 80;
-            self.get_buf_mut().put_i64_at(offset, value);
-        }
-
-        #[inline]
-        pub fn taker_buy_base_volume_at(&mut self, index: usize, value: u8) {
-            let offset = self.offset + 88;
-            let buf = self.get_buf_mut();
-            buf.put_u8_at(offset + index, value);
-        }
-
-        /// primitive array field 'takerBuyBaseVolume'
-        /// - min value: 0
-        /// - max value: 254
-        /// - null value: 0xff_u8
-        /// - characterEncoding: null
-        /// - semanticType: null
-        /// - encodedOffset: 88
-        /// - encodedLength: 16
-        /// - version: 0
-        #[inline]
-        pub fn taker_buy_base_volume(&mut self, value: &[u8]) {
-            debug_assert_eq!(16, value.len());
-            let offset = self.offset + 88;
-            let buf = self.get_buf_mut();
-            buf.put_slice_at(offset, value);
-        }
-
-        /// primitive array field 'takerBuyBaseVolume' from an Iterator
-        /// - min value: 0
-        /// - max value: 254
-        /// - null value: 0xff_u8
-        /// - characterEncoding: null
-        /// - semanticType: null
-        /// - encodedOffset: 88
-        /// - encodedLength: 16
-        /// - version: 0
-        #[inline]
-        pub fn taker_buy_base_volume_from_iter(&mut self, iter: impl Iterator<Item = u8>) {
-            let offset = self.offset + 88;
-            let buf = self.get_buf_mut();
-            for (i, v) in iter.enumerate() {
-                buf.put_u8_at(offset + i, v);
-            }
-        }
-
-        /// primitive array field 'takerBuyBaseVolume' with zero padding
-        /// - min value: 0
-        /// - max value: 254
-        /// - null value: 0xff_u8
-        /// - characterEncoding: null
-        /// - semanticType: null
-        /// - encodedOffset: 88
-        /// - encodedLength: 16
-        /// - version: 0
-        #[inline]
-        pub fn taker_buy_base_volume_zero_padded(&mut self, value: &[u8]) {
-            let iter = value
-                .iter()
-                .copied()
-                .chain(std::iter::repeat(0_u8))
-                .take(16);
-            self.taker_buy_base_volume_from_iter(iter);
-        }
-
-        #[inline]
-        pub fn taker_buy_quote_volume_at(&mut self, index: usize, value: u8) {
-            let offset = self.offset + 104;
-            let buf = self.get_buf_mut();
-            buf.put_u8_at(offset + index, value);
-        }
-
-        /// primitive array field 'takerBuyQuoteVolume'
-        /// - min value: 0
-        /// - max value: 254
-        /// - null value: 0xff_u8
-        /// - characterEncoding: null
-        /// - semanticType: null
-        /// - encodedOffset: 104
-        /// - encodedLength: 16
-        /// - version: 0
-        #[inline]
-        pub fn taker_buy_quote_volume(&mut self, value: &[u8]) {
-            debug_assert_eq!(16, value.len());
-            let offset = self.offset + 104;
-            let buf = self.get_buf_mut();
-            buf.put_slice_at(offset, value);
-        }
-
-        /// primitive array field 'takerBuyQuoteVolume' from an Iterator
-        /// - min value: 0
-        /// - max value: 254
-        /// - null value: 0xff_u8
-        /// - characterEncoding: null
-        /// - semanticType: null
-        /// - encodedOffset: 104
-        /// - encodedLength: 16
-        /// - version: 0
-        #[inline]
-        pub fn taker_buy_quote_volume_from_iter(&mut self, iter: impl Iterator<Item = u8>) {
-            let offset = self.offset + 104;
-            let buf = self.get_buf_mut();
-            for (i, v) in iter.enumerate() {
-                buf.put_u8_at(offset + i, v);
-            }
-        }
-
-        /// primitive array field 'takerBuyQuoteVolume' with zero padding
-        /// - min value: 0
-        /// - max value: 254
-        /// - null value: 0xff_u8
-        /// - characterEncoding: null
-        /// - semanticType: null
-        /// - encodedOffset: 104
-        /// - encodedLength: 16
-        /// - version: 0
-        #[inline]
-        pub fn taker_buy_quote_volume_zero_padded(&mut self, value: &[u8]) {
-            let iter = value
-                .iter()
-                .copied()
-                .chain(std::iter::repeat(0_u8))
-                .take(16);
-            self.taker_buy_quote_volume_from_iter(iter);
+            self.get_buf_mut().put_u8_at(offset, value as u8)
         }
     }
 } // end encoder
@@ -549,7 +282,7 @@ pub mod decoder {
     use super::*;
 
     #[derive(Clone, Copy, Debug, Default)]
-    pub struct KlinesResponseDecoder<'a> {
+    pub struct BlockTradesResponseDecoder<'a> {
         buf: ReadBuf<'a>,
         initial_offset: usize,
         offset: usize,
@@ -558,21 +291,21 @@ pub mod decoder {
         pub acting_version: u16,
     }
 
-    impl ActingVersion for KlinesResponseDecoder<'_> {
+    impl ActingVersion for BlockTradesResponseDecoder<'_> {
         #[inline]
         fn acting_version(&self) -> u16 {
             self.acting_version
         }
     }
 
-    impl<'a> Reader<'a> for KlinesResponseDecoder<'a> {
+    impl<'a> Reader<'a> for BlockTradesResponseDecoder<'a> {
         #[inline]
         fn get_buf(&self) -> &ReadBuf<'a> {
             &self.buf
         }
     }
 
-    impl<'a> Decoder<'a> for KlinesResponseDecoder<'a> {
+    impl<'a> Decoder<'a> for BlockTradesResponseDecoder<'a> {
         #[inline]
         fn get_limit(&self) -> usize {
             self.limit
@@ -584,7 +317,7 @@ pub mod decoder {
         }
     }
 
-    impl<'a> KlinesResponseDecoder<'a> {
+    impl<'a> BlockTradesResponseDecoder<'a> {
         pub fn wrap(
             mut self,
             buf: ReadBuf<'a>,
@@ -634,13 +367,13 @@ pub mod decoder {
 
         /// GROUP DECODER (id=100)
         #[inline]
-        pub fn klines_decoder(self) -> KlinesDecoder<Self> {
-            KlinesDecoder::default().wrap(self)
+        pub fn block_trades_decoder(self) -> BlockTradesDecoder<Self> {
+            BlockTradesDecoder::default().wrap(self)
         }
     }
 
     #[derive(Debug, Default)]
-    pub struct KlinesDecoder<P> {
+    pub struct BlockTradesDecoder<P> {
         parent: Option<P>,
         block_length: u16,
         count: u32,
@@ -648,7 +381,7 @@ pub mod decoder {
         offset: usize,
     }
 
-    impl<'a, P> ActingVersion for KlinesDecoder<P>
+    impl<'a, P> ActingVersion for BlockTradesDecoder<P>
     where
         P: Reader<'a> + ActingVersion + Default,
     {
@@ -658,7 +391,7 @@ pub mod decoder {
         }
     }
 
-    impl<'a, P> Reader<'a> for KlinesDecoder<P>
+    impl<'a, P> Reader<'a> for BlockTradesDecoder<P>
     where
         P: Reader<'a> + Default,
     {
@@ -668,7 +401,7 @@ pub mod decoder {
         }
     }
 
-    impl<'a, P> Decoder<'a> for KlinesDecoder<P>
+    impl<'a, P> Decoder<'a> for BlockTradesDecoder<P>
     where
         P: Decoder<'a> + ActingVersion + Default,
     {
@@ -686,7 +419,7 @@ pub mod decoder {
         }
     }
 
-    impl<'a, P> KlinesDecoder<P>
+    impl<'a, P> BlockTradesDecoder<P>
     where
         P: Decoder<'a> + ActingVersion + Default,
     {
@@ -703,7 +436,7 @@ pub mod decoder {
             self
         }
 
-        /// group token - Token{signal=BEGIN_GROUP, name='klines', referencedName='null', description='null', packageName='null', id=100, version=0, deprecated=0, encodedLength=120, offset=2, componentTokenCount=39, encoding=Encoding{presence=REQUIRED, primitiveType=null, byteOrder=LITTLE_ENDIAN, minValue=null, maxValue=null, nullValue=null, constValue=null, characterEncoding='null', epoch='null', timeUnit=null, semanticType='null'}}
+        /// group token - Token{signal=BEGIN_GROUP, name='blockTrades', referencedName='null', description='null', packageName='null', id=100, version=0, deprecated=0, encodedLength=41, offset=2, componentTokenCount=27, encoding=Encoding{presence=REQUIRED, primitiveType=null, byteOrder=LITTLE_ENDIAN, minValue=null, maxValue=null, nullValue=null, constValue=null, characterEncoding='null', epoch='null', timeUnit=null, semanticType='null'}}
         #[inline]
         pub fn parent(&mut self) -> SbeResult<P> {
             self.parent.take().ok_or(SbeErr::ParentNotSet)
@@ -737,68 +470,42 @@ pub mod decoder {
 
         /// primitive field - 'REQUIRED'
         #[inline]
-        pub fn open_time(&self) -> i64 {
+        pub fn id(&self) -> i64 {
+            if self.acting_version() < 4 {
+                return -9223372036854775808_i64;
+            }
+
             self.get_buf().get_i64_at(self.offset)
         }
 
         /// primitive field - 'REQUIRED'
         #[inline]
-        pub fn open_price(&self) -> i64 {
+        pub fn price(&self) -> i64 {
             self.get_buf().get_i64_at(self.offset + 8)
         }
 
         /// primitive field - 'REQUIRED'
         #[inline]
-        pub fn high_price(&self) -> i64 {
+        pub fn qty(&self) -> i64 {
             self.get_buf().get_i64_at(self.offset + 16)
         }
 
         /// primitive field - 'REQUIRED'
         #[inline]
-        pub fn low_price(&self) -> i64 {
+        pub fn quote_qty(&self) -> i64 {
             self.get_buf().get_i64_at(self.offset + 24)
         }
 
         /// primitive field - 'REQUIRED'
         #[inline]
-        pub fn close_price(&self) -> i64 {
+        pub fn time(&self) -> i64 {
             self.get_buf().get_i64_at(self.offset + 32)
         }
 
+        /// REQUIRED enum
         #[inline]
-        pub fn volume(&self) -> [u8; 16] {
-            let buf = self.get_buf();
-            ReadBuf::get_bytes_at(buf.data, self.offset + 40)
-        }
-
-        /// primitive field - 'REQUIRED'
-        #[inline]
-        pub fn close_time(&self) -> i64 {
-            self.get_buf().get_i64_at(self.offset + 56)
-        }
-
-        #[inline]
-        pub fn quote_volume(&self) -> [u8; 16] {
-            let buf = self.get_buf();
-            ReadBuf::get_bytes_at(buf.data, self.offset + 64)
-        }
-
-        /// primitive field - 'REQUIRED'
-        #[inline]
-        pub fn num_trades(&self) -> i64 {
-            self.get_buf().get_i64_at(self.offset + 80)
-        }
-
-        #[inline]
-        pub fn taker_buy_base_volume(&self) -> [u8; 16] {
-            let buf = self.get_buf();
-            ReadBuf::get_bytes_at(buf.data, self.offset + 88)
-        }
-
-        #[inline]
-        pub fn taker_buy_quote_volume(&self) -> [u8; 16] {
-            let buf = self.get_buf();
-            ReadBuf::get_bytes_at(buf.data, self.offset + 104)
+        pub fn is_buyer_maker(&self) -> bool_enum::BoolEnum {
+            self.get_buf().get_u8_at(self.offset + 40).into()
         }
     }
 } // end decoder

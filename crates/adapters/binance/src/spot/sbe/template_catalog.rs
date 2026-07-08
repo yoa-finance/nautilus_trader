@@ -15,7 +15,7 @@
 
 //! Binance Spot SBE template catalog.
 //!
-//! The template IDs are taken from Binance's official Spot `spot_3_4.xml` and
+//! The template IDs are taken from Binance's official Spot `spot_3_5.xml` and
 //! stream `stream_1_0.xml` schemas. The catalog is intentionally separate from
 //! business decoding so the ingress layer can distinguish official-but-unused
 //! templates from truly unknown wire data.
@@ -55,7 +55,7 @@ pub struct TemplateInfo {
     pub support: TemplateSupport,
 }
 
-/// Official Spot API schema 3:4 templates.
+/// Official Spot API schema 3:5 templates.
 pub const SPOT_API_TEMPLATES: &[TemplateInfo] = &[
     TemplateInfo {
         id: 1,
@@ -652,7 +652,7 @@ mod tests {
     use super::*;
 
     #[rstest::rstest]
-    fn test_spot_api_catalog_covers_official_schema_3_4_templates() {
+    fn test_spot_api_catalog_covers_official_schema_3_5_templates() {
         let expected = [
             1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 50, 51,
             52, 53, 54, 100, 101, 102, 103, 104, 105, 200, 201, 202, 203, 204, 205, 206, 207, 208,

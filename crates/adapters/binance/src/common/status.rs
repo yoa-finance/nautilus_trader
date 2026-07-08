@@ -31,7 +31,9 @@ impl From<SymbolStatus> for MarketStatusAction {
             SymbolStatus::EndOfDay => Self::Close,
             SymbolStatus::Halt => Self::Halt,
             SymbolStatus::Break => Self::Pause,
-            SymbolStatus::NonRepresentable | SymbolStatus::NullVal => Self::NotAvailableForTrading,
+            SymbolStatus::CancelOnly | SymbolStatus::NonRepresentable | SymbolStatus::NullVal => {
+                Self::NotAvailableForTrading
+            }
         }
     }
 }
@@ -118,6 +120,7 @@ mod tests {
     #[case(SymbolStatus::EndOfDay, MarketStatusAction::Close)]
     #[case(SymbolStatus::Halt, MarketStatusAction::Halt)]
     #[case(SymbolStatus::Break, MarketStatusAction::Pause)]
+    #[case(SymbolStatus::CancelOnly, MarketStatusAction::NotAvailableForTrading)]
     #[case(
         SymbolStatus::NonRepresentable,
         MarketStatusAction::NotAvailableForTrading
