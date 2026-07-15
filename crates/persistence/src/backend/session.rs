@@ -13,12 +13,23 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-use std::{sync::Arc, vec::IntoIter};
+use std::{
+    future::Future,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+    vec::IntoIter,
+};
 
 use ahash::{AHashMap, AHashSet};
 use datafusion::{
-    arrow::record_batch::RecordBatch, error::Result, logical_expr::expr::Sort,
-    physical_plan::SendableRecordBatchStream, prelude::*,
+    arrow::record_batch::RecordBatch,
+    error::{DataFusionError, Result},
+    logical_expr::expr::Sort,
+    physical_plan::SendableRecordBatchStream,
+    prelude::*,
 };
 use futures::StreamExt;
 use nautilus_core::{UnixNanos, ffi::cvec::CVec};
@@ -72,6 +83,7 @@ pub struct DataBackendSession {
     session_ctx: SessionContext,
     batch_streams: Vec<EagerStream<IntoIter<Data>>>,
     registered_tables: AHashSet<String>,
+    query_cancellation: Option<Arc<AtomicBool>>,
 }
 
 impl DataBackendSession {
@@ -92,7 +104,38 @@ impl DataBackendSession {
             chunk_size,
             runtime: Arc::new(runtime),
             registered_tables: AHashSet::new(),
+            query_cancellation: None,
         }
+    }
+
+    pub fn set_query_cancellation(&mut self, cancellation: Option<Arc<AtomicBool>>) {
+        self.query_cancellation = cancellation;
+    }
+
+    fn block_on_query<F, T>(&self, future: F) -> Result<T>
+    where
+        F: Future<Output = Result<T>>,
+    {
+        let cancellation = self.query_cancellation.clone();
+        self.runtime.block_on(async move {
+            let Some(cancellation) = cancellation else {
+                return future.await;
+            };
+
+            tokio::pin!(future);
+            loop {
+                if cancellation.load(Ordering::Acquire) {
+                    return Err(DataFusionError::Execution(
+                        "Catalog load lease expired during query setup".to_string(),
+                    ));
+                }
+
+                tokio::select! {
+                    result = &mut future => return result,
+                    () = tokio::time::sleep(Duration::from_millis(50)) => {}
+                }
+            }
+        })
     }
 
     /// Register an object store with the session context
@@ -167,7 +210,7 @@ impl DataBackendSession {
                 }]],
                 ..Default::default()
             };
-            self.runtime.block_on(self.session_ctx.register_parquet(
+            self.block_on_query(self.session_ctx.register_parquet(
                 table_name,
                 file_path,
                 parquet_options,
@@ -178,8 +221,8 @@ impl DataBackendSession {
             // Only add batch stream for newly registered tables to avoid duplicates
             let default_query = format!("SELECT * FROM {table_name} ORDER BY ts_init");
             let sql_query = sql_query.unwrap_or(&default_query);
-            let query = self.runtime.block_on(self.session_ctx.sql(sql_query))?;
-            let batch_stream = self.runtime.block_on(query.execute_stream())?;
+            let query = self.block_on_query(self.session_ctx.sql(sql_query))?;
+            let batch_stream = self.block_on_query(query.execute_stream())?;
             self.add_batch_stream::<T>(batch_stream, custom_type_name.map(String::from));
         }
 
@@ -203,7 +246,7 @@ impl DataBackendSession {
                 }]],
                 ..Default::default()
             };
-            self.runtime.block_on(self.session_ctx.register_parquet(
+            self.block_on_query(self.session_ctx.register_parquet(
                 table_name,
                 file_path,
                 parquet_options,
@@ -214,10 +257,10 @@ impl DataBackendSession {
 
         let default_query = format!("SELECT * FROM {table_name} ORDER BY ts_init");
         let sql_query = sql_query.unwrap_or(&default_query);
-        let query = self.runtime.block_on(self.session_ctx.sql(sql_query))?;
-        let mut batch_stream = self.runtime.block_on(query.execute_stream())?;
+        let query = self.block_on_query(self.session_ctx.sql(sql_query))?;
+        let mut batch_stream = self.block_on_query(query.execute_stream())?;
 
-        self.runtime.block_on(async {
+        self.block_on_query(async {
             let mut batches = Vec::new();
             while let Some(batch) = batch_stream.next().await {
                 batches.push(batch?);
@@ -247,9 +290,10 @@ impl DataBackendSession {
         });
 
         self.batch_streams
-            .push(EagerStream::from_stream_with_runtime(
+            .push(EagerStream::from_stream_with_runtime_and_cancellation(
                 transform,
                 self.runtime.clone(),
+                self.query_cancellation.clone(),
             ));
     }
 

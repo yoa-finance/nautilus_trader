@@ -460,6 +460,8 @@ impl BacktestDataConfig {
         bar_spec = None,
         bar_types = None,
         optimize_file_loading = None,
+        catalog_files = None,
+        catalog_instrument_files = None,
     ))]
     #[expect(clippy::too_many_arguments)]
     fn py_new(
@@ -478,6 +480,8 @@ impl BacktestDataConfig {
         bar_spec: Option<BarSpecification>,
         bar_types: Option<Vec<String>>,
         optimize_file_loading: Option<bool>,
+        catalog_files: Option<Vec<String>>,
+        catalog_instrument_files: Option<Vec<String>>,
     ) -> pyo3::PyResult<Self> {
         let data_type = data_type
             .parse::<NautilusDataType>()
@@ -502,6 +506,8 @@ impl BacktestDataConfig {
             .maybe_bar_spec(bar_spec)
             .maybe_bar_types(bar_types)
             .maybe_optimize_file_loading(optimize_file_loading)
+            .maybe_catalog_files(catalog_files)
+            .maybe_catalog_instrument_files(catalog_instrument_files)
             .build())
     }
 
@@ -521,6 +527,18 @@ impl BacktestDataConfig {
     #[pyo3(name = "instrument_id")]
     fn py_instrument_id(&self) -> Option<InstrumentId> {
         self.instrument_id()
+    }
+
+    #[getter]
+    #[pyo3(name = "catalog_files")]
+    fn py_catalog_files(&self) -> Option<Vec<String>> {
+        self.catalog_files().map(<[String]>::to_vec)
+    }
+
+    #[getter]
+    #[pyo3(name = "catalog_instrument_files")]
+    fn py_catalog_instrument_files(&self) -> Option<Vec<String>> {
+        self.catalog_instrument_files().map(<[String]>::to_vec)
     }
 
     fn __repr__(&self) -> String {

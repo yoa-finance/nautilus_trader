@@ -8840,7 +8840,7 @@ dependencies = [
 
 [[package]]
 name = "stratneo-nautilus-backtest"
-version = "0.58.2"
+version = "0.58.3"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
@@ -9217,7 +9217,7 @@ dependencies = [
 
 [[package]]
 name = "stratneo-nautilus-persistence"
-version = "0.58.0"
+version = "0.58.1"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",

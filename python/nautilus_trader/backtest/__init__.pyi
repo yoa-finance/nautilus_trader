@@ -32,6 +32,10 @@ class BacktestDataConfig:
     def catalog_path(self) -> str: ...
     @property
     def instrument_id(self) -> model.InstrumentId | None: ...
+    @property
+    def catalog_files(self) -> list[str] | None: ...
+    @property
+    def catalog_instrument_files(self) -> list[str] | None: ...
     def __new__(
         cls,
         data_type: str,
@@ -49,6 +53,8 @@ class BacktestDataConfig:
         bar_spec: model.BarSpecification | None = None,
         bar_types: typing.Sequence[str] | None = None,
         optimize_file_loading: bool | None = None,
+        catalog_files: typing.Sequence[str] | None = None,
+        catalog_instrument_files: typing.Sequence[str] | None = None,
     ) -> BacktestDataConfig: ...
 
 @typing.final

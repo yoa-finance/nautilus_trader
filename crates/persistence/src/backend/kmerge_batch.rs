@@ -13,7 +13,14 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-use std::{sync::Arc, vec::IntoIter};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+    vec::IntoIter,
+};
 
 use futures::{Stream, StreamExt};
 use tokio::{
@@ -31,10 +38,23 @@ pub struct EagerStream<T> {
     rx: Receiver<T>,
     task: JoinHandle<()>,
     runtime: Arc<Runtime>,
+    cancellation: Option<Arc<AtomicBool>>,
 }
 
 impl<T> EagerStream<T> {
     pub fn from_stream_with_runtime<S>(stream: S, runtime: Arc<Runtime>) -> Self
+    where
+        S: Stream<Item = T> + Send + 'static,
+        T: Send + 'static,
+    {
+        Self::from_stream_with_runtime_and_cancellation(stream, runtime, None)
+    }
+
+    pub fn from_stream_with_runtime_and_cancellation<S>(
+        stream: S,
+        runtime: Arc<Runtime>,
+        cancellation: Option<Arc<AtomicBool>>,
+    ) -> Self
     where
         S: Stream<Item = T> + Send + 'static,
         T: Send + 'static,
@@ -50,7 +70,12 @@ impl<T> EagerStream<T> {
             }
         });
 
-        Self { rx, task, runtime }
+        Self {
+            rx,
+            task,
+            runtime,
+            cancellation,
+        }
     }
 }
 
@@ -58,7 +83,28 @@ impl<T> Iterator for EagerStream<T> {
     type Item = T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.runtime.block_on(self.rx.recv())
+        loop {
+            if self
+                .cancellation
+                .as_ref()
+                .is_some_and(|flag| flag.load(Ordering::Acquire))
+            {
+                self.rx.close();
+                self.task.abort();
+                return None;
+            }
+            match self.runtime.block_on(async {
+                tokio::time::timeout(Duration::from_millis(250), self.rx.recv()).await
+            }) {
+                Ok(Some(item)) => return Some(item),
+                Ok(None) => match self.runtime.block_on(&mut self.task) {
+                    Ok(()) => return None,
+                    Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
+                    Err(error) => panic!("Eager stream task failed: {error}"),
+                },
+                Err(_) => continue,
+            }
+        }
     }
 }
 

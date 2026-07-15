@@ -428,6 +428,7 @@ class BacktestNode:
                 # None to query all instruments
                 instruments = catalog.instruments(
                     instrument_ids=(used_instrument_ids if len(used_instrument_ids) > 0 else None),
+                    files=data_config.catalog_instrument_files,
                 )
 
                 for instrument in instruments or []:
@@ -574,18 +575,27 @@ class BacktestNode:
                     for instrument_id in config.instrument_ids:
                         used_bar_types.append(f"{instrument_id}-{config.bar_spec}-EXTERNAL")
 
-            # Cache file list for this catalog/data type pair if not already cached
-            cache_key = (config.catalog_path, config.catalog_fs_protocol, config.data_type)
-            if cache_key not in cached_file_lists:
-                cached_file_lists[cache_key] = catalog.get_file_list_from_data_cls(config.data_type)
+            if config.catalog_files is not None:
+                if config.optimize_file_loading:
+                    raise ValueError(
+                        "`optimize_file_loading` must be False when `catalog_files` is specified",
+                    )
+                filter_files = config.catalog_files
+            else:
+                # Cache file list for this catalog/data type pair if not already cached
+                cache_key = (config.catalog_path, config.catalog_fs_protocol, config.data_type)
+                if cache_key not in cached_file_lists:
+                    cached_file_lists[cache_key] = catalog.get_file_list_from_data_cls(
+                        config.data_type,
+                    )
 
-            filter_files = catalog.filter_files(
-                data_cls=config.data_type,
-                file_paths=cached_file_lists[cache_key],
-                identifiers=(used_bar_types or used_instrument_ids),
-                start=used_start,
-                end=used_end,
-            )
+                filter_files = catalog.filter_files(
+                    data_cls=config.data_type,
+                    file_paths=cached_file_lists[cache_key],
+                    identifiers=(used_bar_types or used_instrument_ids),
+                    start=used_start,
+                    end=used_end,
+                )
 
             session = catalog.backend_session(
                 data_cls=config.data_type,
@@ -677,7 +687,10 @@ class BacktestNode:
         catalog: ParquetDataCatalog = cls.load_catalog(config)
         used_instrument_ids = get_instrument_ids(config)
         instruments = (
-            catalog.instruments(instrument_ids=used_instrument_ids)
+            catalog.instruments(
+                instrument_ids=used_instrument_ids,
+                files=config.catalog_instrument_files,
+            )
             if len(used_instrument_ids) > 0
             else None
         )

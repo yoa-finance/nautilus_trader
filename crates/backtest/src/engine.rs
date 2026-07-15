@@ -113,12 +113,31 @@ pub struct BacktestEngine {
 
 /// Observes backtest replay progress without changing engine execution ordering.
 pub trait BacktestRunObserver {
+    /// Returns a cooperative cancellation flag for catalog query streams.
+    fn catalog_load_cancellation_flag(
+        &self,
+    ) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
+        None
+    }
+
     /// Called with catalog data immediately before it is added to the engine.
     ///
     /// # Errors
     ///
     /// Returning an error aborts the backtest run.
     fn on_data_chunk(&mut self, _data: &[Data]) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Called once after all catalog query streams for the run are exhausted or dropped.
+    ///
+    /// This callback is emitted by [`BacktestNode`](crate::node::BacktestNode) before replaying
+    /// fully loaded data, or as soon as the final streaming query source is released.
+    ///
+    /// # Errors
+    ///
+    /// Returning an error aborts the backtest run.
+    fn on_catalog_data_exhausted(&mut self) -> anyhow::Result<()> {
         Ok(())
     }
 

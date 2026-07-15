@@ -69,7 +69,7 @@ use std::{
     io::Cursor,
     ops::Bound as RangeBound,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, atomic::AtomicBool},
 };
 
 use ahash::AHashMap;
@@ -100,7 +100,7 @@ use nautilus_model::{
         OrderSubmitted, OrderTriggered, OrderUpdated, PositionAdjusted, PositionChanged,
         PositionClosed, PositionOpened, PositionSnapshot,
     },
-    instruments::InstrumentAny,
+    instruments::{Instrument, InstrumentAny},
     reports::{ExecutionMassStatus, FillReport, OrderStatusReport, PositionStatusReport},
 };
 use nautilus_serialization::arrow::{
@@ -167,6 +167,7 @@ pub struct ParquetDataCatalog {
     pub compression: parquet::basic::Compression,
     /// The maximum number of rows in each Parquet row group.
     pub max_row_group_size: usize,
+    query_cancellation: Option<Arc<AtomicBool>>,
 }
 
 impl Debug for ParquetDataCatalog {
@@ -325,6 +326,7 @@ impl ParquetDataCatalog {
             batch_size,
             compression,
             max_row_group_size,
+            query_cancellation: None,
         })
     }
 
@@ -340,6 +342,12 @@ impl ParquetDataCatalog {
     /// and we need to ensure fresh data is loaded.
     pub fn reset_session(&mut self) {
         self.session.clear_registered_tables();
+    }
+
+    /// Sets a cooperative cancellation flag for remote query streams.
+    pub fn set_query_cancellation(&mut self, cancellation: Option<Arc<AtomicBool>>) {
+        self.query_cancellation = cancellation.clone();
+        self.session.set_query_cancellation(cancellation);
     }
 
     /// Writes mixed data types to the catalog by separating them into type-specific collections.
@@ -855,10 +863,7 @@ impl ParquetDataCatalog {
         start: Option<UnixNanos>,
         end: Option<UnixNanos>,
     ) -> anyhow::Result<Vec<InstrumentAny>> {
-        use nautilus_serialization::arrow::instrument::decode_instrument_any_batch;
-
         let base_dir = self.make_path("instruments", None)?;
-        let mut all_instruments = Vec::new();
         let start_u64 = start.map(|ts| ts.as_u64());
         let end_u64 = end.map(|ts| ts.as_u64());
 
@@ -909,6 +914,29 @@ impl ParquetDataCatalog {
 
         instrument_files.sort();
 
+        self.query_instruments_from_files(&instrument_files, instrument_ids, start, end)
+    }
+
+    /// Queries instruments from an explicit list of Parquet files without listing the catalog.
+    pub fn query_instruments_from_files(
+        &self,
+        files: &[String],
+        instrument_ids: Option<&[String]>,
+        start: Option<UnixNanos>,
+        end: Option<UnixNanos>,
+    ) -> anyhow::Result<Vec<InstrumentAny>> {
+        use nautilus_serialization::arrow::instrument::decode_instrument_any_batch;
+
+        let mut instrument_files = files.to_vec();
+        instrument_files.sort();
+        if instrument_files.windows(2).any(|pair| pair[0] == pair[1]) {
+            anyhow::bail!("exact instrument file list contains duplicate paths");
+        }
+
+        let start_u64 = start.map(|ts| ts.as_u64());
+        let end_u64 = end.map(|ts| ts.as_u64());
+        let mut all_instruments = Vec::new();
+
         for file_path in instrument_files {
             let object_path = self.to_object_path_parsed(&file_path)?;
             let (batches, builder_schema) = self.execute_async(async {
@@ -920,6 +948,13 @@ impl ParquetDataCatalog {
 
             for batch in batches {
                 let mut instruments = decode_instrument_any_batch(&metadata, &batch)?;
+
+                if let Some(ids) = instrument_ids {
+                    instruments.retain(|instrument| {
+                        ids.iter()
+                            .any(|instrument_id| instrument.id().to_string() == *instrument_id)
+                    });
+                }
 
                 if start.is_some() || end.is_some() {
                     instruments.retain(|instrument| {
@@ -2993,7 +3028,37 @@ impl ParquetDataCatalog {
         F: std::future::Future<Output = anyhow::Result<R>>,
     {
         let rt = get_runtime();
-        rt.block_on(future)
+        let cancellation = self.query_cancellation.clone();
+        rt.block_on(async move {
+            tokio::pin!(future);
+            loop {
+                if cancellation
+                    .as_ref()
+                    .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire))
+                {
+                    anyhow::bail!("catalog query cancelled before its load lease expired");
+                }
+                tokio::select! {
+                    result = &mut future => {
+                        if cancellation
+                            .as_ref()
+                            .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire))
+                        {
+                            anyhow::bail!("catalog query cancelled before its load lease expired");
+                        }
+                        return result;
+                    }
+                    () = tokio::time::sleep(std::time::Duration::from_millis(250)) => {
+                        if cancellation
+                            .as_ref()
+                            .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire))
+                        {
+                            anyhow::bail!("catalog query cancelled before its load lease expired");
+                        }
+                    }
+                }
+            }
+        })
     }
 
     /// Lists directory stems (directory names without path) in a subdirectory.
