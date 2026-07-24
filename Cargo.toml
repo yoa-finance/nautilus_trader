@@ -79,7 +79,7 @@ nautilus-execution = { package = "stratneo-nautilus-execution", path = "crates/e
 nautilus-indicators = { package = "stratneo-nautilus-indicators", path = "crates/indicators", version = "0.58.0" }
 nautilus-infrastructure = { path = "crates/infrastructure", version = "0.58.0" }
 nautilus-live = { package = "stratneo-nautilus-live", path = "crates/live", version = "0.58.2", default-features = false }
-nautilus-model = { package = "stratneo-nautilus-model", path = "crates/model", version = "0.58.2" }
+nautilus-model = { package = "stratneo-nautilus-model", path = "crates/model", version = "0.58.3" }
 nautilus-network = { package = "stratneo-nautilus-network", path = "crates/network", version = "0.58.0" }
 nautilus-persistence = { package = "stratneo-nautilus-persistence", path = "crates/persistence", version = "0.58.1" }
 nautilus-persistence-macros = { package = "stratneo-nautilus-persistence-macros", path = "crates/persistence/macros", version = "0.58.0" }

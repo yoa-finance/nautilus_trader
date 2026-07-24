@@ -96,6 +96,7 @@ Released on 8th June 2026 (UTC).
 - Fixed `StackStr::from_c_ptr_checked` to return `None` for null C string pointers
 
 ### Fixes
+- Fixed `Position` multi-fill closes treating sub-precision floating-point residue as a reversal and overwriting the opening average price (Rust)
 - Fixed matching engine panic on mark price bars in Rust (#4189), thanks @po4yka
 - Fixed raw value boundary constants in Rust (#4188), thanks @po4yka
 - Fixed unbounded Cache `VecDeque` memory leak (Rust) (#4107), thanks @filipmacek

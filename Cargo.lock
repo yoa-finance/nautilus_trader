@@ -9137,7 +9137,7 @@ dependencies = [
 
 [[package]]
 name = "stratneo-nautilus-model"
-version = "0.58.2"
+version = "0.58.3"
 dependencies = [
  "ahash 0.8.12",
  "alloy-primitives",
