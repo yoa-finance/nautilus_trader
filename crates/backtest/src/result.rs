@@ -19,6 +19,28 @@ use ahash::AHashMap;
 use nautilus_core::{UUID4, UnixNanos};
 use serde::Serialize;
 
+/// Describes how a backtest engine run ended.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum BacktestTermination {
+    /// The engine reached its configured end boundary or exhausted its input data.
+    Completed,
+    /// A component requested an early system shutdown.
+    ShutdownRequested {
+        component: String,
+        reason: Option<String>,
+    },
+    /// The engine was force-stopped without a corresponding shutdown command.
+    ForceStopped,
+}
+
+impl BacktestTermination {
+    #[must_use]
+    pub const fn is_completed(&self) -> bool {
+        matches!(self, Self::Completed)
+    }
+}
+
 /// Results from a completed backtest run.
 #[derive(Debug, Serialize)]
 #[cfg_attr(
@@ -33,6 +55,7 @@ use serde::Serialize;
     pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.backtest")
 )]
 pub struct BacktestResult {
+    pub termination: BacktestTermination,
     pub trader_id: String,
     pub machine_id: String,
     pub instance_id: UUID4,
@@ -77,6 +100,7 @@ mod tests {
         stats_general.insert("Long Ratio".to_string(), 1.0);
 
         let result = BacktestResult {
+            termination: BacktestTermination::Completed,
             trader_id: "TRADER-001".to_string(),
             machine_id: "machine-1".to_string(),
             instance_id,
@@ -100,6 +124,7 @@ mod tests {
         let value = serde_json::to_value(&result).unwrap();
 
         assert_eq!(value["trader_id"], json!("TRADER-001"));
+        assert_eq!(value["termination"]["status"], json!("completed"));
         assert_eq!(value["machine_id"], json!("machine-1"));
         assert_eq!(value["instance_id"], json!(instance_id.to_string()));
         assert_eq!(value["run_id"], json!(run_id.to_string()));

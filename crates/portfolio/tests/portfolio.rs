@@ -3764,17 +3764,19 @@ fn test_equity_cash_account_long_position(
     let opened = get_open_position(&position);
     portfolio.update_position(&PositionEvent::PositionOpened(opened));
 
-    // mark_value = qty (1) * bid (100) = 100 USD, balance.total = 10 USD
+    // Mark values remain available as a separate position exposure metric.
     let mark_values = portfolio.mark_values(&Venue::test_default(), None);
     assert_eq!(
         mark_values.get(&Currency::USD()).unwrap().as_decimal(),
         dec!(100.0)
     );
 
+    // Multi-currency cash equity is balance NAV. The position is already reflected by
+    // the account's asset balances and must not be added a second time.
     let equity = portfolio.equity(&Venue::test_default(), None);
     assert_eq!(
         equity.get(&Currency::USD()).unwrap().as_decimal(),
-        dec!(110.0)
+        dec!(10.0)
     );
 }
 
@@ -4051,6 +4053,10 @@ fn test_equity_preserves_account_balance_currency_order(
             Currency::ETH(),
         ],
     );
+    assert_eq!(equity[&Currency::BTC()].as_decimal(), dec!(10));
+    assert_eq!(equity[&Currency::USD()].as_decimal(), dec!(10));
+    assert_eq!(equity[&Currency::USDT()].as_decimal(), dec!(100000));
+    assert_eq!(equity[&Currency::ETH()].as_decimal(), dec!(20));
 }
 
 #[rstest]
@@ -4297,11 +4303,11 @@ fn test_equity_cash_account_short_position(
         dec!(-101.0),
     );
 
-    // equity[USD] = balance.total (10) + mark (-101) = -91
+    // Multi-currency cash equity remains the balance NAV.
     let equity = portfolio.equity(&Venue::test_default(), None);
     assert_eq!(
         equity.get(&Currency::USD()).unwrap().as_decimal(),
-        dec!(-91.0),
+        dec!(10.0),
     );
 }
 

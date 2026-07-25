@@ -96,6 +96,9 @@ Released on 8th June 2026 (UTC).
 - Fixed `StackStr::from_c_ptr_checked` to return `None` for null C string pointers
 
 ### Fixes
+- Fixed exchange-rate lookup to support the latest processed `LAST` bars and deterministic direct, inverse, and multi-hop conversion paths (Rust)
+- Fixed multi-currency cash equity double-counting spot positions already represented by account balances (Rust)
+- Fixed backtest results to distinguish normal completion from component-requested shutdown and force-stop termination (Rust)
 - Fixed `Position` multi-fill closes treating sub-precision floating-point residue as a reversal and overwriting the opening average price (Rust)
 - Fixed matching engine panic on mark price bars in Rust (#4189), thanks @po4yka
 - Fixed raw value boundary constants in Rust (#4188), thanks @po4yka

@@ -17,23 +17,23 @@
 //!
 //! An exchange rate is the value of one asset versus that of another.
 
-use ahash::{AHashMap, AHashSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+
+use ahash::AHashMap;
 use nautilus_model::enums::PriceType;
 use rust_decimal::Decimal;
 use ustr::Ustr;
 
 /// Calculates the exchange rate between two currencies using provided bid and ask quotes.
 ///
-/// This function builds a graph of direct conversion rates from the quotes and uses a DFS to
-/// accumulate the conversion rate along a valid conversion path. While a full Floyd–Warshall
-/// algorithm could compute all-pairs conversion rates, the DFS approach here provides a quick
-/// solution for a single conversion query.
+/// This function builds a graph of direct conversion rates from the quotes and uses a
+/// deterministic breadth-first search to accumulate the conversion rate along the shortest
+/// available conversion path.
 ///
 /// # Errors
 ///
 /// Returns an error if:
 /// - `price_type` is equal to `Last` or `Mark` (cannot calculate from quotes).
-/// - `quotes_bid` or `quotes_ask` is empty.
 /// - `quotes_bid` and `quotes_ask` lengths are not equal.
 /// - The bid or ask side of a pair is missing.
 pub fn get_exchange_rate(
@@ -49,8 +49,8 @@ pub fn get_exchange_rate(
         return Ok(Some(Decimal::ONE));
     }
 
-    if quotes_bid.is_empty() || quotes_ask.is_empty() {
-        anyhow::bail!("Quote maps must not be empty");
+    if quotes_bid.is_empty() && quotes_ask.is_empty() {
+        return Ok(None);
     }
 
     if quotes_bid.len() != quotes_ask.len() {
@@ -76,7 +76,9 @@ pub fn get_exchange_rate(
     };
 
     // Construct a graph: each currency maps to its neighbors and corresponding conversion rate
-    let mut graph: AHashMap<Ustr, Vec<(Ustr, Decimal)>> = AHashMap::new();
+    let mut graph: BTreeMap<Ustr, Vec<(Ustr, Decimal)>> = BTreeMap::new();
+    let mut effective_quotes = effective_quotes.into_iter().collect::<Vec<_>>();
+    effective_quotes.sort_by_key(|(pair, _)| *pair);
     for (pair, rate) in effective_quotes {
         let parts: Vec<&str> = pair.split('/').collect();
         if parts.len() != 2 {
@@ -98,13 +100,16 @@ pub fn get_exchange_rate(
             .or_default()
             .push((base, Decimal::ONE / rate));
     }
+    for neighbors in graph.values_mut() {
+        neighbors.sort_by_key(|(currency, _)| *currency);
+    }
 
-    // DFS: search for a conversion path from `from_currency` to `to_currency`
-    let mut stack: Vec<(Ustr, Decimal)> = vec![(from_currency, Decimal::ONE)];
-    let mut visited: AHashSet<Ustr> = AHashSet::new();
+    // BFS: prefer the shortest conversion path with deterministic currency ordering.
+    let mut queue: VecDeque<(Ustr, Decimal)> = VecDeque::from([(from_currency, Decimal::ONE)]);
+    let mut visited: BTreeSet<Ustr> = BTreeSet::new();
     visited.insert(from_currency);
 
-    while let Some((current, current_rate)) = stack.pop() {
+    while let Some((current, current_rate)) = queue.pop_front() {
         if current == to_currency {
             return Ok(Some(current_rate));
         }
@@ -112,7 +117,7 @@ pub fn get_exchange_rate(
         if let Some(neighbors) = graph.get(&current) {
             for (neighbor, rate) in neighbors {
                 if visited.insert(*neighbor) {
-                    stack.push((*neighbor, current_rate * rate));
+                    queue.push_back((*neighbor, current_rate * rate));
                 }
             }
         }
@@ -310,7 +315,7 @@ mod tests {
             quotes_bid,
             quotes_ask,
         );
-        assert!(result.is_err());
+        assert_eq!(result.unwrap(), None);
     }
 
     #[rstest]
@@ -366,7 +371,7 @@ mod tests {
         )
         .unwrap();
 
-        // Edge order is non-deterministic, so allow a small tolerance around the mid rate
+        // The shortest path is selected with deterministic currency ordering.
         let expected = dec!(1.1001);
         assert!((rate.unwrap() - expected).abs() < dec!(0.0001));
     }

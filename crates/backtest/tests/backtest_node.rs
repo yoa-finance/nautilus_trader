@@ -29,6 +29,7 @@ use nautilus_backtest::{
     },
     engine::{BacktestEngine, BacktestRunObserver},
     node::BacktestNode,
+    result::BacktestTermination,
 };
 use nautilus_common::actor::DataActor;
 use nautilus_core::UnixNanos;
@@ -694,6 +695,10 @@ fn test_run_streaming_shutdown_stops_between_chunks(crypto_perpetual_ethusdt: Cr
         results[0].iterations < total,
         "Shutdown must stop streaming before all {total} quotes are processed",
     );
+    assert!(matches!(
+        results[0].termination,
+        BacktestTermination::ShutdownRequested { .. }
+    ));
 }
 
 mod serial_tests {
@@ -732,6 +737,10 @@ mod serial_tests {
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].iterations, 3);
+        assert!(matches!(
+            results[0].termination,
+            BacktestTermination::ShutdownRequested { .. }
+        ));
         assert!(engine.kernel().is_shutdown_requested());
     }
 }

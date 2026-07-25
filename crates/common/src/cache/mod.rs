@@ -5158,27 +5158,41 @@ impl Cache {
         to_currency: Currency,
         price_type: PriceType,
     ) -> Option<Decimal> {
-        if from_currency == to_currency {
-            // When the source and target currencies are identical,
-            // no conversion is needed; return an exchange rate of one.
-            return Some(Decimal::ONE);
-        }
-
-        let (bid_quote, ask_quote) = self.build_quote_table(&venue);
-
-        match get_exchange_rate(
-            from_currency.code,
-            to_currency.code,
-            price_type,
-            bid_quote,
-            ask_quote,
-        ) {
+        match self.try_get_xrate(venue, from_currency, to_currency, price_type) {
             Ok(rate) => rate,
             Err(e) => {
                 log::error!("Failed to calculate xrate: {e}");
                 None
             }
         }
+    }
+
+    /// Returns an exchange rate without logging when market data is unavailable.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the available market data cannot form a valid quote table.
+    pub fn try_get_xrate(
+        &self,
+        venue: Venue,
+        from_currency: Currency,
+        to_currency: Currency,
+        price_type: PriceType,
+    ) -> anyhow::Result<Option<Decimal>> {
+        if from_currency == to_currency {
+            // When the source and target currencies are identical,
+            // no conversion is needed; return an exchange rate of one.
+            return Ok(Some(Decimal::ONE));
+        }
+
+        let (bid_quote, ask_quote) = self.build_quote_table(&venue);
+        get_exchange_rate(
+            from_currency.code,
+            to_currency.code,
+            price_type,
+            bid_quote,
+            ask_quote,
+        )
     }
 
     fn build_quote_table(
@@ -5188,52 +5202,81 @@ impl Cache {
         let mut bid_quotes = AHashMap::new();
         let mut ask_quotes = AHashMap::new();
 
-        for instrument_id in self.instruments.keys() {
+        for (instrument_id, instrument) in &self.instruments {
             if instrument_id.venue != *venue {
                 continue;
             }
 
-            let (bid_price, ask_price) = if let Some(ticks) = self.quotes.get(instrument_id) {
-                if let Some(tick) = ticks.front() {
-                    (tick.bid_price, tick.ask_price)
-                } else {
-                    continue; // Empty ticks vector
-                }
-            } else {
-                let bid_bar = self
-                    .bars
-                    .iter()
-                    .find(|(k, _)| {
-                        k.instrument_id() == *instrument_id
-                            && matches!(k.spec().price_type, PriceType::Bid)
-                    })
-                    .map(|(_, v)| v);
+            let Some(base_currency) = instrument.base_currency() else {
+                continue;
+            };
+            let quote_currency = instrument.quote_currency();
+            let pair = Ustr::from(&format!("{base_currency}/{quote_currency}"));
 
-                let ask_bar = self
-                    .bars
-                    .iter()
-                    .find(|(k, _)| {
-                        k.instrument_id() == *instrument_id
-                            && matches!(k.spec().price_type, PriceType::Ask)
-                    })
-                    .map(|(_, v)| v);
+            let mut candidates = Vec::new();
+            if let Some(tick) = self
+                .quotes
+                .get(instrument_id)
+                .and_then(|ticks| ticks.front())
+            {
+                candidates.push((tick.ts_init.as_u64(), 3_u8, tick.bid_price, tick.ask_price));
+            }
 
-                match (bid_bar, ask_bar) {
-                    (Some(bid), Some(ask)) => {
-                        match (bid.front(), ask.front()) {
-                            (Some(bid_bar), Some(ask_bar)) => (bid_bar.close, ask_bar.close),
-                            _ => {
-                                // Empty bar VecDeques
-                                continue;
-                            }
-                        }
-                    }
-                    _ => continue,
-                }
+            let bid_bar = self
+                .bars
+                .iter()
+                .find(|(bar_type, _)| {
+                    bar_type.instrument_id() == *instrument_id
+                        && matches!(bar_type.spec().price_type, PriceType::Bid)
+                })
+                .and_then(|(_, bars)| bars.front());
+            let ask_bar = self
+                .bars
+                .iter()
+                .find(|(bar_type, _)| {
+                    bar_type.instrument_id() == *instrument_id
+                        && matches!(bar_type.spec().price_type, PriceType::Ask)
+                })
+                .and_then(|(_, bars)| bars.front());
+            if let (Some(bid_bar), Some(ask_bar)) = (bid_bar, ask_bar) {
+                candidates.push((
+                    bid_bar.ts_init.as_u64().min(ask_bar.ts_init.as_u64()),
+                    2_u8,
+                    bid_bar.close,
+                    ask_bar.close,
+                ));
+            }
+
+            if let Some(tick) = self
+                .trades
+                .get(instrument_id)
+                .and_then(|ticks| ticks.front())
+            {
+                candidates.push((tick.ts_init.as_u64(), 1_u8, tick.price, tick.price));
+            }
+
+            if let Some(bar) = self
+                .bars
+                .iter()
+                .filter(|(bar_type, _)| {
+                    bar_type.instrument_id() == *instrument_id
+                        && matches!(bar_type.spec().price_type, PriceType::Last)
+                })
+                .filter_map(|(_, bars)| bars.front())
+                .max_by_key(|bar| bar.ts_init)
+            {
+                candidates.push((bar.ts_init.as_u64(), 0_u8, bar.close, bar.close));
+            }
+
+            let Some((_, _, bid_price, ask_price)) = candidates
+                .into_iter()
+                .max_by_key(|(ts, priority, _, _)| (*ts, *priority))
+            else {
+                continue;
             };
 
-            bid_quotes.insert(instrument_id.symbol.inner(), bid_price.as_decimal());
-            ask_quotes.insert(instrument_id.symbol.inner(), ask_price.as_decimal());
+            bid_quotes.insert(pair, bid_price.as_decimal());
+            ask_quotes.insert(pair, ask_price.as_decimal());
         }
 
         (bid_quotes, ask_quotes)

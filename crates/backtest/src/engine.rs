@@ -67,7 +67,7 @@ use crate::{
     data_iterator::BacktestDataIterator,
     exchange::SimulatedExchange,
     execution_client::BacktestExecutionClient,
-    result::BacktestResult,
+    result::{BacktestResult, BacktestTermination},
 };
 
 /// Core backtesting engine for running event-driven strategy backtests on historical data.
@@ -804,7 +804,7 @@ impl BacktestEngine {
         loop {
             if self.kernel.is_shutdown_requested() {
                 log::info!("Shutdown requested via ShutdownSystem, ending backtest");
-                self.force_stop = true;
+                break;
             }
 
             if self.force_stop {
@@ -842,7 +842,6 @@ impl BacktestEngine {
             // A timer fired during clock advance may have requested shutdown,
             // skip delivering this data point in that case
             if self.kernel.is_shutdown_requested() {
-                self.force_stop = true;
                 break;
             }
 
@@ -1095,7 +1094,17 @@ impl BacktestEngine {
         let stats_returns = analyzer.get_performance_stats_returns();
         let stats_general = analyzer.get_performance_stats_general();
 
+        let termination = match self.kernel.shutdown_command() {
+            Some(command) => BacktestTermination::ShutdownRequested {
+                component: command.component_id.to_string(),
+                reason: command.reason,
+            },
+            None if self.force_stop => BacktestTermination::ForceStopped,
+            None => BacktestTermination::Completed,
+        };
+
         BacktestResult {
+            termination,
             trader_id: self.config.trader_id().to_string(),
             machine_id: self.kernel.machine_id.clone(),
             instance_id: self.instance_id,

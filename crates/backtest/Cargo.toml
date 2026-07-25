@@ -1,7 +1,7 @@
 [package]
 name = "stratneo-nautilus-backtest"
 readme = "README.md"
-version = "0.58.3"
+version = "0.58.4"
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
@@ -80,7 +80,7 @@ nautilus-persistence = { workspace = true, optional = true }
 nautilus-plugin = { workspace = true, features = ["host"], optional = true }
 nautilus-portfolio = { workspace = true }
 nautilus-risk = { package = "stratneo-nautilus-risk", path = "../risk", version = "0.58.2" }
-nautilus-system = { package = "stratneo-nautilus-system", path = "../system", version = "0.58.2" }
+nautilus-system = { package = "stratneo-nautilus-system", path = "../system", version = "0.58.3" }
 nautilus-trading = { workspace = true }
 
 ahash = { workspace = true }

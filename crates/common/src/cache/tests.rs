@@ -331,6 +331,106 @@ fn test_get_xrate_after_reset_follows_instrument_lifecycle(
 }
 
 #[rstest]
+fn test_try_get_xrate_uses_last_bars_for_direct_inverse_and_multi_hop(
+    currency_pair_btcusdt: CurrencyPair,
+) {
+    let ethbtc = CurrencyPair::new(
+        InstrumentId::from("ETHBTC.BINANCE"),
+        Symbol::from("ETHBTC"),
+        Currency::ETH(),
+        Currency::BTC(),
+        5,
+        4,
+        Price::from("0.00001"),
+        Quantity::from("0.0001"),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        UnixNanos::default(),
+        UnixNanos::default(),
+    );
+    let mut cache = Cache::default();
+    for instrument in [
+        InstrumentAny::CurrencyPair(currency_pair_btcusdt.clone()),
+        InstrumentAny::CurrencyPair(ethbtc.clone()),
+    ] {
+        cache.add_instrument(instrument).unwrap();
+    }
+    for (instrument_id, close) in [
+        (currency_pair_btcusdt.id, Price::from("50000.00")),
+        (ethbtc.id, Price::from("0.05000")),
+    ] {
+        cache
+            .add_bar(Bar {
+                bar_type: BarType::from(format!("{instrument_id}-1-MINUTE-LAST-EXTERNAL").as_str()),
+                open: close,
+                high: close,
+                low: close,
+                close,
+                volume: Quantity::from(1),
+                ts_event: UnixNanos::from(1),
+                ts_init: UnixNanos::from(1),
+            })
+            .unwrap();
+    }
+
+    assert_eq!(
+        cache
+            .try_get_xrate(
+                Venue::from("BINANCE"),
+                Currency::BTC(),
+                Currency::USDT(),
+                PriceType::Mid,
+            )
+            .unwrap(),
+        Some(dec!(50000))
+    );
+    assert_eq!(
+        cache
+            .try_get_xrate(
+                Venue::from("BINANCE"),
+                Currency::USDT(),
+                Currency::BTC(),
+                PriceType::Mid,
+            )
+            .unwrap(),
+        Some(dec!(0.00002))
+    );
+    assert_eq!(
+        cache
+            .try_get_xrate(
+                Venue::from("BINANCE"),
+                Currency::ETH(),
+                Currency::USDT(),
+                PriceType::Mid,
+            )
+            .unwrap(),
+        Some(dec!(2500))
+    );
+    assert_eq!(
+        cache
+            .try_get_xrate(
+                Venue::from("BINANCE"),
+                Currency::from("BNB"),
+                Currency::USDT(),
+                PriceType::Mid,
+            )
+            .unwrap(),
+        None
+    );
+}
+
+#[rstest]
 fn test_reset_clears_mark_xrate_even_when_instruments_retained(audusd_sim: CurrencyPair) {
     let config = CacheConfig::builder()
         .drop_instruments_on_reset(false)
