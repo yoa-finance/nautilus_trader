@@ -105,6 +105,30 @@ impl CacheSnapshotRef {
     }
 }
 
+/// Market-data source used to mark an open position.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PositionMarkSource {
+    /// Side-aware bid or ask from a quote tick.
+    Quote,
+    /// Side-aware close from a BID or ASK bar.
+    BidAskBar,
+    /// Last traded price from a trade tick.
+    TradeTick,
+    /// Close from a LAST bar.
+    LastBar,
+}
+
+/// Latest processed market price selected to mark a position.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PositionMark {
+    /// Price used for mark-to-market.
+    pub price: Price,
+    /// Simulation-time arrival timestamp of the selected market-data observation.
+    pub ts_init: UnixNanos,
+    /// Market-data source which supplied [`Self::price`].
+    pub source: PositionMarkSource,
+}
+
 /// Read-only view over the platform cache.
 ///
 /// Adapter-facing code receives this type instead of the mutable cache handle so cache writes stay
@@ -702,28 +726,100 @@ impl Cache {
         self.database.is_some()
     }
 
-    // Calculate the unrealized profit and loss (PnL) for `position`.
+    /// Resolves the latest processed, side-aware market price for `position`.
+    ///
+    /// The newest observation wins. Ties prefer quotes, then BID/ASK bars, trade ticks, and LAST
+    /// bars. Missing market data is an ordinary unavailable result and is not logged.
     #[must_use]
-    pub fn calculate_unrealized_pnl(&self, position: &Position) -> Option<Money> {
-        let Some(quote) = self.quote(&position.instrument_id) else {
-            log::warn!(
-                "Cannot calculate unrealized PnL for {}, no quotes for {}",
-                position.id,
-                position.instrument_id
-            );
-            return None;
+    pub fn resolve_position_mark(&self, position: &Position) -> Option<PositionMark> {
+        let instrument_id = &position.instrument_id;
+        let (side_price_type, quote_mark) = match position.side {
+            PositionSide::Long => (
+                PriceType::Bid,
+                self.quotes
+                    .get(instrument_id)
+                    .and_then(|quotes| quotes.front())
+                    .map(|quote| PositionMark {
+                        price: quote.bid_price,
+                        ts_init: quote.ts_init,
+                        source: PositionMarkSource::Quote,
+                    }),
+            ),
+            PositionSide::Short => (
+                PriceType::Ask,
+                self.quotes
+                    .get(instrument_id)
+                    .and_then(|quotes| quotes.front())
+                    .map(|quote| PositionMark {
+                        price: quote.ask_price,
+                        ts_init: quote.ts_init,
+                        source: PositionMarkSource::Quote,
+                    }),
+            ),
+            PositionSide::Flat | PositionSide::NoPositionSide => return None,
         };
 
-        // Use exit price for mark-to-market: longs exit at bid, shorts exit at ask
-        let last = match position.side {
+        let side_bar_mark = self
+            .bars
+            .iter()
+            .filter(|(bar_type, _)| {
+                bar_type.instrument_id() == *instrument_id
+                    && bar_type.spec().price_type == side_price_type
+            })
+            .filter_map(|(_, bars)| bars.front())
+            .max_by_key(|bar| bar.ts_init)
+            .map(|bar| PositionMark {
+                price: bar.close,
+                ts_init: bar.ts_init,
+                source: PositionMarkSource::BidAskBar,
+            });
+        let trade_mark = self
+            .trades
+            .get(instrument_id)
+            .and_then(|trades| trades.front())
+            .map(|trade| PositionMark {
+                price: trade.price,
+                ts_init: trade.ts_init,
+                source: PositionMarkSource::TradeTick,
+            });
+        let last_bar_mark = self
+            .bars
+            .iter()
+            .filter(|(bar_type, _)| {
+                bar_type.instrument_id() == *instrument_id
+                    && bar_type.spec().price_type == PriceType::Last
+            })
+            .filter_map(|(_, bars)| bars.front())
+            .max_by_key(|bar| bar.ts_init)
+            .map(|bar| PositionMark {
+                price: bar.close,
+                ts_init: bar.ts_init,
+                source: PositionMarkSource::LastBar,
+            });
+
+        [
+            quote_mark.map(|mark| (3_u8, mark)),
+            side_bar_mark.map(|mark| (2_u8, mark)),
+            trade_mark.map(|mark| (1_u8, mark)),
+            last_bar_mark.map(|mark| (0_u8, mark)),
+        ]
+        .into_iter()
+        .flatten()
+        .max_by_key(|(priority, mark)| (mark.ts_init, *priority))
+        .map(|(_, mark)| mark)
+    }
+
+    /// Calculates unrealized profit and loss (PnL) for `position`.
+    #[must_use]
+    pub fn calculate_unrealized_pnl(&self, position: &Position) -> Option<Money> {
+        let mark = match position.side {
             PositionSide::Flat | PositionSide::NoPositionSide => {
                 return Some(Money::new(0.0, position.settlement_currency));
             }
-            PositionSide::Long => quote.bid_price,
-            PositionSide::Short => quote.ask_price,
+            PositionSide::Long | PositionSide::Short => self.resolve_position_mark(position)?,
         };
 
-        Some(position.unrealized_pnl(last))
+        Some(position.unrealized_pnl(mark.price))
     }
 
     /// Checks integrity of data within the cache.

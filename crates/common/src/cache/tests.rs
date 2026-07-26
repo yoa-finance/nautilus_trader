@@ -69,7 +69,7 @@ use ustr::Ustr;
 
 use crate::{
     cache::{
-        Cache, CacheConfig, CacheView, OrderRef,
+        Cache, CacheConfig, CacheView, OrderRef, PositionMarkSource,
         database::{CacheDatabaseAdapter, CacheMap},
     },
     signal::Signal,
@@ -427,6 +427,132 @@ fn test_try_get_xrate_uses_last_bars_for_direct_inverse_and_multi_hop(
             )
             .unwrap(),
         None
+    );
+}
+
+#[rstest]
+fn test_resolve_position_mark_uses_latest_processed_side_aware_market_data(
+    currency_pair_btcusdt: CurrencyPair,
+) {
+    let instrument = InstrumentAny::CurrencyPair(currency_pair_btcusdt.clone());
+    let position = |side| {
+        let order = OrderTestBuilder::new(OrderType::Market)
+            .instrument_id(currency_pair_btcusdt.id)
+            .side(side)
+            .quantity(Quantity::from(1))
+            .build();
+        let fill = match TestOrderEventStubs::filled(
+            &order,
+            &instrument,
+            None,
+            Some(PositionId::new(match side {
+                OrderSide::Buy => "POSITION-LONG",
+                OrderSide::Sell => "POSITION-SHORT",
+                OrderSide::NoOrderSide => unreachable!(),
+            })),
+            Some(Price::from("100.00")),
+            None,
+            None,
+            None,
+            None,
+            None,
+        ) {
+            OrderEventAny::Filled(fill) => fill,
+            _ => unreachable!(),
+        };
+        Position::new(&instrument, fill)
+    };
+    let long = position(OrderSide::Buy);
+    let short = position(OrderSide::Sell);
+    let mut cache = Cache::default();
+
+    assert_eq!(cache.resolve_position_mark(&long), None);
+    assert_eq!(cache.calculate_unrealized_pnl(&short), None);
+
+    let last_bar_type =
+        BarType::from(format!("{}-1-MINUTE-LAST-EXTERNAL", currency_pair_btcusdt.id).as_str());
+    cache
+        .add_bar(Bar {
+            bar_type: last_bar_type,
+            open: Price::from("101.00"),
+            high: Price::from("101.00"),
+            low: Price::from("101.00"),
+            close: Price::from("101.00"),
+            volume: Quantity::from(1),
+            ts_event: UnixNanos::from(1),
+            ts_init: UnixNanos::from(1),
+        })
+        .unwrap();
+    assert_eq!(
+        cache.resolve_position_mark(&long).unwrap().source,
+        PositionMarkSource::LastBar
+    );
+
+    cache
+        .add_trade(TradeTick {
+            instrument_id: currency_pair_btcusdt.id,
+            price: Price::from("102.00"),
+            ts_event: UnixNanos::from(2),
+            ts_init: UnixNanos::from(2),
+            ..TradeTick::default()
+        })
+        .unwrap();
+    assert_eq!(
+        cache.resolve_position_mark(&long).unwrap().source,
+        PositionMarkSource::TradeTick
+    );
+
+    for (price_type, close) in [(PriceType::Bid, "103.00"), (PriceType::Ask, "104.00")] {
+        cache
+            .add_bar(Bar {
+                bar_type: BarType::from(
+                    format!(
+                        "{}-1-MINUTE-{price_type}-EXTERNAL",
+                        currency_pair_btcusdt.id
+                    )
+                    .as_str(),
+                ),
+                open: Price::from(close),
+                high: Price::from(close),
+                low: Price::from(close),
+                close: Price::from(close),
+                volume: Quantity::from(1),
+                ts_event: UnixNanos::from(4),
+                ts_init: UnixNanos::from(4),
+            })
+            .unwrap();
+    }
+    assert_eq!(
+        cache.resolve_position_mark(&long).unwrap(),
+        crate::cache::PositionMark {
+            price: Price::from("103.00"),
+            ts_init: UnixNanos::from(4),
+            source: PositionMarkSource::BidAskBar,
+        }
+    );
+    assert_eq!(
+        cache.resolve_position_mark(&short).unwrap().price,
+        Price::from("104.00")
+    );
+
+    cache
+        .add_quote(QuoteTick {
+            instrument_id: currency_pair_btcusdt.id,
+            bid_price: Price::from("105.00"),
+            ask_price: Price::from("106.00"),
+            bid_size: Quantity::from(1),
+            ask_size: Quantity::from(1),
+            ts_event: UnixNanos::from(4),
+            ts_init: UnixNanos::from(4),
+        })
+        .unwrap();
+    assert_eq!(
+        cache.resolve_position_mark(&long).unwrap().source,
+        PositionMarkSource::Quote
+    );
+    assert_eq!(
+        cache.resolve_position_mark(&short).unwrap().price,
+        Price::from("106.00")
     );
 }
 
