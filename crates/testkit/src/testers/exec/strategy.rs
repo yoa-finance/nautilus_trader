@@ -860,7 +860,13 @@ impl ExecTester {
         self.sell_order = Some(sell_order.clone());
 
         let client_id = self.config.client_id;
-        if let Err(e) = self.submit_order_list(vec![buy_order, sell_order], None, client_id, None) {
+        if let Err(e) = self.submit_order_list(
+            nautilus_model::enums::OrderListType::Standard,
+            vec![buy_order, sell_order],
+            None,
+            client_id,
+            None,
+        ) {
             log::error!("Failed to submit batch limit pair: {e}");
         }
     }
@@ -1404,9 +1410,21 @@ impl ExecTester {
 
         let client_id = self.config.client_id;
         if let Some(params) = &self.config.order_params {
-            self.submit_order_list(orders, None, client_id, Some(params.clone()))
+            self.submit_order_list(
+                nautilus_model::enums::OrderListType::Standard,
+                orders,
+                None,
+                client_id,
+                Some(params.clone()),
+            )
         } else {
-            self.submit_order_list(orders, None, client_id, None)
+            self.submit_order_list(
+                nautilus_model::enums::OrderListType::Standard,
+                orders,
+                None,
+                client_id,
+                None,
+            )
         }
     }
 

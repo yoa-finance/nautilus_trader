@@ -93,6 +93,7 @@ pub struct NautilusKernel {
     /// The UNIX timestamp (nanoseconds) when the kernel was last shutdown.
     pub ts_shutdown: Option<UnixNanos>,
     shutdown_requested: Rc<Cell<bool>>,
+    shutdown_command: Rc<RefCell<Option<ShutdownSystem>>>,
     event_store: Option<Box<dyn KernelEventStore>>,
     event_store_replay: bool,
 }
@@ -288,7 +289,12 @@ impl NautilusKernel {
         OrderEmulator::register_msgbus_handlers(&order_emulator.emulator());
 
         let shutdown_requested = Rc::new(Cell::new(false));
-        Self::register_shutdown_handler(config.trader_id(), shutdown_requested.clone());
+        let shutdown_command = Rc::new(RefCell::new(None));
+        Self::register_shutdown_handler(
+            config.trader_id(),
+            shutdown_requested.clone(),
+            shutdown_command.clone(),
+        );
 
         let trader = Rc::new(RefCell::new(Trader::new(
             config.trader_id(),
@@ -320,11 +326,16 @@ impl NautilusKernel {
             ts_started: None,
             ts_shutdown: None,
             shutdown_requested,
+            shutdown_command,
             event_store_replay: false,
         })
     }
 
-    fn register_shutdown_handler(trader_id: TraderId, shutdown_requested: Rc<Cell<bool>>) {
+    fn register_shutdown_handler(
+        trader_id: TraderId,
+        shutdown_requested: Rc<Cell<bool>>,
+        shutdown_command: Rc<RefCell<Option<ShutdownSystem>>>,
+    ) {
         let handler = ShareableMessageHandler::from_typed(move |cmd: &ShutdownSystem| {
             if cmd.trader_id != trader_id {
                 log::warn!("Received {cmd} not for this trader {trader_id}, ignoring");
@@ -337,6 +348,7 @@ impl NautilusKernel {
             }
 
             log::info!("Received {cmd}, requesting shutdown");
+            *shutdown_command.borrow_mut() = Some(cmd.clone());
             shutdown_requested.set(true);
         });
         let topic = MessagingSwitchboard::shutdown_system_topic();
@@ -475,6 +487,13 @@ impl NautilusKernel {
     /// command does not abort it.
     pub fn reset_shutdown_flag(&self) {
         self.shutdown_requested.set(false);
+        *self.shutdown_command.borrow_mut() = None;
+    }
+
+    /// Returns the shutdown command which ended the current run, if any.
+    #[must_use]
+    pub fn shutdown_command(&self) -> Option<ShutdownSystem> {
+        self.shutdown_command.borrow().clone()
     }
 
     /// Returns a shared handle to the shutdown flag for async runtimes
@@ -751,6 +770,7 @@ impl NautilusKernel {
 
         self.ts_started = None;
         self.ts_shutdown = None;
+        self.reset_shutdown_flag();
 
         log::info!("Reset");
     }

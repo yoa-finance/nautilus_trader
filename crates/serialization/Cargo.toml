@@ -1,5 +1,5 @@
 [package]
-name = "nautilus-serialization"
+name = "stratneo-nautilus-serialization"
 readme = "README.md"
 build = "build.rs"
 include = [

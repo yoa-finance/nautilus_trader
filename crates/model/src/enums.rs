@@ -596,6 +596,53 @@ pub enum ContingencyType {
     Ouo = 3,
 }
 
+/// The order-list type which specifies the behavior of grouped orders.
+#[repr(C)]
+#[derive(
+    Copy,
+    Clone,
+    Debug,
+    Default,
+    Serialize,
+    Deserialize,
+    Display,
+    Hash,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    AsRefStr,
+    FromRepr,
+    EnumIter,
+    EnumString,
+)]
+#[strum(ascii_case_insensitive)]
+#[strum(serialize_all = "SCREAMING_SNAKE_CASE")]
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(
+        frozen,
+        eq,
+        eq_int,
+        module = "nautilus_trader.core.nautilus_pyo3.model.enums",
+        from_py_object,
+        rename_all = "SCREAMING_SNAKE_CASE",
+    )
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3_stub_gen::derive::gen_stub_pyclass_enum(module = "nautilus_trader.model")
+)]
+pub enum OrderListType {
+    /// Independent order list with cumulative exposure.
+    #[default]
+    Standard = 0,
+    /// One-Cancels-the-Other native order list.
+    Oco = 1,
+    /// One-Places-the-Other-Cancels-the-Other native order list.
+    Opoco = 2,
+}
+
 /// The price-adjustment scheme applied when stitching segment contracts into a
 /// continuous future series.
 ///

@@ -41,6 +41,7 @@ use super::messages::{
 use crate::common::{
     enums::BinanceKlineInterval,
     parse::{parse_price_at_precision, parse_quantity_at_precision},
+    time::unix_nanos_from_millis,
 };
 
 fn parse_positive_price(raw: &str, precision: u8, field: &str) -> anyhow::Result<Price> {
@@ -86,7 +87,7 @@ pub fn parse_trade(
         AggressorSide::Buyer
     };
 
-    let ts_event = UnixNanos::from_millis(msg.trade_time as u64);
+    let ts_event = unix_nanos_from_millis(msg.trade_time, "trade.trade_time", "spot_json_trade")?;
 
     Ok(TradeTick::new(
         instrument_id,
@@ -121,11 +122,21 @@ pub fn parse_book_ticker(
 
     // Spot bookTicker payloads on public streams do not consistently include
     // event timestamps; fall back to receive time when absent.
-    let ts_event = msg
-        .transaction_time
-        .or(msg.event_time)
-        .and_then(|ts| u64::try_from(ts).ok())
-        .map_or(ts_init, UnixNanos::from_millis);
+    let ts_event = if let Some(transaction_time) = msg.transaction_time {
+        unix_nanos_from_millis(
+            transaction_time,
+            "book_ticker.transaction_time",
+            "spot_json_book_ticker",
+        )?
+    } else if let Some(event_time) = msg.event_time {
+        unix_nanos_from_millis(
+            event_time,
+            "book_ticker.event_time",
+            "spot_json_book_ticker",
+        )?
+    } else {
+        ts_init
+    };
 
     Ok(QuoteTick::new(
         instrument_id,
@@ -218,7 +229,11 @@ pub fn parse_depth_diff(
     let instrument_id = instrument.id();
     let price_precision = instrument.price_precision();
     let size_precision = instrument.size_precision();
-    let ts_event = UnixNanos::from_millis(msg.event_time as u64);
+    let ts_event = unix_nanos_from_millis(
+        msg.event_time,
+        "depth_diff.event_time",
+        "spot_json_depth_diff",
+    )?;
     let sequence = msg.final_update_id;
 
     let mut deltas = Vec::with_capacity(msg.bids.len() + msg.asks.len());
@@ -362,7 +377,8 @@ pub fn parse_kline(
     let close = parse_positive_price(&msg.kline.close, price_precision, "close price")?;
     let volume = parse_non_negative_quantity(&msg.kline.volume, size_precision, "volume")?;
 
-    let ts_event = UnixNanos::from_millis(msg.kline.close_time as u64);
+    let ts_event =
+        unix_nanos_from_millis(msg.kline.close_time, "kline.close_time", "spot_json_kline")?;
 
     Ok(Some(Bar::new(
         bar_type, open, high, low, close, volume, ts_event, ts_init,

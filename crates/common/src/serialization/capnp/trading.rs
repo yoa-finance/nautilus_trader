@@ -19,7 +19,7 @@ use nautilus_core::{Params, UUID4, UnixNanos};
 use nautilus_model::identifiers::{ClientId, InstrumentId, StrategyId, TraderId};
 use nautilus_serialization::{
     base_capnp,
-    capnp::{ToCapnp, order_side_to_capnp},
+    capnp::{ToCapnp, order_list_type_to_capnp, order_side_to_capnp},
     trading_capnp,
 };
 
@@ -366,6 +366,7 @@ impl<'a> ToCapnp<'a> for SubmitOrderList {
             let order_init_builder = order_inits_builder.reborrow().get(i as u32);
             order_init.to_capnp(order_init_builder);
         }
+        builder.set_order_list_type(order_list_type_to_capnp(self.order_list.order_list_type));
 
         if let Some(ref position_id) = self.position_id {
             let position_id_builder = builder.reborrow().init_position_id();

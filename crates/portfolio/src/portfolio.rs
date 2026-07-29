@@ -762,7 +762,9 @@ impl Portfolio {
 
     /// Returns the per-currency total equity for the given venue.
     ///
-    /// For cash accounts: `balance.total + Σ mark_value(open positions)` per currency.
+    /// For multi-currency cash accounts: `balance.total` per currency because spot holdings are
+    /// already represented by their asset balances.
+    /// For single-currency cash accounts: `balance.total + Σ mark_value(open positions)`.
     /// For margin accounts: `balance.total + Σ unrealized_pnl(open positions)` per currency.
     ///
     /// Open-position instruments that cannot be priced are tracked via
@@ -775,7 +777,7 @@ impl Portfolio {
         venue: &Venue,
         account_id: Option<&AccountId>,
     ) -> IndexMap<Currency, Money> {
-        let (mut equity, is_margin) = {
+        let (mut equity, is_margin, is_multi_currency_cash) = {
             let cache = self.cache.borrow();
             let account = match account_id {
                 Some(id) => cache.account(id),
@@ -789,7 +791,12 @@ impl Portfolio {
                         .into_iter()
                         .map(|(c, m)| (c, m.as_decimal()))
                         .collect();
-                    (equity, matches!(&*account, AccountAny::Margin(_)))
+                    (
+                        equity,
+                        matches!(&*account, AccountAny::Margin(_)),
+                        matches!(&*account, AccountAny::Cash(_))
+                            && account.base_currency().is_none(),
+                    )
                 }
                 None => return IndexMap::new(),
             }
@@ -843,9 +850,11 @@ impl Portfolio {
                 }
                 self.update_missing_price_state(*venue, &unpriced);
             }
-        } else if self.accumulate_mark_values(*venue, account_id, &mut equity, &mut unpriced) {
+        } else if !is_multi_currency_cash
+            && self.accumulate_mark_values(*venue, account_id, &mut equity, &mut unpriced)
+        {
             self.update_missing_price_state(*venue, &unpriced);
-        } else if account_id.is_none() {
+        } else if !is_multi_currency_cash && account_id.is_none() {
             self.inner.borrow_mut().venues_missing_price.remove(venue);
         }
 

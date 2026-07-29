@@ -25,10 +25,14 @@ use nautilus_model::{
     types::{AccountBalance, Currency, Money},
 };
 use rust_decimal::Decimal;
+use serde::Deserialize;
 
 use crate::{
-    common::enums::{
-        BinanceOrderStatus, BinanceSelfTradePreventionMode, BinanceSide, BinanceTimeInForce,
+    common::{
+        enums::{
+            BinanceOrderStatus, BinanceSelfTradePreventionMode, BinanceSide, BinanceTimeInForce,
+        },
+        time::unix_nanos_from_micros,
     },
     spot::sbe::spot::{
         order_side::OrderSide, order_status::OrderStatus, order_type::OrderType,
@@ -152,6 +156,55 @@ pub struct BinanceNewOrderResponse {
     pub expiry_reason: Option<u8>,
 }
 
+/// Binance order-list response from JSON endpoints such as `orderList/oco`.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BinanceOrderListResponse {
+    pub order_list_id: i64,
+    pub contingency_type: String,
+    pub list_status_type: String,
+    pub list_order_status: String,
+    pub list_client_order_id: String,
+    pub transaction_time: Option<i64>,
+    pub symbol: String,
+    #[serde(default)]
+    pub orders: Vec<BinanceOrderListOrder>,
+    #[serde(default)]
+    pub order_reports: Vec<BinanceOrderListOrderReport>,
+}
+
+/// Child order reference in a Binance order-list response.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BinanceOrderListOrder {
+    pub symbol: String,
+    pub order_id: i64,
+    pub client_order_id: String,
+}
+
+/// Child order report in a Binance order-list response.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BinanceOrderListOrderReport {
+    pub symbol: String,
+    pub order_id: i64,
+    pub order_list_id: i64,
+    pub client_order_id: String,
+    pub transact_time: Option<i64>,
+    pub price: Option<String>,
+    pub orig_qty: Option<String>,
+    pub executed_qty: Option<String>,
+    pub cummulative_quote_qty: Option<String>,
+    pub status: Option<String>,
+    #[serde(rename = "type")]
+    pub order_type: Option<String>,
+    pub side: Option<BinanceSide>,
+    pub time_in_force: Option<BinanceTimeInForce>,
+    pub stop_price: Option<String>,
+    pub working_time: Option<i64>,
+    pub self_trade_prevention_mode: Option<BinanceSelfTradePreventionMode>,
+}
+
 /// Cancel order response.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BinanceCancelOrderResponse {
@@ -189,6 +242,102 @@ pub struct BinanceCancelOrderResponse {
     pub orig_client_order_id: String,
     /// Symbol.
     pub symbol: String,
+}
+
+/// Child order identity from a Binance order-list WebSocket API response.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BinanceSpotOrderListChild {
+    /// Exchange order ID.
+    pub order_id: i64,
+    /// Venue symbol.
+    pub symbol: String,
+    /// Venue client order ID.
+    pub client_order_id: String,
+}
+
+/// Child order report from a Binance order-list WebSocket API response.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BinanceSpotOrderListChildReport {
+    /// Exchange order ID.
+    pub order_id: i64,
+    /// Order list ID.
+    pub order_list_id: Option<i64>,
+    /// Transaction time in microseconds.
+    pub transact_time: i64,
+    /// Venue symbol.
+    pub symbol: String,
+    /// Original venue client order ID.
+    pub orig_client_order_id: String,
+    /// Venue client order ID.
+    pub client_order_id: String,
+    /// Venue order status.
+    pub status: String,
+    /// Venue side.
+    pub side: String,
+    /// Venue order type.
+    pub order_type: String,
+    /// Venue time-in-force.
+    pub time_in_force: String,
+}
+
+/// Binance order-list cancel result from an SBE response.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BinanceSpotOrderListCancelResult {
+    /// SBE template ID.
+    pub template_id: u16,
+    /// Exchange order list ID.
+    pub order_list_id: i64,
+    /// Venue list client order ID.
+    pub list_client_order_id: String,
+    /// Venue symbol.
+    pub symbol: String,
+    /// Transaction time in microseconds.
+    pub transaction_time: i64,
+    /// Venue contingency type.
+    pub contingency_type: String,
+    /// Venue list status type.
+    pub list_status_type: String,
+    /// Venue list order status.
+    pub list_order_status: String,
+    /// Child order identities.
+    pub orders: Vec<BinanceSpotOrderListChild>,
+    /// Child order reports.
+    pub order_reports: Vec<BinanceSpotOrderListChildReport>,
+}
+
+/// One item returned by `openOrders.cancelAll`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum BinanceSpotCancelAllItem {
+    /// Standard cancel response for one order.
+    Order(BinanceCancelOrderResponse),
+    /// Order-list cancel response containing child order reports.
+    OrderList(BinanceSpotOrderListCancelResult),
+}
+
+/// Result returned by `openOrders.cancelAll`.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct BinanceSpotCancelAllResult {
+    /// Canceled order/order-list items.
+    pub items: Vec<BinanceSpotCancelAllItem>,
+}
+
+impl BinanceSpotCancelAllResult {
+    /// Creates a result from standard order cancel responses.
+    pub fn from_orders(orders: Vec<BinanceCancelOrderResponse>) -> Self {
+        Self {
+            items: orders
+                .into_iter()
+                .map(BinanceSpotCancelAllItem::Order)
+                .collect(),
+        }
+    }
+
+    /// Creates a result from one order-list cancel response.
+    pub fn from_order_list(order_list: BinanceSpotOrderListCancelResult) -> Self {
+        Self {
+            items: vec![BinanceSpotCancelAllItem::OrderList(order_list)],
+        }
+    }
 }
 
 /// Query order response.
@@ -288,8 +437,15 @@ pub struct BinanceAccountInfo {
 
 impl BinanceAccountInfo {
     /// Converts this Binance account info to a Nautilus [`AccountState`].
-    #[must_use]
-    pub fn to_account_state(&self, account_id: AccountId, ts_init: UnixNanos) -> AccountState {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the account update timestamp cannot be represented as nanoseconds.
+    pub fn to_account_state(
+        &self,
+        account_id: AccountId,
+        ts_init: UnixNanos,
+    ) -> anyhow::Result<AccountState> {
         let mut balances = Vec::with_capacity(self.balances.len());
 
         for asset in &self.balances {
@@ -317,9 +473,13 @@ impl BinanceAccountInfo {
             balances.push(zero_balance);
         }
 
-        let ts_event = UnixNanos::from_micros(self.update_time as u64);
+        let ts_event = unix_nanos_from_micros(
+            self.update_time,
+            "account.update_time",
+            "spot_sbe_account_response",
+        )?;
 
-        AccountState::new(
+        Ok(AccountState::new(
             account_id,
             AccountType::Cash,
             balances,
@@ -329,7 +489,7 @@ impl BinanceAccountInfo {
             ts_event,
             ts_init,
             None, // No base currency for spot
-        )
+        ))
     }
 }
 

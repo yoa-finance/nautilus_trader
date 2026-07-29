@@ -22,7 +22,7 @@ use nautilus_core::{UUID4, UnixNanos};
 use nautilus_model::{
     enums::{AccountType, LiquiditySide, OrderSide, OrderStatus, OrderType, TimeInForce},
     events::AccountState,
-    identifiers::{AccountId, ClientOrderId, InstrumentId, TradeId, VenueOrderId},
+    identifiers::{AccountId, InstrumentId, TradeId, VenueOrderId},
     reports::{FillReport, OrderStatusReport},
     types::{AccountBalance, Currency, Money, Price},
 };
@@ -31,12 +31,13 @@ use rust_decimal::Decimal;
 use super::user_data::{BinanceSpotAccountPositionMsg, BinanceSpotExecutionReport};
 use crate::common::{
     consts::BINANCE_NAUTILUS_SPOT_BROKER_ID,
-    encoder::decode_broker_id,
+    encoder::decode_client_order_id,
     enums::{BinanceOrderStatus, BinanceSide, BinanceTimeInForce},
     parse::{
         parse_required_decimal, parse_required_price_at_precision,
         parse_required_quantity_at_precision,
     },
+    time::unix_nanos_from_millis,
 };
 
 /// Converts a Binance Spot execution report to a Nautilus order status report.
@@ -53,12 +54,18 @@ pub fn parse_spot_exec_report_to_order_status(
     treat_expired_as_canceled: bool,
     ts_init: UnixNanos,
 ) -> anyhow::Result<OrderStatusReport> {
-    let client_order_id = ClientOrderId::new(decode_broker_id(
+    let client_order_id = decode_client_order_id(
         &msg.client_order_id,
         BINANCE_NAUTILUS_SPOT_BROKER_ID,
-    ));
+        "execution_report.client_order_id",
+        "spot_json_execution_report_status",
+    )?;
     let venue_order_id = VenueOrderId::new(msg.order_id.to_string());
-    let ts_event = UnixNanos::from_millis(msg.event_time as u64);
+    let ts_event = unix_nanos_from_millis(
+        msg.event_time,
+        "execution_report.event_time",
+        "spot_json_execution_report_status",
+    )?;
 
     let order_side = match msg.side {
         BinanceSide::Buy => OrderSide::Buy,
@@ -143,13 +150,19 @@ pub fn parse_spot_exec_report_to_fill(
     account_id: AccountId,
     ts_init: UnixNanos,
 ) -> anyhow::Result<FillReport> {
-    let client_order_id = ClientOrderId::new(decode_broker_id(
+    let client_order_id = decode_client_order_id(
         &msg.client_order_id,
         BINANCE_NAUTILUS_SPOT_BROKER_ID,
-    ));
+        "execution_report.client_order_id",
+        "spot_json_execution_report_fill",
+    )?;
     let venue_order_id = VenueOrderId::new(msg.order_id.to_string());
     let trade_id = TradeId::new(msg.trade_id.to_string());
-    let ts_event = UnixNanos::from_millis(msg.event_time as u64);
+    let ts_event = unix_nanos_from_millis(
+        msg.event_time,
+        "execution_report.event_time",
+        "spot_json_execution_report_fill",
+    )?;
 
     let order_side = match msg.side {
         BinanceSide::Buy => OrderSide::Buy,
@@ -199,12 +212,20 @@ pub fn parse_spot_exec_report_to_fill(
 }
 
 /// Converts a Binance Spot account position update to a Nautilus account state.
+///
+/// # Errors
+///
+/// Returns an error if the event timestamp is negative or overflows nanosecond precision.
 pub fn parse_spot_account_position(
     msg: &BinanceSpotAccountPositionMsg,
     account_id: AccountId,
     ts_init: UnixNanos,
-) -> AccountState {
-    let ts_event = UnixNanos::from_millis(msg.event_time as u64);
+) -> anyhow::Result<AccountState> {
+    let ts_event = unix_nanos_from_millis(
+        msg.event_time,
+        "account_position.event_time",
+        "spot_json_account_position",
+    )?;
 
     let balances: Vec<AccountBalance> = msg
         .balances
@@ -216,7 +237,7 @@ pub fn parse_spot_account_position(
         })
         .collect();
 
-    AccountState::new(
+    Ok(AccountState::new(
         account_id,
         AccountType::Cash,
         balances,
@@ -226,7 +247,7 @@ pub fn parse_spot_account_position(
         ts_event,
         ts_init,
         None, // base_currency
-    )
+    ))
 }
 
 fn parse_order_status(status: BinanceOrderStatus, treat_expired_as_canceled: bool) -> OrderStatus {
@@ -273,7 +294,7 @@ fn parse_time_in_force(tif: BinanceTimeInForce) -> TimeInForce {
 
 #[cfg(test)]
 mod tests {
-    use nautilus_model::types::Quantity;
+    use nautilus_model::{identifiers::ClientOrderId, types::Quantity};
     use rstest::rstest;
 
     use super::*;
@@ -552,7 +573,7 @@ mod tests {
         let account_id = AccountId::from("BINANCE-001");
         let ts_init = UnixNanos::from(1_000_000_000u64);
 
-        let state = parse_spot_account_position(&msg, account_id, ts_init);
+        let state = parse_spot_account_position(&msg, account_id, ts_init).unwrap();
 
         assert_eq!(state.account_id, account_id);
         assert_eq!(state.account_type, AccountType::Cash);
@@ -579,7 +600,7 @@ mod tests {
         let account_id = AccountId::from("BINANCE-001");
         let ts_init = UnixNanos::from(1_000_000_000u64);
 
-        let state = parse_spot_account_position(&msg, account_id, ts_init);
+        let state = parse_spot_account_position(&msg, account_id, ts_init).unwrap();
 
         assert_eq!(state.balances.len(), 1);
         let balance = &state.balances[0];

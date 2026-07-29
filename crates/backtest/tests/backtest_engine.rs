@@ -3133,7 +3133,13 @@ impl DataActor for EmulatedBracketOnQuote {
             .tp_post_only(false)
             .sl_trigger_price(Price::from("990.00"))
             .call();
-        self.submit_order_list(orders, None, None, None)
+        self.submit_order_list(
+            nautilus_model::enums::OrderListType::Standard,
+            orders,
+            None,
+            None,
+            None,
+        )
     }
 }
 

@@ -15,7 +15,11 @@
 
 //! Provides a [`BacktestNode`] that orchestrates catalog-driven backtests.
 
-use std::iter::Peekable;
+use std::{
+    iter::Peekable,
+    panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
+    sync::{Arc, atomic::AtomicBool},
+};
 
 use ahash::{AHashMap, AHashSet};
 use nautilus_core::UnixNanos;
@@ -32,9 +36,10 @@ use nautilus_model::{
 };
 use nautilus_persistence::backend::{catalog::ParquetDataCatalog, session::QueryResult};
 
+pub use crate::engine::BacktestRunObserver as BacktestDataObserver;
 use crate::{
     config::{BacktestDataConfig, BacktestRunConfig, NautilusDataType, SimulatedVenueConfig},
-    engine::BacktestEngine,
+    engine::{BacktestEngine, BacktestRunObserver},
     result::BacktestResult,
 };
 
@@ -55,6 +60,11 @@ pub struct BacktestNode {
     configs: Vec<BacktestRunConfig>,
     engines: AHashMap<String, BacktestEngine>,
 }
+
+#[derive(Debug, Default)]
+struct NoopBacktestRunObserver;
+
+impl BacktestRunObserver for NoopBacktestRunObserver {}
 
 impl BacktestNode {
     /// Creates a new [`BacktestNode`] instance.
@@ -91,6 +101,19 @@ impl BacktestNode {
     ///
     /// Returns an error if engine creation, venue setup, or instrument loading fails.
     pub fn build(&mut self) -> anyhow::Result<()> {
+        self.build_with_catalog_cancellation(None)
+    }
+
+    /// Builds engines while allowing catalog I/O to be cancelled before a load lease expires.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if engine creation, venue setup, or instrument loading fails.
+    #[expect(clippy::needless_pass_by_value)]
+    pub fn build_with_catalog_cancellation(
+        &mut self,
+        cancellation: Option<Arc<AtomicBool>>,
+    ) -> anyhow::Result<()> {
         for config in &self.configs {
             if self.engines.contains_key(config.id()) {
                 continue;
@@ -158,7 +181,7 @@ impl BacktestNode {
             }
 
             for data_config in config.data() {
-                let catalog = create_catalog(data_config)?;
+                let catalog = create_catalog(data_config, cancellation.clone())?;
                 let instr_ids: Vec<InstrumentId> = data_config.get_instrument_ids()?;
                 let filter: Option<Vec<String>> = if instr_ids.is_empty() {
                     None
@@ -166,7 +189,15 @@ impl BacktestNode {
                     Some(instr_ids.iter().map(ToString::to_string).collect())
                 };
 
-                let instruments = catalog.query_instruments(filter.as_deref())?;
+                let instruments = match data_config.catalog_instrument_files() {
+                    Some(files) => catalog.query_instruments_from_files(
+                        files,
+                        filter.as_deref(),
+                        None,
+                        None,
+                    )?,
+                    None => catalog.query_instruments(filter.as_deref())?,
+                };
 
                 if !instr_ids.is_empty() && instruments.is_empty() {
                     let ids: Vec<String> = instr_ids.iter().map(ToString::to_string).collect();
@@ -231,9 +262,22 @@ impl BacktestNode {
     ///
     /// Returns an error if building, data loading, or engine execution fails.
     pub fn run(&mut self) -> anyhow::Result<Vec<BacktestResult>> {
+        let mut observer = NoopBacktestRunObserver;
+        self.run_with_observer(&mut observer)
+    }
+
+    /// Runs all configured backtests and notifies `observer` during replay.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if building, data loading, observer processing, or engine execution fails.
+    pub fn run_with_observer(
+        &mut self,
+        observer: &mut dyn BacktestRunObserver,
+    ) -> anyhow::Result<Vec<BacktestResult>> {
         // Auto-build if not already done
         if self.engines.is_empty() {
-            self.build()?;
+            self.build_with_catalog_cancellation(observer.catalog_load_cancellation_flag())?;
         }
 
         let mut results = Vec::new();
@@ -247,8 +291,11 @@ impl BacktestNode {
             })?;
 
             match config.chunk_size() {
-                None => run_oneshot(engine, config)?,
-                Some(chunk_size) => run_streaming(engine, config, chunk_size)?,
+                None => run_oneshot(engine, config, &mut *observer)?,
+                Some(chunk_size) => {
+                    anyhow::ensure!(chunk_size > 0, "chunk_size must be > 0");
+                    run_streaming(engine, config, chunk_size, &mut *observer)?;
+                }
             }
 
             results.push(engine.get_result());
@@ -263,13 +310,25 @@ impl BacktestNode {
         Ok(results)
     }
 
+    /// Compatibility alias for the original data-observer API.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if building, data loading, observer processing, or engine execution fails.
+    pub fn run_with_data_observer(
+        &mut self,
+        observer: &mut dyn BacktestRunObserver,
+    ) -> anyhow::Result<Vec<BacktestResult>> {
+        self.run_with_observer(observer)
+    }
+
     /// Creates a [`ParquetDataCatalog`] from a data config.
     ///
     /// # Errors
     ///
     /// Returns an error if the catalog cannot be created from the URI.
     pub fn load_catalog(config: &BacktestDataConfig) -> anyhow::Result<ParquetDataCatalog> {
-        create_catalog(config)
+        create_catalog(config, None)
     }
 
     /// Loads data from the catalog for a specific data config.
@@ -282,7 +341,7 @@ impl BacktestNode {
         start: Option<UnixNanos>,
         end: Option<UnixNanos>,
     ) -> anyhow::Result<Vec<Data>> {
-        load_data(config, start, end)
+        load_data(config, start, end, None)
     }
 
     /// Disposes all engines and releases resources.
@@ -368,22 +427,38 @@ fn validate_configs(configs: &[BacktestRunConfig]) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn run_oneshot(engine: &mut BacktestEngine, config: &BacktestRunConfig) -> anyhow::Result<()> {
-    for data_config in config.data() {
-        let data = load_data(data_config, config.start(), config.end())?;
-        if data.is_empty() {
-            log::warn!("No data found for config: {:?}", data_config.data_type());
-            continue;
+fn run_oneshot(
+    engine: &mut BacktestEngine,
+    config: &BacktestRunConfig,
+    observer: &mut dyn BacktestRunObserver,
+) -> anyhow::Result<()> {
+    let cancellation = observer.catalog_load_cancellation_flag();
+    let load_result = catch_unwind(AssertUnwindSafe(|| -> anyhow::Result<()> {
+        for data_config in config.data() {
+            let data = load_data(
+                data_config,
+                config.start(),
+                config.end(),
+                cancellation.clone(),
+            )?;
+            if data.is_empty() {
+                log::warn!("No data found for config: {:?}", data_config.data_type());
+                continue;
+            }
+            observer.on_data_chunk(&data)?;
+            engine.add_data(data, data_config.client_id(), false, false)?;
         }
-        engine.add_data(data, data_config.client_id(), false, false)?;
-    }
+        Ok(())
+    }));
+    finish_catalog_data_loading_after_unwind(observer, load_result)?;
 
     engine.sort_data();
-    engine.run(
+    engine.run_with_observer(
         config.start(),
         config.end(),
         Some(config.id().to_string()),
         false,
+        observer,
     )
 }
 
@@ -391,6 +466,7 @@ fn run_streaming(
     engine: &mut BacktestEngine,
     config: &BacktestRunConfig,
     chunk_size: usize,
+    observer: &mut dyn BacktestRunObserver,
 ) -> anyhow::Result<()> {
     let data_configs = config.data();
 
@@ -398,13 +474,42 @@ fn run_streaming(
         // Single config: stream directly from catalog iterator without
         // materializing the full dataset, bounded by chunk_size
         let data_config = &data_configs[0];
-        let mut catalog = create_catalog(data_config)?;
-        let result = dispatch_query(&mut catalog, data_config, config.start(), config.end())?;
-        stream_chunks(engine, config, result.peekable(), chunk_size)?;
+        let query_result = catch_unwind(AssertUnwindSafe(|| {
+            let mut catalog =
+                create_catalog(data_config, observer.catalog_load_cancellation_flag())?;
+            dispatch_query(&mut catalog, data_config, config.start(), config.end())
+        }));
+        let result = match query_result {
+            Ok(Ok(result)) => result,
+            Ok(Err(error)) => return finish_catalog_data_loading(observer, Err(error)),
+            Err(payload) => {
+                let _ = observer.on_catalog_data_exhausted();
+                resume_unwind(payload)
+            }
+        };
+        stream_chunks(
+            engine,
+            config,
+            result.peekable(),
+            chunk_size,
+            observer,
+            true,
+        )?;
     } else {
         // Multiple configs require loading all data to merge-sort across types
-        let all_data = load_and_merge_data(config)?;
-        stream_chunks(engine, config, all_data.into_iter().peekable(), chunk_size)?;
+        let load_result = catch_unwind(AssertUnwindSafe(|| {
+            let cancellation = observer.catalog_load_cancellation_flag();
+            load_and_merge_data(config, cancellation.as_ref())
+        }));
+        let all_data = finish_catalog_data_loading_after_unwind(observer, load_result)?;
+        stream_chunks(
+            engine,
+            config,
+            all_data.into_iter().peekable(),
+            chunk_size,
+            observer,
+            false,
+        )?;
     }
 
     Ok(())
@@ -418,17 +523,67 @@ fn stream_chunks<I: Iterator<Item = Data>>(
     config: &BacktestRunConfig,
     mut iter: Peekable<I>,
     chunk_size: usize,
+    observer: &mut dyn BacktestRunObserver,
+    notify_catalog_data_exhausted: bool,
+) -> anyhow::Result<()> {
+    let mut catalog_data_exhausted_notified = false;
+    let stream_result = catch_unwind(AssertUnwindSafe(|| {
+        stream_chunks_inner(
+            engine,
+            config,
+            &mut iter,
+            chunk_size,
+            observer,
+            notify_catalog_data_exhausted,
+            &mut catalog_data_exhausted_notified,
+        )
+    }));
+    drop(iter);
+
+    match stream_result {
+        Ok(stream_result) => {
+            if notify_catalog_data_exhausted && !catalog_data_exhausted_notified {
+                return finish_catalog_data_loading(observer, stream_result);
+            }
+            stream_result
+        }
+        Err(payload) => {
+            if notify_catalog_data_exhausted && !catalog_data_exhausted_notified {
+                let _ = observer.on_catalog_data_exhausted();
+            }
+            resume_unwind(payload)
+        }
+    }
+}
+
+fn stream_chunks_inner<I: Iterator<Item = Data>>(
+    engine: &mut BacktestEngine,
+    config: &BacktestRunConfig,
+    iter: &mut Peekable<I>,
+    chunk_size: usize,
+    observer: &mut dyn BacktestRunObserver,
+    notify_catalog_data_exhausted: bool,
+    catalog_data_exhausted_notified: &mut bool,
 ) -> anyhow::Result<()> {
     if iter.peek().is_none() {
+        if notify_catalog_data_exhausted {
+            *catalog_data_exhausted_notified = true;
+            observer.on_catalog_data_exhausted()?;
+        }
         engine.end();
+        observer.on_run_completed(engine)?;
         return Ok(());
     }
 
     let mut next_start = config.start();
 
     loop {
-        let chunk = take_aligned_chunk(&mut iter, chunk_size);
+        let chunk = take_aligned_chunk(iter, chunk_size);
         if chunk.is_empty() {
+            if notify_catalog_data_exhausted && !*catalog_data_exhausted_notified {
+                *catalog_data_exhausted_notified = true;
+                observer.on_catalog_data_exhausted()?;
+            }
             break;
         }
 
@@ -439,8 +594,20 @@ fn stream_chunks<I: Iterator<Item = Data>>(
             chunk.last().map(HasTsInit::ts_init)
         };
 
+        if is_last && notify_catalog_data_exhausted {
+            *catalog_data_exhausted_notified = true;
+            observer.on_catalog_data_exhausted()?;
+        }
+
+        observer.on_data_chunk(&chunk)?;
         engine.add_data(chunk, None, false, true)?;
-        engine.run(next_start, end, Some(config.id().to_string()), true)?;
+        engine.run_with_observer(
+            next_start,
+            end,
+            Some(config.id().to_string()),
+            true,
+            observer,
+        )?;
         engine.clear_data();
 
         // A shutdown request during the chunk already triggered end() inside
@@ -455,7 +622,35 @@ fn stream_chunks<I: Iterator<Item = Data>>(
     }
 
     engine.end();
+    observer.on_run_completed(engine)?;
     Ok(())
+}
+
+fn finish_catalog_data_loading<T>(
+    observer: &mut dyn BacktestRunObserver,
+    load_result: anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    let notify_result = observer.on_catalog_data_exhausted();
+    match (load_result, notify_result) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Ok(_), Err(error)) | (Err(error), Ok(())) => Err(error),
+        (Err(load_error), Err(notify_error)) => Err(anyhow::anyhow!(
+            "Catalog data loading failed: {load_error:#}; catalog exhaustion observer also failed: {notify_error:#}"
+        )),
+    }
+}
+
+fn finish_catalog_data_loading_after_unwind<T>(
+    observer: &mut dyn BacktestRunObserver,
+    load_result: std::thread::Result<anyhow::Result<T>>,
+) -> anyhow::Result<T> {
+    match load_result {
+        Ok(load_result) => finish_catalog_data_loading(observer, load_result),
+        Err(payload) => {
+            let _ = observer.on_catalog_data_exhausted();
+            resume_unwind(payload)
+        }
+    }
 }
 
 // Takes up to `chunk_size` items, then extends to include all remaining
@@ -482,11 +677,19 @@ fn take_aligned_chunk<I: Iterator<Item = Data>>(
     chunk
 }
 
-fn load_and_merge_data(config: &BacktestRunConfig) -> anyhow::Result<Vec<Data>> {
+fn load_and_merge_data(
+    config: &BacktestRunConfig,
+    cancellation: Option<&Arc<AtomicBool>>,
+) -> anyhow::Result<Vec<Data>> {
     let mut all_data = Vec::new();
 
     for data_config in config.data() {
-        let data = load_data(data_config, config.start(), config.end())?;
+        let data = load_data(
+            data_config,
+            config.start(),
+            config.end(),
+            cancellation.cloned(),
+        )?;
         if data.is_empty() {
             log::warn!("No data found for config: {:?}", data_config.data_type());
             continue;
@@ -497,7 +700,10 @@ fn load_and_merge_data(config: &BacktestRunConfig) -> anyhow::Result<Vec<Data>> 
     Ok(all_data)
 }
 
-fn create_catalog(config: &BacktestDataConfig) -> anyhow::Result<ParquetDataCatalog> {
+fn create_catalog(
+    config: &BacktestDataConfig,
+    cancellation: Option<Arc<AtomicBool>>,
+) -> anyhow::Result<ParquetDataCatalog> {
     let uri = match config.catalog_fs_protocol() {
         Some(protocol) => format!("{protocol}://{}", config.catalog_path()),
         None => config.catalog_path().to_string(),
@@ -506,15 +712,18 @@ fn create_catalog(config: &BacktestDataConfig) -> anyhow::Result<ParquetDataCata
         .catalog_fs_rust_storage_options()
         .cloned()
         .or_else(|| config.catalog_fs_storage_options().cloned());
-    ParquetDataCatalog::from_uri(&uri, storage_options, None, None, None)
+    let mut catalog = ParquetDataCatalog::from_uri(&uri, storage_options, None, None, None)?;
+    catalog.set_query_cancellation(cancellation);
+    Ok(catalog)
 }
 
 fn load_data(
     config: &BacktestDataConfig,
     run_start: Option<UnixNanos>,
     run_end: Option<UnixNanos>,
+    cancellation: Option<Arc<AtomicBool>>,
 ) -> anyhow::Result<Vec<Data>> {
-    let mut catalog = create_catalog(config)?;
+    let mut catalog = create_catalog(config, cancellation)?;
     let result = dispatch_query(&mut catalog, config, run_start, run_end)?;
     Ok(result.collect())
 }
@@ -532,40 +741,60 @@ fn dispatch_query(
     let end = min_opt(config.end_time(), run_end);
     let filter = config.filter_expr();
     let optimize = config.optimize_file_loading();
+    let files = config.catalog_files().map(<[String]>::to_vec);
+    let end = if files.is_some() {
+        end.map(|value| {
+            value
+                .as_u64()
+                .checked_sub(1)
+                .map(UnixNanos::from)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("exclusive catalog query end must be greater than zero")
+                })
+        })
+        .transpose()?
+    } else {
+        end
+    };
+
+    anyhow::ensure!(
+        files.is_none() || !optimize,
+        "optimize_file_loading must be false when catalog_files is specified"
+    );
 
     match config.data_type() {
         NautilusDataType::QuoteTick => {
-            catalog.query::<QuoteTick>(identifiers, start, end, filter, None, optimize)
+            catalog.query::<QuoteTick>(identifiers, start, end, filter, files, optimize)
         }
         NautilusDataType::TradeTick => {
-            catalog.query::<TradeTick>(identifiers, start, end, filter, None, optimize)
+            catalog.query::<TradeTick>(identifiers, start, end, filter, files, optimize)
         }
         NautilusDataType::Bar => {
-            catalog.query::<Bar>(identifiers, start, end, filter, None, optimize)
+            catalog.query::<Bar>(identifiers, start, end, filter, files, optimize)
         }
         NautilusDataType::OrderBookDelta => {
-            catalog.query::<OrderBookDelta>(identifiers, start, end, filter, None, optimize)
+            catalog.query::<OrderBookDelta>(identifiers, start, end, filter, files, optimize)
         }
         NautilusDataType::OrderBookDepth10 => {
-            catalog.query::<OrderBookDepth10>(identifiers, start, end, filter, None, optimize)
+            catalog.query::<OrderBookDepth10>(identifiers, start, end, filter, files, optimize)
         }
         NautilusDataType::MarkPriceUpdate => {
-            catalog.query::<MarkPriceUpdate>(identifiers, start, end, filter, None, optimize)
+            catalog.query::<MarkPriceUpdate>(identifiers, start, end, filter, files, optimize)
         }
         NautilusDataType::IndexPriceUpdate => {
-            catalog.query::<IndexPriceUpdate>(identifiers, start, end, filter, None, optimize)
+            catalog.query::<IndexPriceUpdate>(identifiers, start, end, filter, files, optimize)
         }
         NautilusDataType::FundingRateUpdate => {
-            catalog.query::<FundingRateUpdate>(identifiers, start, end, filter, None, optimize)
+            catalog.query::<FundingRateUpdate>(identifiers, start, end, filter, files, optimize)
         }
         NautilusDataType::InstrumentStatus => {
-            catalog.query::<InstrumentStatus>(identifiers, start, end, filter, None, optimize)
+            catalog.query::<InstrumentStatus>(identifiers, start, end, filter, files, optimize)
         }
         NautilusDataType::OptionGreeks => {
-            catalog.query::<OptionGreeks>(identifiers, start, end, filter, None, optimize)
+            catalog.query::<OptionGreeks>(identifiers, start, end, filter, files, optimize)
         }
         NautilusDataType::InstrumentClose => {
-            catalog.query::<InstrumentClose>(identifiers, start, end, filter, None, optimize)
+            catalog.query::<InstrumentClose>(identifiers, start, end, filter, files, optimize)
         }
     }
 }

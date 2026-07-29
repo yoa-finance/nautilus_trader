@@ -39,7 +39,7 @@ pub mod conversions;
 
 // Re-export generated modules for convenience.
 // Re-export conversion functions for use by other crates
-pub use conversions::order_side_to_capnp;
+pub use conversions::{order_list_type_to_capnp, order_side_to_capnp};
 
 pub use crate::{
     account_capnp, base_capnp, data_capnp, enums_capnp, identifiers_capnp, market_capnp,

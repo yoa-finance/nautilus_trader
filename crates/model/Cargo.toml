@@ -1,5 +1,5 @@
 [package]
-name = "nautilus-model"
+name = "stratneo-nautilus-model"
 readme = "README.md"
 version.workspace = true
 edition.workspace = true

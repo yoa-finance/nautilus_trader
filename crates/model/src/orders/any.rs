@@ -20,12 +20,17 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use super::{
-    Order, OrderError, limit::LimitOrder, limit_if_touched::LimitIfTouchedOrder,
+    Order, OrderCore, OrderError, limit::LimitOrder, limit_if_touched::LimitIfTouchedOrder,
     market::MarketOrder, market_if_touched::MarketIfTouchedOrder,
     market_to_limit::MarketToLimitOrder, stop_limit::StopLimitOrder, stop_market::StopMarketOrder,
     trailing_stop_limit::TrailingStopLimitOrder, trailing_stop_market::TrailingStopMarketOrder,
 };
-use crate::{events::OrderEventAny, identifiers::OrderListId, types::Price};
+use crate::{
+    enums::ContingencyType,
+    events::OrderEventAny,
+    identifiers::{ClientOrderId, OrderListId},
+    types::Price,
+};
 
 /// Error returned when [`OrderAny::from_events`] cannot replay order events.
 #[derive(Debug, Error)]
@@ -118,21 +123,53 @@ impl OrderAny {
         }
     }
 
-    // TODO: Does not update the OrderInitialized event in the order's
-    // event history. The init event will still carry the original
-    // order_list_id (typically None). Address with fluent builder API.
     pub fn set_order_list_id(&mut self, id: OrderListId) {
+        let core = self.core_mut();
+        core.order_list_id = Some(id);
+        initialized_event_mut(core).order_list_id = Some(id);
+    }
+
+    pub fn set_linked_order_ids(&mut self, linked_order_ids: Vec<ClientOrderId>) {
+        let core = self.core_mut();
+        core.linked_order_ids = Some(linked_order_ids.clone());
+        initialized_event_mut(core).linked_order_ids = Some(linked_order_ids);
+    }
+
+    pub fn set_parent_order_id(&mut self, parent_order_id: Option<ClientOrderId>) {
+        let core = self.core_mut();
+        core.parent_order_id = parent_order_id;
+        initialized_event_mut(core).parent_order_id = parent_order_id;
+    }
+
+    pub fn set_contingency_type(&mut self, contingency_type: ContingencyType) {
+        let core = self.core_mut();
+        core.contingency_type = Some(contingency_type);
+        initialized_event_mut(core).contingency_type = Some(contingency_type);
+    }
+
+    fn core_mut(&mut self) -> &mut OrderCore {
         match self {
-            Self::Limit(o) => o.order_list_id = Some(id),
-            Self::LimitIfTouched(o) => o.order_list_id = Some(id),
-            Self::Market(o) => o.order_list_id = Some(id),
-            Self::MarketIfTouched(o) => o.order_list_id = Some(id),
-            Self::MarketToLimit(o) => o.order_list_id = Some(id),
-            Self::StopLimit(o) => o.order_list_id = Some(id),
-            Self::StopMarket(o) => o.order_list_id = Some(id),
-            Self::TrailingStopLimit(o) => o.order_list_id = Some(id),
-            Self::TrailingStopMarket(o) => o.order_list_id = Some(id),
+            Self::Limit(order) => order,
+            Self::LimitIfTouched(order) => order,
+            Self::Market(order) => order,
+            Self::MarketIfTouched(order) => order,
+            Self::MarketToLimit(order) => order,
+            Self::StopLimit(order) => order,
+            Self::StopMarket(order) => order,
+            Self::TrailingStopLimit(order) => order,
+            Self::TrailingStopMarket(order) => order,
         }
+    }
+}
+
+fn initialized_event_mut(core: &mut OrderCore) -> &mut crate::events::OrderInitialized {
+    match core
+        .events
+        .first_mut()
+        .expect("Order invariant violated: no events")
+    {
+        OrderEventAny::Initialized(event) => event,
+        _ => panic!("Order invariant violated: first event must be OrderInitialized"),
     }
 }
 

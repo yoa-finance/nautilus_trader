@@ -182,7 +182,6 @@ pub mod encoder {
             if index >= self.count as usize {
                 return Ok(None);
             }
-
             if let Some(parent) = self.parent.as_mut() {
                 self.offset = parent.get_limit();
                 parent.set_limit(self.offset + Self::block_length() as usize);
@@ -316,7 +315,6 @@ pub mod encoder {
             if index >= self.count as usize {
                 return Ok(None);
             }
-
             if let Some(parent) = self.parent.as_mut() {
                 self.offset = parent.get_limit();
                 parent.set_limit(self.offset + Self::block_length() as usize);
@@ -416,7 +414,6 @@ pub mod encoder {
             if index >= self.count as usize {
                 return Ok(None);
             }
-
             if let Some(parent) = self.parent.as_mut() {
                 self.offset = parent.get_limit();
                 parent.set_limit(self.offset + Self::block_length() as usize);
@@ -718,7 +715,6 @@ pub mod encoder {
             if index >= self.count as usize {
                 return Ok(None);
             }
-
             if let Some(parent) = self.parent.as_mut() {
                 self.offset = parent.get_limit();
                 parent.set_limit(self.offset + Self::block_length() as usize);
@@ -818,7 +814,6 @@ pub mod encoder {
             if index >= self.count as usize {
                 return Ok(None);
             }
-
             if let Some(parent) = self.parent.as_mut() {
                 self.offset = parent.get_limit();
                 parent.set_limit(self.offset + Self::block_length() as usize);
@@ -918,7 +913,6 @@ pub mod encoder {
             if index >= self.count as usize {
                 return Ok(None);
             }
-
             if let Some(parent) = self.parent.as_mut() {
                 self.offset = parent.get_limit();
                 parent.set_limit(self.offset + Self::block_length() as usize);
@@ -1018,7 +1012,6 @@ pub mod encoder {
             if index >= self.count as usize {
                 return Ok(None);
             }
-
             if let Some(parent) = self.parent.as_mut() {
                 self.offset = parent.get_limit();
                 parent.set_limit(self.offset + Self::block_length() as usize);
@@ -1128,7 +1121,6 @@ pub mod encoder {
             if index >= self.count as usize {
                 return Ok(None);
             }
-
             if let Some(parent) = self.parent.as_mut() {
                 self.offset = parent.get_limit();
                 parent.set_limit(self.offset + Self::block_length() as usize);
@@ -1339,7 +1331,6 @@ pub mod decoder {
             if index >= self.count as usize {
                 return Ok(None);
             }
-
             if let Some(parent) = self.parent.as_mut() {
                 self.offset = parent.get_limit();
                 parent.set_limit(self.offset + self.block_length as usize);
@@ -1461,7 +1452,6 @@ pub mod decoder {
             if index >= self.count as usize {
                 return Ok(None);
             }
-
             if let Some(parent) = self.parent.as_mut() {
                 self.offset = parent.get_limit();
                 parent.set_limit(self.offset + self.block_length as usize);
@@ -1555,7 +1545,7 @@ pub mod decoder {
             self
         }
 
-        /// group token - Token{signal=BEGIN_GROUP, name='symbols', referencedName='null', description='null', packageName='null', id=102, version=0, deprecated=0, encodedLength=19, offset=-1, componentTokenCount=169, encoding=Encoding{presence=REQUIRED, primitiveType=null, byteOrder=LITTLE_ENDIAN, minValue=null, maxValue=null, nullValue=null, constValue=null, characterEncoding='null', epoch='null', timeUnit=null, semanticType='null'}}
+        /// group token - Token{signal=BEGIN_GROUP, name='symbols', referencedName='null', description='null', packageName='null', id=102, version=0, deprecated=0, encodedLength=19, offset=-1, componentTokenCount=170, encoding=Encoding{presence=REQUIRED, primitiveType=null, byteOrder=LITTLE_ENDIAN, minValue=null, maxValue=null, nullValue=null, constValue=null, characterEncoding='null', epoch='null', timeUnit=null, semanticType='null'}}
         #[inline]
         pub fn parent(&mut self) -> SbeResult<P> {
             self.parent.take().ok_or(SbeErr::ParentNotSet)
@@ -1577,7 +1567,6 @@ pub mod decoder {
             if index >= self.count as usize {
                 return Ok(None);
             }
-
             if let Some(parent) = self.parent.as_mut() {
                 self.offset = parent.get_limit();
                 parent.set_limit(self.offset + self.block_length as usize);
@@ -1859,7 +1848,6 @@ pub mod decoder {
             if index >= self.count as usize {
                 return Ok(None);
             }
-
             if let Some(parent) = self.parent.as_mut() {
                 self.offset = parent.get_limit();
                 parent.set_limit(self.offset + self.block_length as usize);
@@ -1975,7 +1963,6 @@ pub mod decoder {
             if index >= self.count as usize {
                 return Ok(None);
             }
-
             if let Some(parent) = self.parent.as_mut() {
                 self.offset = parent.get_limit();
                 parent.set_limit(self.offset + self.block_length as usize);
@@ -2079,7 +2066,6 @@ pub mod decoder {
             if index >= self.count as usize {
                 return Ok(None);
             }
-
             if let Some(parent) = self.parent.as_mut() {
                 self.offset = parent.get_limit();
                 parent.set_limit(self.offset + self.block_length as usize);
@@ -2195,7 +2181,6 @@ pub mod decoder {
             if index >= self.count as usize {
                 return Ok(None);
             }
-
             if let Some(parent) = self.parent.as_mut() {
                 self.offset = parent.get_limit();
                 parent.set_limit(self.offset + self.block_length as usize);
@@ -2317,7 +2302,6 @@ pub mod decoder {
             if index >= self.count as usize {
                 return Ok(None);
             }
-
             if let Some(parent) = self.parent.as_mut() {
                 self.offset = parent.get_limit();
                 parent.set_limit(self.offset + self.block_length as usize);

@@ -580,6 +580,68 @@ pub struct NewOcoOrderListParams {
     pub self_trade_prevention_mode: Option<BinanceSelfTradePreventionMode>,
 }
 
+/// Query parameters for a new OPOCO order list.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NewOpocoOrderListParams {
+    /// Trading pair symbol.
+    pub symbol: String,
+    /// Optional client order ID for the OPOCO list.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub list_client_order_id: Option<String>,
+    /// Working order type.
+    pub working_type: BinanceSpotOrderType,
+    /// Working order side.
+    pub working_side: BinanceSide,
+    /// Working order client order ID.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub working_client_order_id: Option<String>,
+    /// Working order price.
+    pub working_price: String,
+    /// Working order quantity.
+    pub working_quantity: String,
+    /// Working order time in force.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub working_time_in_force: Option<BinanceTimeInForce>,
+    /// Pending order side shared by both pending legs.
+    pub pending_side: BinanceSide,
+    /// Pending above-leg order type.
+    pub pending_above_type: BinanceSpotOrderType,
+    /// Pending above-leg client order ID.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_above_client_order_id: Option<String>,
+    /// Pending above-leg limit price.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_above_price: Option<String>,
+    /// Pending above-leg stop trigger price.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_above_stop_price: Option<String>,
+    /// Pending above-leg time in force.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_above_time_in_force: Option<BinanceTimeInForce>,
+    /// Pending below-leg order type.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_below_type: Option<BinanceSpotOrderType>,
+    /// Pending below-leg client order ID.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_below_client_order_id: Option<String>,
+    /// Pending below-leg limit price.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_below_price: Option<String>,
+    /// Pending below-leg stop trigger price.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_below_stop_price: Option<String>,
+    /// Pending below-leg time in force.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_below_time_in_force: Option<BinanceTimeInForce>,
+    /// Response type.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_order_resp_type: Option<BinanceOrderResponseType>,
+    /// Self-trade prevention mode.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub self_trade_prevention_mode: Option<BinanceSelfTradePreventionMode>,
+}
+
 /// Query parameters for canceling an order list (OCO).
 #[derive(Debug, Clone, Serialize)]
 pub struct CancelOrderListParams {

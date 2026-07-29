@@ -26,7 +26,7 @@ use nautilus_core::{
 use nautilus_model::{
     enums::{AccountType, LiquiditySide, OrderSide, OrderStatus, OrderType, TimeInForce},
     events::AccountState,
-    identifiers::{AccountId, ClientOrderId, InstrumentId, TradeId, VenueOrderId},
+    identifiers::{AccountId, InstrumentId, TradeId, VenueOrderId},
     reports::{FillReport, OrderStatusReport},
     types::{AccountBalance, Currency, MarginBalance, Money, Price, Quantity},
 };
@@ -38,7 +38,7 @@ use ustr::Ustr;
 use crate::{
     common::{
         consts::BINANCE_NAUTILUS_FUTURES_BROKER_ID,
-        encoder::decode_broker_id,
+        encoder::decode_client_order_id,
         enums::{
             BinanceAlgoStatus, BinanceAlgoType, BinanceContractStatus, BinanceFuturesOrderType,
             BinanceIncomeType, BinanceMarginType, BinanceOrderStatus, BinancePositionSide,
@@ -1082,10 +1082,12 @@ impl BinanceFuturesOrder {
             .update_time
             .map_or(ts_init, |t| UnixNanos::from_millis(t as u64));
 
-        let client_order_id = ClientOrderId::new(decode_broker_id(
+        let client_order_id = decode_client_order_id(
             &self.client_order_id,
             BINANCE_NAUTILUS_FUTURES_BROKER_ID,
-        ));
+            "order.client_order_id",
+            "futures_http_order_status",
+        )?;
         let venue_order_id = VenueOrderId::new(self.order_id.to_string());
 
         let order_side = match self.side {
@@ -1381,10 +1383,12 @@ impl BinanceFuturesAlgoOrder {
             .or(self.create_time)
             .map_or(ts_init, |t| UnixNanos::from_millis(t as u64));
 
-        let client_order_id = ClientOrderId::new(decode_broker_id(
+        let client_order_id = decode_client_order_id(
             &self.client_algo_id,
             BINANCE_NAUTILUS_FUTURES_BROKER_ID,
-        ));
+            "algo.client_algo_id",
+            "futures_http_algo_order_status",
+        )?;
         let venue_order_id = self
             .actual_order_id
             .as_ref()
@@ -1480,6 +1484,7 @@ pub struct BinanceFuturesAlgoOrderCancelResponse {
 
 #[cfg(test)]
 mod tests {
+    use nautilus_model::identifiers::ClientOrderId;
     use rstest::rstest;
 
     use super::*;

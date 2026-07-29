@@ -92,7 +92,8 @@ use nautilus_common::{
         data::DataCommand,
         execution::{GenerateOrderStatusReports, GeneratePositionStatusReports, TradingCommand},
     },
-    msgbus::{self, BusMessage},
+    msgbus::{self, BusMessage, MessagingSwitchboard},
+    runner::QueuedTradingCommand,
     timer::TimeEventHandler,
 };
 use nautilus_core::{
@@ -1207,27 +1208,30 @@ impl LiveNode {
                         residual_events += 1;
                     }
 
-                    match &cmd {
-                        TradingCommand::SubmitOrder(submit) => {
-                            self.exec_manager.register_inflight(submit.client_order_id);
-                        }
-                        TradingCommand::SubmitOrderList(submit) => {
-                            for order_init in &submit.order_inits {
-                                self.exec_manager.register_inflight(order_init.client_order_id);
+                    if cmd.endpoint == MessagingSwitchboard::exec_engine_execute() {
+                        match &cmd.command {
+                            TradingCommand::SubmitOrder(submit) => {
+                                self.exec_manager.register_inflight(submit.client_order_id);
                             }
-                        }
-                        TradingCommand::ModifyOrder(modify) => {
-                            self.exec_manager.register_inflight(modify.client_order_id);
-                        }
-                        TradingCommand::ModifyOrders(modify) => {
-                            for child in &modify.modifies {
-                                self.exec_manager.register_inflight(child.client_order_id);
+                            TradingCommand::SubmitOrderList(submit) => {
+                                for order_init in &submit.order_inits {
+                                    self.exec_manager
+                                        .register_inflight(order_init.client_order_id);
+                                }
                             }
+                            TradingCommand::ModifyOrder(modify) => {
+                                self.exec_manager.register_inflight(modify.client_order_id);
+                            }
+                            TradingCommand::ModifyOrders(modify) => {
+                                for child in &modify.modifies {
+                                    self.exec_manager.register_inflight(child.client_order_id);
+                                }
+                            }
+                            TradingCommand::CancelOrder(cancel) => {
+                                self.exec_manager.register_inflight(cancel.client_order_id);
+                            }
+                            _ => {}
                         }
-                        TradingCommand::CancelOrder(cancel) => {
-                            self.exec_manager.register_inflight(cancel.client_order_id);
-                        }
-                        _ => {}
                     }
                     AsyncRunner::handle_exec_command(cmd);
                 }
@@ -1417,7 +1421,7 @@ impl LiveNode {
         data_evt_rx: &mut tokio::sync::mpsc::UnboundedReceiver<DataEvent>,
         data_cmd_rx: &mut tokio::sync::mpsc::UnboundedReceiver<DataCommand>,
         exec_evt_rx: &mut tokio::sync::mpsc::UnboundedReceiver<ExecutionEvent>,
-        exec_cmd_rx: &mut tokio::sync::mpsc::UnboundedReceiver<TradingCommand>,
+        exec_cmd_rx: &mut tokio::sync::mpsc::UnboundedReceiver<QueuedTradingCommand>,
     ) {
         let mut drained = 0;
 
@@ -1676,7 +1680,10 @@ impl LiveNode {
             let result = self.exec_manager.check_inflight_orders();
             self.process_reconciliation_events(&result.events);
             for cmd in result.queries {
-                AsyncRunner::handle_exec_command(cmd);
+                AsyncRunner::handle_exec_command(QueuedTradingCommand::new(
+                    MessagingSwitchboard::exec_engine_execute(),
+                    cmd,
+                ));
             }
             *state.ts_last_inflight = ts_now;
         }
@@ -1925,7 +1932,7 @@ fn flush_all_pending(
     data_evt_rx: &mut tokio::sync::mpsc::UnboundedReceiver<DataEvent>,
     data_cmd_rx: &mut tokio::sync::mpsc::UnboundedReceiver<DataCommand>,
     exec_evt_rx: &mut tokio::sync::mpsc::UnboundedReceiver<ExecutionEvent>,
-    exec_cmd_rx: &mut tokio::sync::mpsc::UnboundedReceiver<TradingCommand>,
+    exec_cmd_rx: &mut tokio::sync::mpsc::UnboundedReceiver<QueuedTradingCommand>,
 ) {
     // Flush channel receivers into pending
     while let Ok(handler) = time_evt_rx.try_recv() {
@@ -1987,7 +1994,7 @@ async fn drive_with_event_buffering<F: std::future::Future>(
     data_evt_rx: &mut tokio::sync::mpsc::UnboundedReceiver<DataEvent>,
     data_cmd_rx: &mut tokio::sync::mpsc::UnboundedReceiver<DataCommand>,
     exec_evt_rx: &mut tokio::sync::mpsc::UnboundedReceiver<ExecutionEvent>,
-    exec_cmd_rx: &mut tokio::sync::mpsc::UnboundedReceiver<TradingCommand>,
+    exec_cmd_rx: &mut tokio::sync::mpsc::UnboundedReceiver<QueuedTradingCommand>,
 ) -> F::Output {
     tokio::pin!(future);
 
@@ -2049,7 +2056,7 @@ async fn drive_with_event_buffering<F: std::future::Future>(
 struct PendingEvents {
     data_cmds: Vec<DataCommand>,
     data_evts: Vec<DataEvent>,
-    exec_cmds: Vec<TradingCommand>,
+    exec_cmds: Vec<QueuedTradingCommand>,
     exec_reports: Vec<ExecutionReport>,
     order_evts: Vec<OrderEventAny>,
 }
@@ -3489,7 +3496,7 @@ mod tests {
         let (exec_evt_tx, mut exec_evt_rx) =
             tokio::sync::mpsc::unbounded_channel::<ExecutionEvent>();
         let (exec_cmd_tx, mut exec_cmd_rx) =
-            tokio::sync::mpsc::unbounded_channel::<TradingCommand>();
+            tokio::sync::mpsc::unbounded_channel::<QueuedTradingCommand>();
 
         let mut pending = PendingEvents::default();
 
@@ -3502,7 +3509,12 @@ mod tests {
         data_evt_tx.send(stub_data_event()).unwrap();
         data_cmd_tx.send(stub_data_command()).unwrap();
         exec_evt_tx.send(stub_exec_event()).unwrap();
-        exec_cmd_tx.send(stub_trading_command()).unwrap();
+        exec_cmd_tx
+            .send(QueuedTradingCommand::new(
+                MessagingSwitchboard::exec_engine_execute(),
+                stub_trading_command(),
+            ))
+            .unwrap();
 
         flush_all_pending(
             &mut pending,
@@ -3560,7 +3572,7 @@ mod tests {
         let (exec_evt_tx, mut exec_evt_rx) =
             tokio::sync::mpsc::unbounded_channel::<ExecutionEvent>();
         let (_exec_cmd_tx, mut exec_cmd_rx) =
-            tokio::sync::mpsc::unbounded_channel::<TradingCommand>();
+            tokio::sync::mpsc::unbounded_channel::<QueuedTradingCommand>();
 
         let mut pending = PendingEvents::default();
 
@@ -3590,7 +3602,7 @@ mod tests {
         let (exec_evt_tx, mut exec_evt_rx) =
             tokio::sync::mpsc::unbounded_channel::<ExecutionEvent>();
         let (_exec_cmd_tx, mut exec_cmd_rx) =
-            tokio::sync::mpsc::unbounded_channel::<TradingCommand>();
+            tokio::sync::mpsc::unbounded_channel::<QueuedTradingCommand>();
 
         let mut pending = PendingEvents::default();
 
@@ -3638,7 +3650,10 @@ mod tests {
     #[rstest]
     fn test_pending_is_empty_false_with_exec_cmd() {
         let mut pending = PendingEvents::default();
-        pending.exec_cmds.push(stub_trading_command());
+        pending.exec_cmds.push(QueuedTradingCommand::new(
+            MessagingSwitchboard::exec_engine_execute(),
+            stub_trading_command(),
+        ));
 
         assert!(!pending.is_empty());
     }
@@ -3709,7 +3724,7 @@ mod tests {
         let (exec_evt_tx, mut exec_evt_rx) =
             tokio::sync::mpsc::unbounded_channel::<ExecutionEvent>();
         let (_exec_cmd_tx, mut exec_cmd_rx) =
-            tokio::sync::mpsc::unbounded_channel::<TradingCommand>();
+            tokio::sync::mpsc::unbounded_channel::<QueuedTradingCommand>();
 
         let mut pending = PendingEvents::default();
 
@@ -3737,7 +3752,7 @@ mod tests {
         let (exec_evt_tx, mut exec_evt_rx) =
             tokio::sync::mpsc::unbounded_channel::<ExecutionEvent>();
         let (_exec_cmd_tx, mut exec_cmd_rx) =
-            tokio::sync::mpsc::unbounded_channel::<TradingCommand>();
+            tokio::sync::mpsc::unbounded_channel::<QueuedTradingCommand>();
 
         let mut pending = PendingEvents::default();
 

@@ -131,7 +131,7 @@ const O_FORMAT_B62_LEN: usize = 13;
 const UUID_B62_LEN: usize = 22;
 
 /// Maximum `newClientOrderId` length allowed by the Binance API.
-const MAX_CLIENT_ORDER_ID_LEN: usize = 36;
+pub const MAX_CLIENT_ORDER_ID_LEN: usize = 36;
 
 const SIGNAL_O_HYPHENS: u8 = b'T';
 const SIGNAL_O_NO_HYPHENS: u8 = b't';
@@ -184,10 +184,48 @@ pub fn encode_broker_id(client_order_id: &ClientOrderId, broker_id: &str) -> Str
     }
 
     log::warn!(
-        "ClientOrderId '{id_str}' ({} chars) exceeds broker ID encoding budget ({budget} chars), sending without prefix",
+        "ClientOrderId '{id_str}' ({} chars) cannot be encoded with broker ID prefix budget ({budget} chars), sending without prefix",
         id_str.len(),
     );
     id_str.to_string()
+}
+
+/// Encodes and validates a `ClientOrderId` for Binance client order ID fields.
+///
+/// # Errors
+///
+/// Returns an error if the encoded value violates Binance client order ID constraints.
+pub fn encode_binance_client_order_id(
+    client_order_id: &ClientOrderId,
+    broker_id: &str,
+) -> anyhow::Result<String> {
+    let encoded = encode_broker_id(client_order_id, broker_id);
+    validate_binance_client_order_id(&encoded)?;
+    Ok(encoded)
+}
+
+/// Validates a Binance client order ID.
+///
+/// # Errors
+///
+/// Returns an error if `value` is empty, too long, or contains unsupported characters.
+pub fn validate_binance_client_order_id(value: &str) -> anyhow::Result<()> {
+    if is_valid_binance_client_order_id(value) {
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "Binance client order id `{value}` must match ^[A-Za-z0-9_-]{{1,{MAX_CLIENT_ORDER_ID_LEN}}}$"
+    );
+}
+
+#[must_use]
+pub fn is_valid_binance_client_order_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_CLIENT_ORDER_ID_LEN
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 /// Decodes an encoded string back to the original `ClientOrderId` value.
@@ -220,6 +258,32 @@ pub fn decode_broker_id(encoded: &str, broker_id: &str) -> String {
             encoded.to_string()
         }
     }
+}
+
+/// Decodes a Binance client order ID into a Nautilus [`ClientOrderId`] without panicking.
+///
+/// Inbound venue data is not trusted: malformed or empty IDs are returned as
+/// contextual errors so dispatch code can skip the venue event or use an
+/// alternate routing key.
+///
+/// # Errors
+///
+/// Returns an error if the decoded value is not a valid Nautilus client order ID.
+pub fn decode_client_order_id(
+    encoded: &str,
+    broker_id: &str,
+    field: &str,
+    context: &str,
+) -> anyhow::Result<ClientOrderId> {
+    let decoded = decode_broker_id(encoded, broker_id);
+
+    ClientOrderId::new_checked(&decoded).map_err(|e| {
+        anyhow::anyhow!(
+            "invalid Binance client order id in {context}: field={field}, raw_len={}, raw={encoded:?}, decoded_len={}, decoded={decoded:?}: {e}",
+            encoded.len(),
+            decoded.len(),
+        )
+    })
 }
 
 fn build_encoded(prefix: &str, signal: u8, b62: &[u8]) -> String {

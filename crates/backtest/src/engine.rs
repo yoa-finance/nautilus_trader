@@ -70,7 +70,7 @@ use crate::{
     data_iterator::BacktestDataIterator,
     exchange::SimulatedExchange,
     execution_client::BacktestExecutionClient,
-    result::BacktestResult,
+    result::{BacktestResult, BacktestTermination},
 };
 
 /// Core backtesting engine for running event-driven strategy backtests on historical data.
@@ -113,6 +113,61 @@ pub struct BacktestEngine {
     backtest_start: Option<UnixNanos>,
     backtest_end: Option<UnixNanos>,
 }
+
+/// Observes backtest replay progress without changing engine execution ordering.
+pub trait BacktestRunObserver {
+    /// Returns a cooperative cancellation flag for catalog query streams.
+    fn catalog_load_cancellation_flag(
+        &self,
+    ) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
+        None
+    }
+
+    /// Called with catalog data immediately before it is added to the engine.
+    ///
+    /// # Errors
+    ///
+    /// Returning an error aborts the backtest run.
+    fn on_data_chunk(&mut self, _data: &[Data]) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Called once after all catalog query streams for the run are exhausted or dropped.
+    ///
+    /// # Errors
+    ///
+    /// Returning an error aborts the backtest run.
+    fn on_catalog_data_exhausted(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Called after all data sharing `timestamp` has been processed and engine state settled.
+    ///
+    /// # Errors
+    ///
+    /// Returning an error aborts the backtest run.
+    fn on_timestamp_processed(
+        &mut self,
+        _engine: &BacktestEngine,
+        _timestamp: UnixNanos,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Called after the backtest has been finalized.
+    ///
+    /// # Errors
+    ///
+    /// Returning an error aborts the backtest run.
+    fn on_run_completed(&mut self, _engine: &BacktestEngine) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
+#[derive(Debug, Default)]
+struct NoopBacktestRunObserver;
+
+impl BacktestRunObserver for NoopBacktestRunObserver {}
 
 impl Debug for BacktestEngine {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -646,12 +701,51 @@ impl BacktestEngine {
         Ok(())
     }
 
+    /// Runs the backtest with replay observer callbacks.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the backtest or observer encounters an unrecoverable state.
+    pub fn run_with_observer(
+        &mut self,
+        start: Option<UnixNanos>,
+        end: Option<UnixNanos>,
+        run_config_id: Option<String>,
+        streaming: bool,
+        observer: &mut dyn BacktestRunObserver,
+    ) -> anyhow::Result<()> {
+        self.run_impl_with_observer(start, end, run_config_id, streaming, observer)?;
+
+        // Finalize on non-streaming runs, or when a shutdown was triggered
+        // at any point during the run (including the trailing settle, module,
+        // and flush callbacks that execute after the main data loop) so the
+        // trader and engines actually stop.
+        if !streaming || self.force_stop || self.kernel.is_shutdown_requested() {
+            self.end();
+            observer.on_run_completed(self)?;
+        }
+
+        Ok(())
+    }
+
     fn run_impl(
         &mut self,
         start: Option<UnixNanos>,
         end: Option<UnixNanos>,
         run_config_id: Option<String>,
         streaming: bool,
+    ) -> anyhow::Result<()> {
+        let mut observer = NoopBacktestRunObserver;
+        self.run_impl_with_observer(start, end, run_config_id, streaming, &mut observer)
+    }
+
+    fn run_impl_with_observer(
+        &mut self,
+        start: Option<UnixNanos>,
+        end: Option<UnixNanos>,
+        run_config_id: Option<String>,
+        streaming: bool,
+        observer: &mut dyn BacktestRunObserver,
     ) -> anyhow::Result<()> {
         anyhow::ensure!(
             self.sorted,
@@ -766,7 +860,7 @@ impl BacktestEngine {
         loop {
             if self.kernel.is_shutdown_requested() {
                 log::info!("Shutdown requested via ShutdownSystem, ending backtest");
-                self.force_stop = true;
+                break;
             }
 
             if self.force_stop {
@@ -804,7 +898,6 @@ impl BacktestEngine {
             // A timer fired during clock advance may have requested shutdown,
             // skip delivering this data point in that case
             if self.kernel.is_shutdown_requested() {
-                self.force_stop = true;
                 break;
             }
 
@@ -823,6 +916,7 @@ impl BacktestEngine {
                 self.flush_accumulator_events(&clocks, prev_last_ns);
                 self.run_venue_modules(prev_last_ns);
                 self.run_venue_liquidations(prev_last_ns);
+                observer.on_timestamp_processed(self, prev_last_ns)?;
             }
 
             self.iteration += 1;
@@ -1049,7 +1143,17 @@ impl BacktestEngine {
         let stats_returns = stats.returns;
         let stats_general = stats.general;
 
+        let termination = match self.kernel.shutdown_command() {
+            Some(command) => BacktestTermination::ShutdownRequested {
+                component: command.component_id.to_string(),
+                reason: command.reason,
+            },
+            None if self.force_stop => BacktestTermination::ForceStopped,
+            None => BacktestTermination::Completed,
+        };
+
         BacktestResult {
+            termination,
             trader_id: self.config.trader_id().to_string(),
             machine_id: self.kernel.machine_id.clone(),
             instance_id: self.instance_id,

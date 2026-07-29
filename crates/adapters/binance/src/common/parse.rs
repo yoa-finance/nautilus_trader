@@ -28,9 +28,7 @@ use nautilus_model::{
         AggressorSide, BarAggregation, LiquiditySide, OrderSide, OrderStatus, OrderType,
         TimeInForce, TriggerType,
     },
-    identifiers::{
-        AccountId, ClientOrderId, InstrumentId, OrderListId, Symbol, TradeId, Venue, VenueOrderId,
-    },
+    identifiers::{AccountId, InstrumentId, OrderListId, Symbol, TradeId, Venue, VenueOrderId},
     instruments::{
         Instrument, any::InstrumentAny, crypto_perpetual::CryptoPerpetual,
         currency_pair::CurrencyPair,
@@ -44,14 +42,16 @@ use serde_json::Value;
 use crate::{
     common::{
         consts::BINANCE,
-        encoder::decode_broker_id,
+        encoder::decode_client_order_id,
         enums::{BinanceContractStatus, BinanceKlineInterval, BinanceTradingStatus},
+        time::unix_nanos_from_micros,
     },
     futures::http::models::{BinanceFuturesCoinSymbol, BinanceFuturesUsdSymbol},
     spot::{
         http::models::{
             BinanceAccountTrade, BinanceKlines, BinanceLotSizeFilterSbe, BinanceNewOrderResponse,
-            BinanceOrderResponse, BinancePriceFilterSbe, BinanceSymbolSbe, BinanceTrades,
+            BinanceOrderFill, BinanceOrderResponse, BinancePriceFilterSbe, BinanceSymbolSbe,
+            BinanceTrades,
         },
         sbe::spot::{
             order_side::OrderSide as SbeOrderSide, order_status::OrderStatus as SbeOrderStatus,
@@ -594,8 +594,8 @@ pub fn parse_spot_trades_sbe(
             AggressorSide::Buyer
         };
 
-        // SBE trade timestamps are in microseconds
-        let ts_event = UnixNanos::from(trade.time as u64 * 1_000);
+        let ts_event =
+            unix_nanos_from_micros(trade.time, "trade.time", "spot_sbe_trades_response")?;
 
         let tick = TradeTick::new(
             instrument_id,
@@ -745,8 +745,11 @@ pub fn parse_order_status_report_sbe(
         None
     };
 
-    // Parse timestamps (SBE uses microseconds)
-    let ts_event = UnixNanos::from_micros(order.update_time as u64);
+    let ts_event = unix_nanos_from_micros(
+        order.update_time,
+        "order.update_time",
+        "spot_sbe_order_status_response",
+    )?;
 
     // Build order list ID if present
     let order_list_id = order.order_list_id.and_then(|id| {
@@ -760,16 +763,30 @@ pub fn parse_order_status_report_sbe(
     // Determine post-only (limit maker orders are post-only)
     let post_only = order.order_type == SbeOrderType::LimitMaker;
 
-    // Parse order creation time (SBE uses microseconds)
-    let ts_accepted = UnixNanos::from_micros(order.time as u64);
+    let ts_accepted = match unix_nanos_from_micros(
+        order.time,
+        "order.time",
+        "spot_sbe_order_status_response",
+    ) {
+        Ok(ts) => ts,
+        Err(error) if order.time < 0 => {
+            log::debug!(
+                "Binance Spot order status response has unavailable order.time, using update_time for ts_accepted: {error:#}"
+            );
+            ts_event
+        }
+        Err(error) => return Err(error),
+    };
 
     let mut report = OrderStatusReport::new(
         account_id,
         instrument_id,
-        Some(ClientOrderId::new(decode_broker_id(
+        Some(decode_client_order_id(
             &order.client_order_id,
             broker_id,
-        ))),
+            "order.client_order_id",
+            "spot_sbe_order_status_response",
+        )?),
         VenueOrderId::new(order.order_id.to_string()),
         order_side,
         order_type,
@@ -890,8 +907,11 @@ pub fn parse_new_order_response_sbe(
         None
     };
 
-    // SBE uses microseconds; for new orders transact_time is both creation and event time
-    let ts_event = UnixNanos::from_micros(response.transact_time as u64);
+    let ts_event = unix_nanos_from_micros(
+        response.transact_time,
+        "response.transact_time",
+        "spot_sbe_new_order_response",
+    )?;
     let ts_accepted = ts_event;
 
     let order_list_id = response.order_list_id.and_then(|id| {
@@ -908,10 +928,12 @@ pub fn parse_new_order_response_sbe(
     let mut report = OrderStatusReport::new(
         account_id,
         instrument_id,
-        Some(ClientOrderId::new(decode_broker_id(
+        Some(decode_client_order_id(
             &response.client_order_id,
             broker_id,
-        ))),
+            "response.client_order_id",
+            "spot_sbe_new_order_response",
+        )?),
         VenueOrderId::new(response.order_id.to_string()),
         order_side,
         order_type,
@@ -950,6 +972,92 @@ pub fn parse_new_order_response_sbe(
     }
 
     Ok(report)
+}
+
+/// Parses fill reports embedded in a Binance new-order FULL response.
+///
+/// # Errors
+///
+/// Returns an error if any fill field cannot be represented in Nautilus domain types.
+pub fn parse_new_order_fill_reports_sbe(
+    response: &BinanceNewOrderResponse,
+    account_id: AccountId,
+    instrument: &InstrumentAny,
+    broker_id: &str,
+    ts_init: UnixNanos,
+) -> anyhow::Result<Vec<FillReport>> {
+    response
+        .fills
+        .iter()
+        .enumerate()
+        .filter(|(_, fill)| fill.qty_mantissa > 0)
+        .filter_map(|(index, fill)| {
+            fill.trade_id.map(|trade_id| {
+                parse_new_order_fill_report_sbe(
+                    response, fill, trade_id, index, account_id, instrument, broker_id, ts_init,
+                )
+            })
+        })
+        .collect()
+}
+
+#[expect(clippy::too_many_arguments)]
+fn parse_new_order_fill_report_sbe(
+    response: &BinanceNewOrderResponse,
+    fill: &BinanceOrderFill,
+    trade_id: i64,
+    index: usize,
+    account_id: AccountId,
+    instrument: &InstrumentAny,
+    broker_id: &str,
+    ts_init: UnixNanos,
+) -> anyhow::Result<FillReport> {
+    let instrument_id = instrument.id();
+    let price_precision = instrument.price_precision();
+    let size_precision = instrument.size_precision();
+
+    let last_px = Price::from_mantissa_exponent(
+        fill.price_mantissa,
+        response.price_exponent,
+        price_precision,
+    );
+    let last_qty = Quantity::from_mantissa_exponent(
+        fill.qty_mantissa as u64,
+        response.qty_exponent,
+        size_precision,
+    );
+
+    let comm_exp = fill.commission_exponent as i32;
+    let comm_dec = Decimal::new(fill.commission_mantissa, (-comm_exp) as u32);
+    let commission = Money::from_decimal(comm_dec, get_currency(&fill.commission_asset))?;
+    let order_side = map_order_side_sbe(response.side);
+    let ts_event = unix_nanos_from_micros(
+        response.transact_time,
+        "response.transact_time",
+        "spot_sbe_new_order_fill_report",
+    )?;
+
+    Ok(FillReport::new(
+        account_id,
+        instrument_id,
+        VenueOrderId::new(response.order_id.to_string()),
+        TradeId::new(trade_id.to_string()),
+        order_side,
+        last_qty,
+        last_px,
+        commission,
+        LiquiditySide::Taker,
+        Some(decode_client_order_id(
+            &response.client_order_id,
+            broker_id,
+            "response.client_order_id",
+            "spot_sbe_new_order_fill_report",
+        )?),
+        None,
+        ts_event + UnixNanos::from(index as u64),
+        ts_init,
+        None,
+    ))
 }
 
 /// Parses a Binance SBE account trade into a Nautilus `FillReport`.
@@ -994,8 +1102,7 @@ pub fn parse_fill_report_sbe(
         LiquiditySide::Taker
     };
 
-    // Parse timestamp (SBE uses microseconds)
-    let ts_event = UnixNanos::from_micros(trade.time as u64);
+    let ts_event = unix_nanos_from_micros(trade.time, "trade.time", "spot_sbe_account_trade")?;
 
     Ok(FillReport::new(
         account_id,
@@ -1049,7 +1156,8 @@ pub fn parse_klines_to_bars(
             Decimal::from_i128_with_scale(volume_mantissa, (-klines.qty_exponent as i32) as u32);
         let volume = Quantity::from_decimal_dp(volume_dec, size_precision)?;
 
-        let ts_event = UnixNanos::from_micros(kline.open_time as u64);
+        let ts_event =
+            unix_nanos_from_micros(kline.open_time, "kline.open_time", "spot_sbe_kline")?;
 
         let bar = Bar::new(bar_type, open, high, low, close, volume, ts_event, ts_init);
         bars.push(bar);
@@ -1110,6 +1218,7 @@ pub fn bar_spec_to_binance_interval(
 
 #[cfg(test)]
 mod tests {
+    use nautilus_model::identifiers::ClientOrderId;
     use rstest::rstest;
     use rust_decimal_macros::dec;
     use serde_json::json;

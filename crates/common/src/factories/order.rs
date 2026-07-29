@@ -20,7 +20,10 @@ use std::{cell::RefCell, rc::Rc};
 use indexmap::IndexMap;
 use nautilus_core::{UUID4, UnixNanos};
 use nautilus_model::{
-    enums::{ContingencyType, OrderSide, OrderType, TimeInForce, TrailingOffsetType, TriggerType},
+    enums::{
+        ContingencyType, OrderListType, OrderSide, OrderType, TimeInForce, TrailingOffsetType,
+        TriggerType,
+    },
     identifiers::{
         ClientOrderId, ExecAlgorithmId, InstrumentId, OrderListId, StrategyId, TraderId,
     },
@@ -1095,6 +1098,21 @@ impl OrderFactory {
     /// this constructor.
     #[must_use]
     pub fn create_list(&mut self, orders: &mut [OrderAny], ts_init: UnixNanos) -> OrderList {
+        self.create_list_typed(OrderListType::Standard, orders, ts_init)
+    }
+
+    /// Creates a typed [`OrderList`] from the given orders.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `orders` is empty or if orders span more than one venue.
+    #[must_use]
+    pub fn create_list_typed(
+        &mut self,
+        order_list_type: OrderListType,
+        orders: &mut [OrderAny],
+        ts_init: UnixNanos,
+    ) -> OrderList {
         let instrument_id = orders
             .first()
             .expect("OrderFactory::create_list requires non-empty orders")
@@ -1118,8 +1136,9 @@ impl OrderFactory {
             order.set_order_list_id(order_list_id);
         }
 
-        OrderList::new(
+        OrderList::new_typed(
             order_list_id,
+            order_list_type,
             instrument_id,
             self.strategy_id,
             order_ids,

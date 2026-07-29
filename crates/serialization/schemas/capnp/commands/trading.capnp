@@ -191,6 +191,7 @@ struct SubmitOrderList {
     orderInits @1 :List(OrderEvents.OrderInitialized);
     positionId @2 :Identifiers.PositionId;
     params @3 :Base.StringMap;
+    orderListType @4 :Enums.OrderListType;
 }
 
 struct ModifyOrder {

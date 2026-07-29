@@ -24,6 +24,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
+    enums::OrderListType,
     identifiers::{ClientOrderId, InstrumentId, OrderListId, StrategyId},
     orders::{Order, OrderAny},
 };
@@ -66,6 +67,7 @@ pub enum OrderListValidationError {
 )]
 pub struct OrderList {
     pub id: OrderListId,
+    pub order_list_type: OrderListType,
     pub instrument_id: InstrumentId,
     pub strategy_id: StrategyId,
     pub client_order_ids: Vec<ClientOrderId>,
@@ -87,8 +89,29 @@ impl OrderList {
         client_order_ids: Vec<ClientOrderId>,
         ts_init: UnixNanos,
     ) -> Self {
+        Self::new_typed(
+            order_list_id,
+            OrderListType::Standard,
+            instrument_id,
+            strategy_id,
+            client_order_ids,
+            ts_init,
+        )
+    }
+
+    /// Creates a new typed [`OrderList`] instance.
+    #[must_use]
+    pub fn new_typed(
+        order_list_id: OrderListId,
+        order_list_type: OrderListType,
+        instrument_id: InstrumentId,
+        strategy_id: StrategyId,
+        client_order_ids: Vec<ClientOrderId>,
+        ts_init: UnixNanos,
+    ) -> Self {
         Self {
             id: order_list_id,
+            order_list_type,
             instrument_id,
             strategy_id,
             client_order_ids,
@@ -116,6 +139,21 @@ impl OrderList {
     /// reaching this constructor.
     #[must_use]
     pub fn from_orders(orders: &[OrderAny], ts_init: UnixNanos) -> Self {
+        Self::from_orders_with_type(OrderListType::Standard, orders, ts_init)
+    }
+
+    /// Creates a typed [`OrderList`] from a slice of orders.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `orders` is empty, if the first order has no
+    /// `order_list_id`, or if orders span more than one venue.
+    #[must_use]
+    pub fn from_orders_with_type(
+        order_list_type: OrderListType,
+        orders: &[OrderAny],
+        ts_init: UnixNanos,
+    ) -> Self {
         let first = orders
             .first()
             .expect("OrderList::from_orders requires non-empty orders");
@@ -140,6 +178,7 @@ impl OrderList {
 
         Self {
             id: order_list_id,
+            order_list_type,
             instrument_id,
             strategy_id,
             client_order_ids,
@@ -205,12 +244,18 @@ impl Display for OrderList {
             f,
             "OrderList(\
             id={}, \
+            order_list_type={}, \
             instrument_id={}, \
             strategy_id={}, \
             client_order_ids={:?}, \
             ts_init={}\
             )",
-            self.id, self.instrument_id, self.strategy_id, self.client_order_ids, self.ts_init,
+            self.id,
+            self.order_list_type,
+            self.instrument_id,
+            self.strategy_id,
+            self.client_order_ids,
+            self.ts_init,
         )
     }
 }

@@ -22,6 +22,7 @@ This approach combines Python's simplicity and ecosystem with Rust's performance
 - [Docs Style](docs.md)
 - [Release Notes](releases.md)
 - [Release Security Architecture](release_security.md)
+- [StratNeo Rust Crate Release](stratneo_cargo_release.md)
 - [Adapters](adapters.md)
 - [Data Testing Spec](spec_data_testing.md)
 - [Execution Testing Spec](spec_exec_testing.md)

@@ -68,5 +68,7 @@ pub mod factories;
 pub mod futures;
 pub mod spot;
 
+pub const STRATNEO_NAUTILUS_BINANCE_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 #[cfg(feature = "python")]
 pub mod python;

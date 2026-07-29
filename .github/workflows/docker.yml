@@ -138,7 +138,9 @@ jobs:
 
   build-docker-images-nautilus-trader:
     name: build-docker-images (nautilus_trader-${{ matrix.platform }})
-    if: github.ref != 'refs/heads/test-docker'
+    if: >
+      github.repository == 'nautechsystems/nautilus_trader' &&
+      github.ref != 'refs/heads/test-docker'
     runs-on: ${{ matrix.runner }}
     permissions:
       packages: write
@@ -256,6 +258,7 @@ jobs:
 
   merge-nautilus-trader:
     name: merge-nautilus_trader
+    if: github.repository == 'nautechsystems/nautilus_trader'
     runs-on: ubuntu-latest
     permissions:
       packages: write
@@ -370,7 +373,9 @@ jobs:
 
   build-docker-images-jupyterlab:
     name: build-docker-images (jupyterlab-${{ matrix.platform }})
-    if: github.ref != 'refs/heads/test-docker'
+    if: >
+      github.repository == 'nautechsystems/nautilus_trader' &&
+      github.ref != 'refs/heads/test-docker'
     runs-on: ${{ matrix.runner }}
     permissions:
       packages: write
@@ -501,6 +506,7 @@ jobs:
 
   merge-jupyterlab:
     name: merge-jupyterlab
+    if: github.repository == 'nautechsystems/nautilus_trader'
     runs-on: ubuntu-latest
     permissions:
       packages: write

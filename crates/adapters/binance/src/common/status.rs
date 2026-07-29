@@ -31,7 +31,9 @@ impl From<SymbolStatus> for MarketStatusAction {
             SymbolStatus::EndOfDay => Self::Close,
             SymbolStatus::Halt => Self::Halt,
             SymbolStatus::Break => Self::Pause,
-            SymbolStatus::NonRepresentable | SymbolStatus::NullVal => Self::NotAvailableForTrading,
+            SymbolStatus::CancelOnly | SymbolStatus::NonRepresentable | SymbolStatus::NullVal => {
+                Self::NotAvailableForTrading
+            }
         }
     }
 }

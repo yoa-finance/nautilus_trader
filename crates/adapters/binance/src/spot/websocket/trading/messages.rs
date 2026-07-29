@@ -25,9 +25,10 @@ use serde::{Deserialize, Serialize};
 
 use super::user_data::{
     BinanceSpotAccountPositionMsg, BinanceSpotBalanceUpdateMsg, BinanceSpotExecutionReport,
+    BinanceSpotListStatusMsg,
 };
 use crate::spot::http::{
-    models::{BinanceCancelOrderResponse, BinanceNewOrderResponse},
+    models::{BinanceCancelOrderResponse, BinanceNewOrderResponse, BinanceSpotCancelAllResult},
     query::{CancelOrderParams, CancelReplaceOrderParams, NewOrderParams},
 };
 
@@ -152,8 +153,10 @@ pub enum BinanceSpotWsTradingMessage {
     AllOrdersCanceled {
         /// Request ID for correlation.
         request_id: String,
-        /// Canceled order responses.
-        responses: Vec<BinanceCancelOrderResponse>,
+        /// Venue symbol whose open orders reached cancel-all terminal.
+        symbol: Option<String>,
+        /// Cancel-all result.
+        result: BinanceSpotCancelAllResult,
     },
     /// User data stream subscribed.
     UserDataSubscribed {
@@ -166,6 +169,8 @@ pub enum BinanceSpotWsTradingMessage {
     AccountPosition(BinanceSpotAccountPositionMsg),
     /// Balance update from user data stream.
     BalanceUpdate(BinanceSpotBalanceUpdateMsg),
+    /// Order-list lifecycle update from user data stream.
+    ListStatus(BinanceSpotListStatusMsg),
     /// Server shutdown notice (sent ~10 minutes before disconnection).
     ServerShutdown {
         /// Event time in milliseconds.
@@ -173,12 +178,24 @@ pub enum BinanceSpotWsTradingMessage {
     },
     /// Error from venue or network.
     Error(String),
+    /// Recoverable protocol anomaly requiring broker reconciliation before acting on related state.
+    ProtocolAnomaly {
+        /// SBE template ID when available.
+        template_id: Option<u16>,
+        /// Anomaly reason.
+        reason: String,
+    },
+    /// Fatal adapter error requiring live runner reconciliation.
+    FatalError {
+        /// Error reason.
+        reason: String,
+    },
 }
 
 /// Metadata for a pending request.
 ///
 /// Stored in the handler to match responses to their originating requests.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum BinanceSpotWsTradingRequestMeta {
     /// Pending order placement.
     PlaceOrder,
@@ -187,7 +204,10 @@ pub enum BinanceSpotWsTradingRequestMeta {
     /// Pending cancel-replace.
     CancelReplaceOrder,
     /// Pending cancel-all.
-    CancelAllOrders,
+    CancelAllOrders {
+        /// Venue symbol whose open orders are being canceled.
+        symbol: String,
+    },
     /// Pending session logon.
     SessionLogon,
     /// Pending user data subscription.

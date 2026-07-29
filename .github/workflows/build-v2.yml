@@ -476,6 +476,7 @@ jobs:
     # build and tolerate skipped (but not failed) platform jobs. master publishes to PyPI via
     # publish-pypi instead, so it is intentionally excluded here.
     if: >
+      github.repository == 'nautechsystems/nautilus_trader' &&
       !cancelled() &&
       needs.build.result == 'success' &&
       needs.build-linux-arm.result != 'failure' &&
@@ -624,7 +625,10 @@ jobs:
     # all-or-nothing release gating as build.yml's v1 PyPI publish. crates.io stays in build.yml;
     # this job publishes only the python/ package. PyPI Trusted Publishing requires environment
     # `release` (registered as a trusted publisher for build-v2.yml on the nautilus-trader project).
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    if: >
+      github.repository == 'nautechsystems/nautilus_trader' &&
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/master'
     environment: release
     permissions:
       actions: read # Required for downloading build artifacts

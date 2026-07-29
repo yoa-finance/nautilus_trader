@@ -24,17 +24,22 @@ use super::{
         BinanceAccountInfo, BinanceAccountTrade, BinanceBalance, BinanceCancelOrderResponse,
         BinanceDepth, BinanceExchangeInfoSbe, BinanceKline, BinanceKlines, BinanceLotSizeFilterSbe,
         BinanceNewOrderResponse, BinanceOrderFill, BinanceOrderResponse, BinancePriceFilterSbe,
-        BinancePriceLevel, BinanceSymbolFiltersSbe, BinanceSymbolSbe, BinanceTrade, BinanceTrades,
+        BinancePriceLevel, BinanceSpotCancelAllItem, BinanceSpotCancelAllResult,
+        BinanceSpotOrderListCancelResult, BinanceSpotOrderListChild,
+        BinanceSpotOrderListChildReport, BinanceSymbolFiltersSbe, BinanceSymbolSbe, BinanceTrade,
+        BinanceTrades,
     },
 };
 use crate::spot::sbe::{
     cursor::SbeCursor,
     spot::{
-        SBE_SCHEMA_ID, SBE_SCHEMA_VERSION,
+        ReadBuf, SBE_SCHEMA_ID, SBE_SCHEMA_VERSION,
         account_response_codec::SBE_TEMPLATE_ID as ACCOUNT_TEMPLATE_ID,
         account_trades_response_codec::SBE_TEMPLATE_ID as ACCOUNT_TRADES_TEMPLATE_ID,
         account_type::AccountType, bool_enum::BoolEnum,
         cancel_open_orders_response_codec::SBE_TEMPLATE_ID as CANCEL_OPEN_ORDERS_TEMPLATE_ID,
+        cancel_order_list_response_codec,
+        cancel_order_list_response_codec::SBE_TEMPLATE_ID as CANCEL_ORDER_LIST_TEMPLATE_ID,
         cancel_order_response_codec::SBE_TEMPLATE_ID as CANCEL_ORDER_TEMPLATE_ID,
         depth_response_codec::SBE_TEMPLATE_ID as DEPTH_TEMPLATE_ID,
         exchange_info_response_codec::SBE_TEMPLATE_ID as EXCHANGE_INFO_TEMPLATE_ID,
@@ -675,15 +680,14 @@ pub fn decode_orders(buf: &[u8]) -> Result<Vec<BinanceOrderResponse>, SbeDecodeE
 
 /// Decode cancel open orders response.
 ///
-/// Each item in the response group contains an embedded cancel_order_response SBE message.
+/// Each item in the response group contains an embedded SBE message. Binance's
+/// schema allows either `CancelOrderResponse` or `CancelOrderListResponse`.
 ///
 /// # Errors
 ///
 /// Returns error if buffer is too short, schema mismatch, or decode error.
 #[allow(dead_code)]
-pub fn decode_cancel_open_orders(
-    buf: &[u8],
-) -> Result<Vec<BinanceCancelOrderResponse>, SbeDecodeError> {
+pub fn decode_cancel_open_orders(buf: &[u8]) -> Result<BinanceSpotCancelAllResult, SbeDecodeError> {
     let mut cursor = SbeCursor::new(buf);
     let header = MessageHeader::decode_cursor(&mut cursor)?;
     header.validate()?;
@@ -694,21 +698,170 @@ pub fn decode_cancel_open_orders(
 
     let (_block_length, count) = cursor.read_group_header()?;
 
-    if count == 0 {
-        return Ok(Vec::new());
-    }
-
-    let mut responses = Vec::with_capacity(count as usize);
+    let mut items = Vec::with_capacity(count as usize);
 
     // Each group item has block_length=0, followed by u16 length + embedded SBE message
     for _ in 0..count {
         let response_len = cursor.read_u16_le()? as usize;
         let embedded_bytes = cursor.read_bytes(response_len)?;
-        let cancel_response = decode_cancel_order(embedded_bytes)?;
-        responses.push(cancel_response);
+        items.push(decode_cancel_open_orders_item(embedded_bytes)?);
     }
 
-    Ok(responses)
+    Ok(BinanceSpotCancelAllResult { items })
+}
+
+fn decode_cancel_open_orders_item(
+    embedded_bytes: &[u8],
+) -> Result<BinanceSpotCancelAllItem, SbeDecodeError> {
+    let mut cursor = SbeCursor::new(embedded_bytes);
+    let header = MessageHeader::decode_cursor(&mut cursor)?;
+    header.validate()?;
+
+    match header.template_id {
+        CANCEL_ORDER_TEMPLATE_ID => Ok(BinanceSpotCancelAllItem::Order(decode_cancel_order(
+            embedded_bytes,
+        )?)),
+        CANCEL_ORDER_LIST_TEMPLATE_ID => Ok(BinanceSpotCancelAllItem::OrderList(
+            decode_cancel_order_list_response(embedded_bytes)?,
+        )),
+        actual => Err(SbeDecodeError::UnknownTemplateId(actual)),
+    }
+}
+
+/// Decode cancel order-list response.
+///
+/// # Errors
+///
+/// Returns error if buffer is too short, schema mismatch, or decode error.
+#[allow(dead_code)]
+pub fn decode_cancel_order_list_response(
+    data: &[u8],
+) -> Result<BinanceSpotOrderListCancelResult, SbeDecodeError> {
+    let mut cursor = SbeCursor::new(data);
+    let header = MessageHeader::decode_cursor(&mut cursor)?;
+    header.validate()?;
+
+    if header.template_id != CANCEL_ORDER_LIST_TEMPLATE_ID {
+        return Err(SbeDecodeError::UnknownTemplateId(header.template_id));
+    }
+
+    if data.len() < HEADER_LENGTH + header.block_length as usize {
+        return Err(SbeDecodeError::BufferTooShort {
+            expected: HEADER_LENGTH + header.block_length as usize,
+            actual: data.len(),
+        });
+    }
+
+    let buf = ReadBuf::new(data);
+    let dec = cancel_order_list_response_codec::CancelOrderListResponseDecoder::default().wrap(
+        buf,
+        HEADER_LENGTH,
+        header.block_length,
+        header.version,
+    );
+
+    let order_list_id = dec.order_list_id();
+    let contingency_type = dec.contingency_type().to_string();
+    let list_status_type = dec.list_status_type().to_string();
+    let list_order_status = dec.list_order_status().to_string();
+    let transaction_time = dec.transaction_time();
+
+    let mut orders_dec = dec.orders_decoder();
+    let mut orders = Vec::with_capacity(orders_dec.count() as usize);
+    while let Some(_idx) = orders_dec
+        .advance()
+        .map_err(|_| SbeDecodeError::InvalidValue {
+            field: "cancel_order_list_response.orders",
+        })?
+    {
+        let order_id = orders_dec.order_id();
+        let symbol = {
+            let coords = orders_dec.symbol_decoder();
+            String::from_utf8_lossy(orders_dec.symbol_slice(coords)).into_owned()
+        };
+        let client_order_id = {
+            let coords = orders_dec.client_order_id_decoder();
+            String::from_utf8_lossy(orders_dec.client_order_id_slice(coords)).into_owned()
+        };
+        orders.push(BinanceSpotOrderListChild {
+            order_id,
+            symbol,
+            client_order_id,
+        });
+    }
+
+    let dec = orders_dec
+        .parent()
+        .map_err(|_| SbeDecodeError::InvalidValue {
+            field: "cancel_order_list_response.orders",
+        })?;
+    let mut reports_dec = dec.order_reports_decoder();
+    let mut order_reports = Vec::with_capacity(reports_dec.count() as usize);
+    while let Some(_idx) = reports_dec
+        .advance()
+        .map_err(|_| SbeDecodeError::InvalidValue {
+            field: "cancel_order_list_response.order_reports",
+        })?
+    {
+        let order_id = reports_dec.order_id();
+        let order_list_id = reports_dec.order_list_id();
+        let transact_time = reports_dec.transact_time();
+        let status = reports_dec.status().to_string();
+        let time_in_force = reports_dec.time_in_force().to_string();
+        let order_type = reports_dec.order_type().to_string();
+        let side = reports_dec.side().to_string();
+        let symbol = {
+            let coords = reports_dec.symbol_decoder();
+            String::from_utf8_lossy(reports_dec.symbol_slice(coords)).into_owned()
+        };
+        let orig_client_order_id = {
+            let coords = reports_dec.orig_client_order_id_decoder();
+            String::from_utf8_lossy(reports_dec.orig_client_order_id_slice(coords)).into_owned()
+        };
+        let client_order_id = {
+            let coords = reports_dec.client_order_id_decoder();
+            String::from_utf8_lossy(reports_dec.client_order_id_slice(coords)).into_owned()
+        };
+        order_reports.push(BinanceSpotOrderListChildReport {
+            order_id,
+            order_list_id,
+            transact_time,
+            symbol,
+            orig_client_order_id,
+            client_order_id,
+            status,
+            side,
+            order_type,
+            time_in_force,
+        });
+    }
+
+    let mut dec = reports_dec
+        .parent()
+        .map_err(|_| SbeDecodeError::InvalidValue {
+            field: "cancel_order_list_response.order_reports",
+        })?;
+    let list_client_order_id = {
+        let coords = dec.list_client_order_id_decoder();
+        String::from_utf8_lossy(dec.list_client_order_id_slice(coords)).into_owned()
+    };
+    let symbol = {
+        let coords = dec.symbol_decoder();
+        String::from_utf8_lossy(dec.symbol_slice(coords)).into_owned()
+    };
+
+    Ok(BinanceSpotOrderListCancelResult {
+        template_id: header.template_id,
+        order_list_id,
+        list_client_order_id,
+        symbol,
+        transaction_time,
+        contingency_type,
+        list_status_type,
+        list_order_status,
+        orders,
+        order_reports,
+    })
 }
 
 /// Account response block length (from SBE codec).
@@ -2408,15 +2561,21 @@ mod tests {
 
         let responses = decode_cancel_open_orders(&buf).unwrap();
 
-        assert_eq!(responses.len(), 2);
-        assert_eq!(responses[0].order_id, 111);
-        assert_eq!(responses[0].symbol, "ETHUSDT");
-        assert_eq!(responses[0].orig_client_order_id, "orig-1");
-        assert_eq!(responses[0].client_order_id, "new-1");
-        assert_eq!(responses[1].order_id, 222);
-        assert_eq!(responses[1].symbol, "BTCUSDT");
-        assert_eq!(responses[1].orig_client_order_id, "orig-2");
-        assert_eq!(responses[1].client_order_id, "new-2");
+        assert_eq!(responses.items.len(), 2);
+        let BinanceSpotCancelAllItem::Order(response_one) = &responses.items[0] else {
+            panic!("expected order cancel result");
+        };
+        let BinanceSpotCancelAllItem::Order(response_two) = &responses.items[1] else {
+            panic!("expected order cancel result");
+        };
+        assert_eq!(response_one.order_id, 111);
+        assert_eq!(response_one.symbol, "ETHUSDT");
+        assert_eq!(response_one.orig_client_order_id, "orig-1");
+        assert_eq!(response_one.client_order_id, "new-1");
+        assert_eq!(response_two.order_id, 222);
+        assert_eq!(response_two.symbol, "BTCUSDT");
+        assert_eq!(response_two.orig_client_order_id, "orig-2");
+        assert_eq!(response_two.client_order_id, "new-2");
     }
 
     fn create_cancel_order_response_buffer(

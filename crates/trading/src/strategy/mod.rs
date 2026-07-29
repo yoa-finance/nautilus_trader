@@ -37,7 +37,10 @@ use nautilus_common::{
 };
 use nautilus_core::{Params, UUID4};
 use nautilus_model::{
-    enums::{OrderSide, OrderStatus, PositionSide, TimeInForce, TriggerType},
+    enums::{
+        ContingencyType, OrderListType, OrderSide, OrderStatus, PositionSide, TimeInForce,
+        TriggerType,
+    },
     events::{
         OrderAccepted, OrderCancelRejected, OrderDenied, OrderEmulated, OrderEventAny,
         OrderExpired, OrderInitialized, OrderModifyRejected, OrderPendingCancel,
@@ -45,8 +48,8 @@ use nautilus_model::{
         OrderUpdated, PositionChanged, PositionClosed, PositionEvent, PositionOpened,
     },
     identifiers::{
-        AccountId, ClientId, ClientOrderId, ExecAlgorithmId, InstrumentId, PositionId, StrategyId,
-        TraderId,
+        AccountId, ClientId, ClientOrderId, ExecAlgorithmId, InstrumentId, OrderListId, PositionId,
+        StrategyId, TraderId,
     },
     orders::{
         LIMIT_ORDER_TYPES, Order, OrderAny, OrderCore, OrderError, OrderList, STOP_ORDER_TYPES,
@@ -225,6 +228,7 @@ pub trait Strategy: DataActor {
     /// or order list submission fails.
     fn submit_order_list(
         &mut self,
+        order_list_type: OrderListType,
         mut orders: Vec<OrderAny>,
         position_id: Option<PositionId>,
         client_id: Option<ClientId>,
@@ -281,10 +285,12 @@ pub trait Strategy: DataActor {
 
         // TODO: Replace with fluent builder API for order list construction
         let order_list = if orders.first().is_some_and(|o| o.order_list_id().is_some()) {
-            OrderList::from_orders(&orders, ts_init)
+            OrderList::from_orders_with_type(order_list_type, &orders, ts_init)
         } else {
-            core.order_factory().create_list(&mut orders, ts_init)
+            core.order_factory()
+                .create_list_typed(order_list_type, &mut orders, ts_init)
         };
+        normalize_order_list_metadata(order_list.order_list_type, order_list.id, &mut orders)?;
 
         if let Err(e) = order_list.validate() {
             log::error!("OrderList denied: {e}");
@@ -2164,6 +2170,97 @@ pub trait Strategy: DataActor {
     }
 }
 
+fn normalize_order_list_metadata(
+    order_list_type: OrderListType,
+    order_list_id: OrderListId,
+    orders: &mut [OrderAny],
+) -> anyhow::Result<()> {
+    for order in orders.iter_mut() {
+        order.set_order_list_id(order_list_id);
+    }
+
+    match order_list_type {
+        OrderListType::Standard => Ok(()),
+        OrderListType::Oco => normalize_oco_order_list_metadata(orders),
+        OrderListType::Opoco => normalize_opoco_order_list_metadata(orders),
+    }
+}
+
+fn normalize_oco_order_list_metadata(orders: &mut [OrderAny]) -> anyhow::Result<()> {
+    if orders.len() != 2 {
+        anyhow::bail!(
+            "OrderList denied: OCO order list requires exactly 2 orders, received {}",
+            orders.len()
+        );
+    }
+
+    let first_id = orders[0].client_order_id();
+    let second_id = orders[1].client_order_id();
+
+    orders[0].set_contingency_type(ContingencyType::Oco);
+    orders[0].set_parent_order_id(None);
+    orders[0].set_linked_order_ids(vec![second_id]);
+
+    orders[1].set_contingency_type(ContingencyType::Oco);
+    orders[1].set_parent_order_id(None);
+    orders[1].set_linked_order_ids(vec![first_id]);
+
+    Ok(())
+}
+
+fn normalize_opoco_order_list_metadata(orders: &mut [OrderAny]) -> anyhow::Result<()> {
+    if orders.len() != 3 {
+        anyhow::bail!(
+            "OrderList denied: OPOCO order list requires exactly 3 orders, received {}",
+            orders.len()
+        );
+    }
+
+    let buy_count = orders
+        .iter()
+        .filter(|order| order.order_side() == OrderSide::Buy)
+        .count();
+    let sell_count = orders
+        .iter()
+        .filter(|order| order.order_side() == OrderSide::Sell)
+        .count();
+
+    let working_side = match (buy_count, sell_count) {
+        (1, 2) => OrderSide::Buy,
+        (2, 1) => OrderSide::Sell,
+        _ => anyhow::bail!(
+            "OrderList denied: OPOCO order list requires exactly one working-side order and two pending-side orders"
+        ),
+    };
+
+    let working_index = orders
+        .iter()
+        .position(|order| order.order_side() == working_side)
+        .expect("working side count checked above");
+    let pending_indices: Vec<usize> = (0..orders.len())
+        .filter(|index| *index != working_index)
+        .collect();
+    let working_id = orders[working_index].client_order_id();
+    let first_pending_index = pending_indices[0];
+    let second_pending_index = pending_indices[1];
+    let first_pending_id = orders[first_pending_index].client_order_id();
+    let second_pending_id = orders[second_pending_index].client_order_id();
+
+    orders[working_index].set_contingency_type(ContingencyType::Oto);
+    orders[working_index].set_parent_order_id(None);
+    orders[working_index].set_linked_order_ids(vec![first_pending_id, second_pending_id]);
+
+    orders[first_pending_index].set_contingency_type(ContingencyType::Oco);
+    orders[first_pending_index].set_parent_order_id(Some(working_id));
+    orders[first_pending_index].set_linked_order_ids(vec![second_pending_id]);
+
+    orders[second_pending_index].set_contingency_type(ContingencyType::Oco);
+    orders[second_pending_index].set_parent_order_id(Some(working_id));
+    orders[second_pending_index].set_linked_order_ids(vec![first_pending_id]);
+
+    Ok(())
+}
+
 fn publish_order_initialized(order: &OrderAny) {
     let topic = format!("events.order.{}", order.strategy_id());
     let event = OrderEventAny::Initialized(order.init_event().clone());
@@ -3092,7 +3189,7 @@ mod tests {
         msgbus::subscribe_order_events(topic.clone().into(), event_handler.clone(), None);
 
         strategy
-            .submit_order_list(orders.clone(), None, None, None)
+            .submit_order_list(OrderListType::Standard, orders.clone(), None, None, None)
             .unwrap();
 
         msgbus::unsubscribe_order_events(topic.into(), &event_handler);
@@ -3129,7 +3226,7 @@ mod tests {
         let _cache = cache_rc.borrow();
 
         let result = catch_unwind(AssertUnwindSafe(|| {
-            strategy.submit_order_list(orders, None, None, None)
+            strategy.submit_order_list(OrderListType::Standard, orders, None, None, None)
         }));
 
         let err = result
@@ -3209,7 +3306,7 @@ mod tests {
         msgbus::subscribe_order_events(topic.clone().into(), event_handler.clone(), None);
 
         strategy
-            .submit_order_list(orders.clone(), None, None, None)
+            .submit_order_list(OrderListType::Standard, orders.clone(), None, None, None)
             .unwrap();
 
         msgbus::unsubscribe_order_events(topic.into(), &event_handler);
@@ -3256,7 +3353,7 @@ mod tests {
             make_initialized_market_order("O-20250208-LIST-002"),
         ];
         strategy
-            .submit_order_list(no_params_orders, None, None, None)
+            .submit_order_list(OrderListType::Standard, no_params_orders, None, None, None)
             .unwrap();
 
         let mut params = Params::new();
@@ -3269,7 +3366,13 @@ mod tests {
             make_initialized_market_order("O-20250208-LIST-004"),
         ];
         strategy
-            .submit_order_list(param_orders, None, None, Some(params.clone()))
+            .submit_order_list(
+                OrderListType::Standard,
+                param_orders,
+                None,
+                None,
+                Some(params.clone()),
+            )
             .unwrap();
 
         let risk_messages = risk_messages.get_messages();
@@ -4612,7 +4715,8 @@ mod tests {
 
         let topic = format!("events.order.{}", orders[0].strategy_id());
         msgbus::subscribe_order_events(topic.clone().into(), event_handler.clone(), None);
-        let result = strategy.submit_order_list(orders.clone(), None, None, None);
+        let result =
+            strategy.submit_order_list(OrderListType::Standard, orders.clone(), None, None, None);
 
         msgbus::unsubscribe_order_events(topic.into(), &event_handler);
 
@@ -4665,7 +4769,8 @@ mod tests {
             get_typed_message_saving_handler(Some(Ustr::from("events.order.list_invalid")));
 
         msgbus::subscribe_order_events(topic.clone().into(), event_handler.clone(), None);
-        let result = strategy.submit_order_list(vec![order], None, None, None);
+        let result =
+            strategy.submit_order_list(OrderListType::Standard, vec![order], None, None, None);
 
         msgbus::unsubscribe_order_events(topic.into(), &event_handler);
 
@@ -4708,7 +4813,13 @@ mod tests {
             None,
         ));
 
-        let result = strategy.submit_order_list(vec![binance_order, bybit_order], None, None, None);
+        let result = strategy.submit_order_list(
+            OrderListType::Standard,
+            vec![binance_order, bybit_order],
+            None,
+            None,
+            None,
+        );
 
         let err = result.unwrap_err();
         let msg = err.to_string();

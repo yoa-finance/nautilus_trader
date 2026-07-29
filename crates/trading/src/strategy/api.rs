@@ -23,7 +23,10 @@ use nautilus_analysis::snapshot::PortfolioStatistics;
 use nautilus_common::factories::OrderFactory;
 use nautilus_core::UnixNanos;
 use nautilus_model::{
-    enums::{ContingencyType, OrderSide, OrderType, TimeInForce, TrailingOffsetType, TriggerType},
+    enums::{
+        ContingencyType, OrderListType, OrderSide, OrderType, TimeInForce, TrailingOffsetType,
+        TriggerType,
+    },
     events::PortfolioSnapshot,
     identifiers::{
         AccountId, ClientOrderId, ExecAlgorithmId, InstrumentId, OrderListId, PositionId, Venue,
@@ -503,6 +506,19 @@ impl<'a> OrderApi<'a> {
     #[must_use]
     pub fn create_list(&self, orders: &mut [OrderAny], ts_init: UnixNanos) -> OrderList {
         self.order_factory.borrow_mut().create_list(orders, ts_init)
+    }
+
+    /// Creates a typed order list from the given orders.
+    #[must_use]
+    pub fn create_list_typed(
+        &self,
+        order_list_type: OrderListType,
+        orders: &mut [OrderAny],
+        ts_init: UnixNanos,
+    ) -> OrderList {
+        self.order_factory
+            .borrow_mut()
+            .create_list_typed(order_list_type, orders, ts_init)
     }
 
     /// Creates a bracket order with an entry order and attached take-profit and stop-loss legs.

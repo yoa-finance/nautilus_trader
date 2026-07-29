@@ -1667,8 +1667,15 @@ impl PyStrategy {
         })?;
         let inner = self.inner_mut();
 
-        Strategy::submit_order_list(inner, orders, position_id, client_id, params_map)
-            .map_err(to_pyruntime_err)
+        Strategy::submit_order_list(
+            inner,
+            nautilus_model::enums::OrderListType::Standard,
+            orders,
+            position_id,
+            client_id,
+            params_map,
+        )
+        .map_err(to_pyruntime_err)
     }
 
     #[pyo3(name = "modify_order")]

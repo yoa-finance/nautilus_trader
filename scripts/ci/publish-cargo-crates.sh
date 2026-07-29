@@ -2,10 +2,12 @@
 # Validate workspace crates or publish them to crates.io one at a time in dependency order.
 #
 # Usage:
-#   publish-cargo-crates.sh [--check|--dry-run]
+#   publish-cargo-crates.sh [--check|--dry-run] --version VERSION
 #
 # Required env for publishing:
-#   CARGO_REGISTRY_TOKEN - crates.io token, preferably from trusted publishing
+#   CARGO_REGISTRY_TOKEN            - crates.io token, preferably from trusted publishing
+#   STRATNEO_CARGO_REGISTRY_TOKEN   - StratNeo fallback token
+#   CRATES_IO_TOKEN                 - legacy fallback token
 #
 # Optional env:
 #   CARGO_PUBLISH_ATTEMPTS             - cargo publish attempts per crate (default: 3)
@@ -20,25 +22,89 @@
 set -euo pipefail
 
 publish_mode=publish
-case "${1:-}" in
-  "")
-    ;;
-  --check)
-    publish_mode=check
-    shift
-    ;;
-  --dry-run)
-    publish_mode=dry_run
-    shift
-    ;;
-  *)
-    echo "Usage: $0 [--check|--dry-run]" >&2
-    exit 1
-    ;;
-esac
+release_version=""
+mode_selected=false
+usage="Usage: $0 [--check|--dry-run] --version VERSION"
 
-if [[ "$#" -ne 0 ]]; then
-  echo "Usage: $0 [--check|--dry-run]" >&2
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    --check)
+      if [[ "$mode_selected" == true ]]; then
+        echo "$usage" >&2
+        exit 1
+      fi
+      publish_mode=check
+      mode_selected=true
+      shift
+      ;;
+    --dry-run)
+      if [[ "$mode_selected" == true ]]; then
+        echo "$usage" >&2
+        exit 1
+      fi
+      publish_mode=dry_run
+      mode_selected=true
+      shift
+      ;;
+    --version)
+      if [[ "$#" -lt 2 || -z "$2" || -n "$release_version" ]]; then
+        echo "$usage" >&2
+        exit 1
+      fi
+      release_version=$2
+      shift 2
+      ;;
+    --version=*)
+      if [[ -n "$release_version" ]]; then
+        echo "$usage" >&2
+        exit 1
+      fi
+      release_version=${1#--version=}
+      shift
+      ;;
+    *)
+      echo "$usage" >&2
+      exit 1
+      ;;
+  esac
+done
+
+if [[ -z "$release_version" ]]; then
+  echo "$usage" >&2
+  exit 1
+fi
+
+readonly stratneo_crates=(
+  stratneo-nautilus-analysis
+  stratneo-nautilus-backtest
+  stratneo-nautilus-common
+  stratneo-nautilus-core
+  stratneo-nautilus-cryptography
+  stratneo-nautilus-data
+  stratneo-nautilus-execution
+  stratneo-nautilus-indicators
+  stratneo-nautilus-live
+  stratneo-nautilus-model
+  stratneo-nautilus-network
+  stratneo-nautilus-persistence
+  stratneo-nautilus-persistence-macros
+  stratneo-nautilus-portfolio
+  stratneo-nautilus-risk
+  stratneo-nautilus-serialization
+  stratneo-nautilus-system
+  stratneo-nautilus-trading
+  stratneo-nautilus-binance
+  stratneo-nautilus-sandbox
+)
+
+if [[ "${#stratneo_crates[@]}" -ne 20 ]]; then
+  echo "::error::StratNeo release allowlist must contain exactly 20 crates."
+  exit 1
+fi
+duplicate_allowlist_names="$(printf '%s\n' "${stratneo_crates[@]}" | sort | uniq -d)"
+if [[ -n "$duplicate_allowlist_names" ]]; then
+  echo "::error::Duplicate names in StratNeo release allowlist:"
+  printf '%s\n' "$duplicate_allowlist_names"
   exit 1
 fi
 
@@ -60,9 +126,13 @@ github_run_id="${GITHUB_RUN_ID:-local}"
 default_user_agent="nautilus-trader-ci (${github_url}/${github_repository}/actions/runs/${github_run_id})"
 cargo_publish_user_agent="${CARGO_PUBLISH_USER_AGENT:-$default_user_agent}"
 
-if [[ "$publish_mode" == publish && -z "${CARGO_REGISTRY_TOKEN:-}" ]]; then
-  echo "::error::CARGO_REGISTRY_TOKEN not set."
+registry_token="${CARGO_REGISTRY_TOKEN:-${STRATNEO_CARGO_REGISTRY_TOKEN:-${CRATES_IO_TOKEN:-}}}"
+if [[ "$publish_mode" == publish && -z "$registry_token" ]]; then
+  echo "::error::CARGO_REGISTRY_TOKEN, STRATNEO_CARGO_REGISTRY_TOKEN, or CRATES_IO_TOKEN must be set."
   exit 1
+fi
+if [[ "$publish_mode" == publish ]]; then
+  export CARGO_REGISTRY_TOKEN="$registry_token"
 fi
 
 if ! command -v cargo > /dev/null; then
@@ -112,6 +182,8 @@ work_dir="$(mktemp -d)"
 trap 'rm -rf "$work_dir"' EXIT
 
 metadata_file="${work_dir}/metadata.json"
+allowlist_file="${work_dir}/allowlist.txt"
+audit_errors_file="${work_dir}/audit-errors.txt"
 publish_plan_file="${work_dir}/publish-plan.tsv"
 blocked_dependencies_file="${work_dir}/blocked-dependencies.tsv"
 blocked_dependency_sources_file="${work_dir}/blocked-dependency-sources.tsv"
@@ -119,13 +191,52 @@ response_file="${work_dir}/response.json"
 index_response_file="${work_dir}/sparse-index.json"
 
 cargo metadata --no-deps --format-version=1 > "$metadata_file"
+printf '%s\n' "${stratneo_crates[@]}" > "$allowlist_file"
 
-jq -r '
+jq -r --arg version "$release_version" --rawfile allowed "$allowlist_file" '
   def crates_io_publishable:
     .publish == null or (.publish | index("crates-io"));
 
-  [.packages[]
-    | select(.source == null and crates_io_publishable)
+  ($allowed | split("\n") | map(select(length > 0))) as $allowlist
+  | (
+      $allowlist[] as $name
+      | [.packages[] | select(.name == $name)] as $matches
+      | if ($matches | length) == 0 then
+          "Missing required workspace crate: \($name)"
+        elif ($matches | length) > 1 then
+          "Duplicate workspace crate name: \($name)"
+        elif $matches[0].source != null then
+          "Required crate is not a local workspace package: \($name)"
+        elif ($matches[0] | crates_io_publishable | not) then
+          "Required crate is not publishable to crates.io: \($name)"
+        elif $matches[0].version != $version then
+          "Required crate has version \($matches[0].version), expected \($version): \($name)"
+        else
+          empty
+        end
+    ),
+    (
+      .packages[]
+      | select(.name | startswith("stratneo-nautilus-"))
+      | select(.name as $name | ($allowlist | index($name) | not))
+      | "Unexpected StratNeo workspace crate outside the release allowlist: \(.name)"
+    )
+' "$metadata_file" > "$audit_errors_file"
+
+if [[ -s "$audit_errors_file" ]]; then
+  while IFS= read -r audit_error; do
+    echo "::error::${audit_error}"
+  done < "$audit_errors_file"
+  exit 1
+fi
+
+jq -r --rawfile allowed "$allowlist_file" '
+  def crates_io_publishable:
+    .publish == null or (.publish | index("crates-io"));
+
+  ($allowed | split("\n") | map(select(length > 0))) as $allowlist
+  | [.packages[]
+    | select(.name as $name | $allowlist | index($name))
     | {
         name,
         version,
@@ -159,11 +270,12 @@ jq -r '
   emit([])
 ' "$metadata_file" > "$publish_plan_file"
 
-jq -r '
+jq -r --rawfile allowed "$allowlist_file" '
   def crates_io_publishable:
     .publish == null or (.publish | index("crates-io"));
 
-  [.packages[]
+  ($allowed | split("\n") | map(select(length > 0))) as $allowlist
+  | [.packages[]
     | select(.source == null)
     | {
         name,
@@ -177,7 +289,7 @@ jq -r '
   ] as $packages
   | ($packages | map({key: .name, value: .}) | from_entries) as $by_name
   | $packages[]
-  | select(crates_io_publishable) as $package
+  | select(.name as $name | $allowlist | index($name)) as $package
   | $package.deps[]?
   | . as $dependency
   | ($by_name[$dependency.name]) as $dependency_package
@@ -193,12 +305,13 @@ jq -r '
   | @tsv
 ' "$metadata_file" > "$blocked_dependencies_file"
 
-jq -r '
+jq -r --rawfile allowed "$allowlist_file" '
   def crates_io_publishable:
     .publish == null or (.publish | index("crates-io"));
 
-  .packages[]
-  | select(.source == null and crates_io_publishable) as $package
+  ($allowed | split("\n") | map(select(length > 0))) as $allowlist
+  | .packages[]
+  | select(.name as $name | $allowlist | index($name)) as $package
   | $package.dependencies[]?
   | select(.source != null and (.source | startswith("registry+https://github.com/rust-lang/crates.io-index") | not))
   | [
@@ -520,7 +633,7 @@ fi
 check_dependency_sources
 check_blocked_dependencies
 
-echo "Publishing crates in dependency order:"
+echo "StratNeo Cargo crates ${release_version} in dependency order:"
 nl -w1 -s'. ' "$publish_plan_file"
 
 case "$publish_mode" in
@@ -528,7 +641,10 @@ case "$publish_mode" in
     echo "Cargo crate publish plan is valid."
     ;;
   dry_run)
-    cargo publish --dry-run --workspace --locked --no-verify
+    while IFS=$'\t' read -r crate_name crate_version; do
+      echo "Dry-running ${crate_name} ${crate_version}"
+      cargo publish --dry-run --locked --no-verify --package "$crate_name"
+    done < "$publish_plan_file"
     echo "Finished dry-running Cargo crates."
     ;;
   publish)

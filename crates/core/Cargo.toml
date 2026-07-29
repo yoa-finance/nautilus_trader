@@ -1,5 +1,5 @@
 [package]
-name = "nautilus-core"
+name = "stratneo-nautilus-core"
 readme = "README.md"
 version.workspace = true
 edition.workspace = true

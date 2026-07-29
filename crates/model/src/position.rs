@@ -449,6 +449,7 @@ impl Position {
         let was_short = self.signed_qty < 0.0;
         self.signed_qty += last_qty;
         self.buy_qty = self.buy_qty + last_qty_object;
+        self.normalize_signed_qty();
 
         // Position reversed from short to long
         if was_short && self.signed_qty > 0.0 {
@@ -501,10 +502,17 @@ impl Position {
         let was_long = self.signed_qty > 0.0;
         self.signed_qty -= last_qty;
         self.sell_qty = self.sell_qty + last_qty_object;
+        self.normalize_signed_qty();
 
         // Position reversed from long to short
         if was_long && self.signed_qty < 0.0 {
             self.avg_px_open = last_px;
+        }
+    }
+
+    fn normalize_signed_qty(&mut self) {
+        if Quantity::new(self.signed_qty.abs(), self.size_precision).is_zero() {
+            self.signed_qty = 0.0;
         }
     }
 

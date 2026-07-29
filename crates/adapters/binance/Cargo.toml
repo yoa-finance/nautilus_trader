@@ -1,5 +1,5 @@
 [package]
-name = "nautilus-binance"
+name = "stratneo-nautilus-binance"
 readme = "README.md"
 version.workspace = true
 edition.workspace = true

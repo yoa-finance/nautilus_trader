@@ -16,7 +16,7 @@
 //! SBE decoders for Binance Spot user data stream events.
 //!
 //! Decodes templates 601 (BalanceUpdateEvent), 603 (ExecutionReportEvent), and
-//! 607 (OutboundAccountPositionEvent) from schema 3:4 binary payloads into the
+//! 607 (OutboundAccountPositionEvent) from schema 3:5 binary payloads into the
 //! venue-level structs defined in [`super::user_data`].
 //! The existing JSON parse functions in [`super::parse`] then convert these to Nautilus types.
 
@@ -25,14 +25,22 @@ use ustr::Ustr;
 
 use super::user_data::{
     BinanceSpotAccountPositionMsg, BinanceSpotBalanceEntry, BinanceSpotBalanceUpdateMsg,
-    BinanceSpotExecutionReport, BinanceSpotExecutionType,
+    BinanceSpotExecutionReport, BinanceSpotExecutionType, BinanceSpotListStatusMsg,
+    BinanceSpotListStatusOrder,
 };
 use crate::{
     common::enums::{BinanceOrderStatus, BinanceSide, BinanceTimeInForce},
-    spot::sbe::spot::{
-        ReadBuf, balance_update_event_codec, bool_enum, execution_report_event_codec,
-        execution_type, expiry_reason, message_header_codec, order_side, order_status, order_type,
-        outbound_account_position_event_codec, time_in_force,
+    spot::{
+        http::models::{
+            BinanceSpotOrderListCancelResult, BinanceSpotOrderListChild,
+            BinanceSpotOrderListChildReport,
+        },
+        sbe::spot::{
+            ReadBuf, balance_update_event_codec, bool_enum, cancel_order_list_response_codec,
+            execution_report_event_codec, execution_type, expiry_reason, list_status_event_codec,
+            message_header_codec, order_side, order_status, order_type,
+            outbound_account_position_event_codec, time_in_force,
+        },
     },
 };
 
@@ -269,6 +277,122 @@ pub fn decode_account_position(data: &[u8]) -> anyhow::Result<BinanceSpotAccount
     })
 }
 
+/// Decodes an SBE ListStatusEvent (template 606) into a [`BinanceSpotListStatusMsg`].
+///
+/// The input buffer must include the 8-byte SBE message header.
+///
+/// # Errors
+///
+/// Returns error if the buffer is too short, the template ID is wrong,
+/// or the schema ID does not match.
+pub fn decode_list_status(data: &[u8]) -> anyhow::Result<BinanceSpotListStatusMsg> {
+    if data.len() < HEADER_LEN {
+        anyhow::bail!(
+            "Buffer too short for SBE header: expected {HEADER_LEN}, was {}",
+            data.len()
+        );
+    }
+
+    let buf = ReadBuf::new(data);
+    let block_length = buf.get_u16_at(0);
+    let template_id = buf.get_u16_at(2);
+    let schema_id = buf.get_u16_at(4);
+    let version = buf.get_u16_at(6);
+
+    if template_id != list_status_event_codec::SBE_TEMPLATE_ID {
+        anyhow::bail!(
+            "Wrong template ID: expected {}, received {template_id}",
+            list_status_event_codec::SBE_TEMPLATE_ID
+        );
+    }
+
+    if schema_id != crate::spot::sbe::spot::SBE_SCHEMA_ID {
+        anyhow::bail!(
+            "Wrong schema ID: expected {}, received {schema_id}",
+            crate::spot::sbe::spot::SBE_SCHEMA_ID
+        );
+    }
+
+    let min_len = HEADER_LEN + block_length as usize;
+    if data.len() < min_len {
+        anyhow::bail!(
+            "Buffer too short for fixed block: expected {min_len}, was {}",
+            data.len()
+        );
+    }
+
+    let dec = list_status_event_codec::ListStatusEventDecoder::default().wrap(
+        buf,
+        HEADER_LEN,
+        block_length,
+        version,
+    );
+
+    let event_time = us_to_ms(dec.event_time());
+    let transact_time = us_to_ms(dec.transact_time());
+    let order_list_id = dec.order_list_id();
+    let contingency_type = dec.contingency_type();
+    let list_status_type = dec.list_status_type();
+    let list_order_status = dec.list_order_status();
+    let subscription_id = dec.subscription_id();
+
+    let mut orders_dec = dec.orders_decoder();
+    let order_count = orders_dec.count() as usize;
+    let mut orders = Vec::with_capacity(order_count);
+
+    while let Some(_idx) = orders_dec
+        .advance()
+        .map_err(|e| anyhow::anyhow!("Failed to advance list status orders group: {e:?}"))?
+    {
+        let order_id = orders_dec.order_id();
+        let symbol = {
+            let coords = orders_dec.symbol_decoder();
+            let bytes = orders_dec.symbol_slice(coords);
+            Ustr::from(&String::from_utf8_lossy(bytes))
+        };
+        let client_order_id = {
+            let coords = orders_dec.client_order_id_decoder();
+            String::from_utf8_lossy(orders_dec.client_order_id_slice(coords)).into_owned()
+        };
+        orders.push(BinanceSpotListStatusOrder {
+            order_id,
+            symbol,
+            client_order_id,
+        });
+    }
+
+    let mut dec = orders_dec
+        .parent()
+        .map_err(|e| anyhow::anyhow!("Failed to finish list status orders group: {e:?}"))?;
+    let symbol = {
+        let coords = dec.symbol_decoder();
+        let bytes = dec.symbol_slice(coords);
+        Ustr::from(&String::from_utf8_lossy(bytes))
+    };
+    let list_client_order_id = {
+        let coords = dec.list_client_order_id_decoder();
+        String::from_utf8_lossy(dec.list_client_order_id_slice(coords)).into_owned()
+    };
+    let reject_reason = {
+        let coords = dec.reject_reason_decoder();
+        String::from_utf8_lossy(dec.reject_reason_slice(coords)).into_owned()
+    };
+
+    Ok(BinanceSpotListStatusMsg {
+        event_time,
+        transact_time,
+        order_list_id,
+        contingency_type,
+        list_status_type,
+        list_order_status,
+        subscription_id,
+        symbol,
+        list_client_order_id,
+        reject_reason,
+        orders,
+    })
+}
+
 /// Decodes an SBE BalanceUpdateEvent (template 601) into a [`BinanceSpotBalanceUpdateMsg`].
 ///
 /// The input buffer must include the 8-byte SBE message header.
@@ -336,6 +460,156 @@ pub fn decode_balance_update(data: &[u8]) -> anyhow::Result<BinanceSpotBalanceUp
         asset: Ustr::from(&asset),
         delta: mantissa_to_decimal_string(free_qty_delta, qty_exponent),
         clear_time: us_to_ms(clear_time_us),
+    })
+}
+
+/// Decodes an SBE CancelOrderListResponse (template 312).
+///
+/// Binance returns this payload as the `openOrders.cancelAll` result when the
+/// canceled orders belong to an order list. The decoded child reports are used
+/// by the execution layer to deterministically close tracked child orders.
+///
+/// # Errors
+///
+/// Returns error if the buffer is too short, the template ID is wrong,
+/// or the schema ID does not match.
+pub fn decode_cancel_order_list_response(
+    data: &[u8],
+) -> anyhow::Result<BinanceSpotOrderListCancelResult> {
+    if data.len() < HEADER_LEN {
+        anyhow::bail!(
+            "Buffer too short for SBE header: expected {HEADER_LEN}, was {}",
+            data.len()
+        );
+    }
+
+    let buf = ReadBuf::new(data);
+    let block_length = buf.get_u16_at(0);
+    let template_id = buf.get_u16_at(2);
+    let schema_id = buf.get_u16_at(4);
+    let version = buf.get_u16_at(6);
+
+    if template_id != cancel_order_list_response_codec::SBE_TEMPLATE_ID {
+        anyhow::bail!(
+            "Wrong template ID: expected {}, received {template_id}",
+            cancel_order_list_response_codec::SBE_TEMPLATE_ID
+        );
+    }
+
+    if schema_id != crate::spot::sbe::spot::SBE_SCHEMA_ID {
+        anyhow::bail!(
+            "Wrong schema ID: expected {}, received {schema_id}",
+            crate::spot::sbe::spot::SBE_SCHEMA_ID
+        );
+    }
+
+    let min_len = HEADER_LEN + block_length as usize;
+    if data.len() < min_len {
+        anyhow::bail!(
+            "Buffer too short for fixed block: expected {min_len}, was {}",
+            data.len()
+        );
+    }
+
+    let dec = cancel_order_list_response_codec::CancelOrderListResponseDecoder::default().wrap(
+        buf,
+        HEADER_LEN,
+        block_length,
+        version,
+    );
+
+    let order_list_id = dec.order_list_id();
+    let contingency_type = dec.contingency_type().to_string();
+    let list_status_type = dec.list_status_type().to_string();
+    let list_order_status = dec.list_order_status().to_string();
+    let transaction_time = dec.transaction_time();
+
+    let mut orders_dec = dec.orders_decoder();
+    let mut orders = Vec::with_capacity(orders_dec.count() as usize);
+    while let Some(_idx) = orders_dec
+        .advance()
+        .map_err(|e| anyhow::anyhow!("Failed to advance cancel order-list orders group: {e:?}"))?
+    {
+        let order_id = orders_dec.order_id();
+        let symbol = {
+            let coords = orders_dec.symbol_decoder();
+            String::from_utf8_lossy(orders_dec.symbol_slice(coords)).into_owned()
+        };
+        let client_order_id = {
+            let coords = orders_dec.client_order_id_decoder();
+            String::from_utf8_lossy(orders_dec.client_order_id_slice(coords)).into_owned()
+        };
+        orders.push(BinanceSpotOrderListChild {
+            order_id,
+            symbol,
+            client_order_id,
+        });
+    }
+
+    let dec = orders_dec
+        .parent()
+        .map_err(|e| anyhow::anyhow!("Failed to finish cancel order-list orders group: {e:?}"))?;
+    let mut reports_dec = dec.order_reports_decoder();
+    let mut order_reports = Vec::with_capacity(reports_dec.count() as usize);
+    while let Some(_idx) = reports_dec.advance().map_err(|e| {
+        anyhow::anyhow!("Failed to advance cancel order-list order reports group: {e:?}")
+    })? {
+        let order_id = reports_dec.order_id();
+        let order_list_id = reports_dec.order_list_id();
+        let transact_time = reports_dec.transact_time();
+        let status = reports_dec.status().to_string();
+        let time_in_force = reports_dec.time_in_force().to_string();
+        let order_type = reports_dec.order_type().to_string();
+        let side = reports_dec.side().to_string();
+        let symbol = {
+            let coords = reports_dec.symbol_decoder();
+            String::from_utf8_lossy(reports_dec.symbol_slice(coords)).into_owned()
+        };
+        let orig_client_order_id = {
+            let coords = reports_dec.orig_client_order_id_decoder();
+            String::from_utf8_lossy(reports_dec.orig_client_order_id_slice(coords)).into_owned()
+        };
+        let client_order_id = {
+            let coords = reports_dec.client_order_id_decoder();
+            String::from_utf8_lossy(reports_dec.client_order_id_slice(coords)).into_owned()
+        };
+        order_reports.push(BinanceSpotOrderListChildReport {
+            order_id,
+            order_list_id,
+            transact_time,
+            symbol,
+            orig_client_order_id,
+            client_order_id,
+            status,
+            side,
+            order_type,
+            time_in_force,
+        });
+    }
+
+    let mut dec = reports_dec.parent().map_err(|e| {
+        anyhow::anyhow!("Failed to finish cancel order-list order reports group: {e:?}")
+    })?;
+    let list_client_order_id = {
+        let coords = dec.list_client_order_id_decoder();
+        String::from_utf8_lossy(dec.list_client_order_id_slice(coords)).into_owned()
+    };
+    let symbol = {
+        let coords = dec.symbol_decoder();
+        String::from_utf8_lossy(dec.symbol_slice(coords)).into_owned()
+    };
+
+    Ok(BinanceSpotOrderListCancelResult {
+        template_id,
+        order_list_id,
+        list_client_order_id,
+        symbol,
+        transaction_time,
+        contingency_type,
+        list_status_type,
+        list_order_status,
+        orders,
+        order_reports,
     })
 }
 

@@ -197,7 +197,7 @@ impl ExecutionEngine {
             MessagingSwitchboard::exec_engine_queue_execute(),
             TypedIntoHandler::from(move |cmd: TradingCommand| {
                 if let Some(sender) = try_get_trading_cmd_sender() {
-                    sender.execute(cmd);
+                    sender.execute(MessagingSwitchboard::exec_engine_execute(), cmd);
                 } else {
                     let endpoint = MessagingSwitchboard::exec_engine_execute();
                     msgbus::send_trading_command(endpoint, cmd);

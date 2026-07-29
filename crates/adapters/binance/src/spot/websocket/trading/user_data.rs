@@ -23,7 +23,13 @@ use rust_decimal::Decimal;
 use serde::Deserialize;
 use ustr::Ustr;
 
-use crate::common::enums::{BinanceOrderStatus, BinanceSide, BinanceTimeInForce};
+use crate::{
+    common::enums::{BinanceOrderStatus, BinanceSide, BinanceTimeInForce},
+    spot::sbe::spot::{
+        contingency_type::ContingencyType, list_order_status::ListOrderStatus,
+        list_status_type::ListStatusType,
+    },
+};
 
 /// Spot-specific execution type for order updates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -199,6 +205,48 @@ pub struct BinanceSpotBalanceUpdateMsg {
     /// Clear time in milliseconds.
     #[serde(rename = "T")]
     pub clear_time: i64,
+}
+
+/// Order-list status event (`listStatus`) from the Spot user data stream.
+///
+/// Binance emits this for OCO/OCO-like order lists. Child order terminal state
+/// still arrives via `executionReport`; this event carries order-list lifecycle
+/// and child venue order identifiers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BinanceSpotListStatusMsg {
+    /// Event time in milliseconds.
+    pub event_time: i64,
+    /// Transaction time in milliseconds.
+    pub transact_time: i64,
+    /// Venue order list ID.
+    pub order_list_id: i64,
+    /// Contingency type, e.g. OCO.
+    pub contingency_type: ContingencyType,
+    /// List status type.
+    pub list_status_type: ListStatusType,
+    /// Aggregate list order status.
+    pub list_order_status: ListOrderStatus,
+    /// Optional SBE subscription ID.
+    pub subscription_id: Option<u16>,
+    /// Symbol for the order list.
+    pub symbol: Ustr,
+    /// Client order ID for the list.
+    pub list_client_order_id: String,
+    /// Venue reject reason, empty when not rejected.
+    pub reject_reason: String,
+    /// Child order references.
+    pub orders: Vec<BinanceSpotListStatusOrder>,
+}
+
+/// Child order reference inside a Spot `listStatus` event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BinanceSpotListStatusOrder {
+    /// Venue order ID.
+    pub order_id: i64,
+    /// Symbol for the child order.
+    pub symbol: Ustr,
+    /// Client order ID for the child order.
+    pub client_order_id: String,
 }
 
 #[cfg(test)]

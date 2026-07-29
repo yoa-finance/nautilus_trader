@@ -23,7 +23,10 @@ use std::{cell::RefCell, fmt::Debug, sync::Arc};
 
 use crate::{
     messages::{data::DataCommand, execution::TradingCommand},
-    msgbus::{self, MessagingSwitchboard},
+    msgbus::{
+        self, MessagingSwitchboard,
+        mstr::{Endpoint, MStr},
+    },
     timer::TimeEventHandler,
 };
 
@@ -156,13 +159,27 @@ pub fn replace_time_event_sender(sender: Arc<dyn TimeEventSender>) {
     });
 }
 
+/// A trading command queued for deferred dispatch to a specific endpoint.
+#[derive(Debug)]
+pub struct QueuedTradingCommand {
+    pub endpoint: MStr<Endpoint>,
+    pub command: TradingCommand,
+}
+
+impl QueuedTradingCommand {
+    #[must_use]
+    pub const fn new(endpoint: MStr<Endpoint>, command: TradingCommand) -> Self {
+        Self { endpoint, command }
+    }
+}
+
 /// Trait for trading command sending that can be implemented for both sync and async runners.
 pub trait TradingCommandSender {
     /// Executes a trading command.
     ///
     /// - **Sync runners** send the command to a queue for synchronous execution.
     /// - **Async runners** send the command to a channel for asynchronous execution.
-    fn execute(&self, command: TradingCommand);
+    fn execute(&self, endpoint: MStr<Endpoint>, command: TradingCommand);
 }
 
 /// Synchronous [`TradingCommandSender`] for backtest environments.
@@ -173,18 +190,20 @@ pub trait TradingCommandSender {
 pub struct SyncTradingCommandSender;
 
 impl TradingCommandSender for SyncTradingCommandSender {
-    fn execute(&self, command: TradingCommand) {
-        TRADING_CMD_QUEUE.with(|q| q.borrow_mut().push(command));
+    fn execute(&self, endpoint: MStr<Endpoint>, command: TradingCommand) {
+        TRADING_CMD_QUEUE.with(|q| {
+            q.borrow_mut()
+                .push(QueuedTradingCommand::new(endpoint, command));
+        });
     }
 }
 
-/// Drain all buffered trading commands, dispatching each to the exec engine.
+/// Drain all buffered trading commands, dispatching each to its queued endpoint.
 pub fn drain_trading_cmd_queue() {
     TRADING_CMD_QUEUE.with(|q| {
-        let commands: Vec<TradingCommand> = q.borrow_mut().drain(..).collect();
-        let endpoint = MessagingSwitchboard::exec_engine_execute();
+        let commands: Vec<QueuedTradingCommand> = q.borrow_mut().drain(..).collect();
         for cmd in commands {
-            msgbus::send_trading_command(endpoint, cmd);
+            msgbus::send_trading_command(cmd.endpoint, cmd.command);
         }
     });
 }
@@ -249,7 +268,7 @@ thread_local! {
     static DATA_CMD_SENDER: RefCell<Option<Arc<dyn DataCommandSender>>> = const { RefCell::new(None) };
     static EXEC_CMD_SENDER: RefCell<Option<Arc<dyn TradingCommandSender>>> = const { RefCell::new(None) };
     static DATA_CMD_QUEUE: RefCell<Vec<DataCommand>> = const { RefCell::new(Vec::new()) };
-    static TRADING_CMD_QUEUE: RefCell<Vec<TradingCommand>> = const { RefCell::new(Vec::new()) };
+    static TRADING_CMD_QUEUE: RefCell<Vec<QueuedTradingCommand>> = const { RefCell::new(Vec::new()) };
 }
 
 #[cfg(test)]

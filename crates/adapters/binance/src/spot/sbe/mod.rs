@@ -18,7 +18,7 @@
 //! This module contains:
 //! - `cursor`: Re-export of shared cursor utilities from `nautilus_serialization::sbe`.
 //! - `error`: Re-export of shared decode error types from `nautilus_serialization::sbe`.
-//! - `generated`: Generated codecs for the Spot REST/WebSocket API (schema 3:4).
+//! - `generated`: Generated codecs for the Spot REST/WebSocket API (schema 3:5).
 //! - `stream`: Hand-written codecs for market data streams (schema 1:0).
 //!
 //! The generated codecs come from Binance's official SBE schema using
@@ -30,6 +30,7 @@ pub mod error;
 #[path = "generated/mod.rs"]
 pub mod generated;
 pub mod stream;
+pub mod template_catalog;
 
 pub use cursor::SbeCursor;
 pub use error::{MAX_GROUP_SIZE, SbeDecodeError};

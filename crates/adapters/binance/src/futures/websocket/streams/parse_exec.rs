@@ -38,7 +38,7 @@ use super::messages::{
 use crate::{
     common::{
         consts::BINANCE_NAUTILUS_FUTURES_BROKER_ID,
-        encoder::decode_broker_id,
+        encoder::decode_client_order_id,
         enums::{
             BinanceAlgoStatus, BinanceFuturesOrderType, BinanceOrderStatus, BinanceSide,
             BinanceTimeInForce,
@@ -68,10 +68,12 @@ pub fn parse_futures_order_update_to_order_status(
     let order = &msg.order;
     let ts_event = UnixNanos::from_millis(msg.event_time as u64);
 
-    let client_order_id = ClientOrderId::new(decode_broker_id(
+    let client_order_id = decode_client_order_id(
         &order.client_order_id,
         BINANCE_NAUTILUS_FUTURES_BROKER_ID,
-    ));
+        "order.client_order_id",
+        "futures_order_update_status",
+    )?;
     let venue_order_id = VenueOrderId::new(order.order_id.to_string());
 
     let order_side = parse_side(order.side);
@@ -211,10 +213,12 @@ pub fn parse_futures_order_update_to_fill(
     let order = &msg.order;
     let ts_event = UnixNanos::from_millis(msg.event_time as u64);
 
-    let client_order_id = ClientOrderId::new(decode_broker_id(
+    let client_order_id = decode_client_order_id(
         &order.client_order_id,
         BINANCE_NAUTILUS_FUTURES_BROKER_ID,
-    ));
+        "order.client_order_id",
+        "futures_order_update_fill",
+    )?;
     let venue_order_id = VenueOrderId::new(order.order_id.to_string());
     let trade_id = TradeId::new(order.trade_id.to_string());
 
@@ -282,10 +286,12 @@ pub fn parse_futures_algo_update_to_order_status(
 ) -> anyhow::Result<Option<OrderStatusReport>> {
     let ts_event = UnixNanos::from_millis(event_time as u64);
 
-    let client_order_id = ClientOrderId::new(decode_broker_id(
+    let client_order_id = decode_client_order_id(
         &algo_data.client_algo_id,
         BINANCE_NAUTILUS_FUTURES_BROKER_ID,
-    ));
+        "algo.client_algo_id",
+        "futures_algo_update_status",
+    )?;
 
     let venue_order_id = algo_data
         .actual_order_id
@@ -371,19 +377,31 @@ pub fn parse_futures_account_update(
 }
 
 /// Returns the decoded client order ID from an [`OrderUpdateData`].
-pub fn decode_order_client_id(order: &OrderUpdateData) -> ClientOrderId {
-    ClientOrderId::new(decode_broker_id(
+///
+/// # Errors
+///
+/// Returns an error if the decoded value is not a valid Nautilus client order ID.
+pub fn decode_order_client_id(order: &OrderUpdateData) -> anyhow::Result<ClientOrderId> {
+    decode_client_order_id(
         &order.client_order_id,
         BINANCE_NAUTILUS_FUTURES_BROKER_ID,
-    ))
+        "order.client_order_id",
+        "futures_order_update",
+    )
 }
 
 /// Returns the decoded client order ID from an [`AlgoOrderUpdateData`].
-pub fn decode_algo_client_id(algo: &AlgoOrderUpdateData) -> ClientOrderId {
-    ClientOrderId::new(decode_broker_id(
+///
+/// # Errors
+///
+/// Returns an error if the decoded value is not a valid Nautilus client order ID.
+pub fn decode_algo_client_id(algo: &AlgoOrderUpdateData) -> anyhow::Result<ClientOrderId> {
+    decode_client_order_id(
         &algo.client_algo_id,
         BINANCE_NAUTILUS_FUTURES_BROKER_ID,
-    ))
+        "algo.client_algo_id",
+        "futures_algo_update",
+    )
 }
 
 fn parse_optional_positive_price_at_precision(raw: &str, precision: u8) -> Option<Price> {
@@ -865,7 +883,7 @@ mod tests {
         let original = ClientOrderId::from("O-20200101-000000-000-000-1");
         msg.order.client_order_id = encode_broker_id(&original, BINANCE_NAUTILUS_FUTURES_BROKER_ID);
 
-        let decoded = decode_order_client_id(&msg.order);
+        let decoded = decode_order_client_id(&msg.order).unwrap();
 
         assert_eq!(decoded, original);
     }
@@ -878,7 +896,7 @@ mod tests {
         msg.algo_order.client_algo_id =
             encode_broker_id(&original, BINANCE_NAUTILUS_FUTURES_BROKER_ID);
 
-        let decoded = decode_algo_client_id(&msg.algo_order);
+        let decoded = decode_algo_client_id(&msg.algo_order).unwrap();
 
         assert_eq!(decoded, original);
     }

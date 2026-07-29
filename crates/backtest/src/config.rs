@@ -821,6 +821,10 @@ pub struct BacktestDataConfig {
     /// If directory-based file registration should be used for more efficient loading.
     #[builder(default)]
     optimize_file_loading: bool,
+    /// Exact catalog files to query, bypassing catalog file discovery.
+    catalog_files: Option<Vec<String>>,
+    /// Exact instrument metadata files to load, bypassing catalog file discovery.
+    catalog_instrument_files: Option<Vec<String>>,
 }
 
 impl<S: backtest_data_config_builder::IsComplete> BacktestDataConfigBuilder<S> {
@@ -943,6 +947,16 @@ impl BacktestDataConfig {
     #[must_use]
     pub fn optimize_file_loading(&self) -> bool {
         self.optimize_file_loading
+    }
+
+    #[must_use]
+    pub fn catalog_files(&self) -> Option<&[String]> {
+        self.catalog_files.as_deref()
+    }
+
+    #[must_use]
+    pub fn catalog_instrument_files(&self) -> Option<&[String]> {
+        self.catalog_instrument_files.as_deref()
     }
 
     /// Constructs identifier strings for catalog queries.

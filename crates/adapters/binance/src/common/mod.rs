@@ -27,6 +27,7 @@ pub mod models;
 pub mod parse;
 pub mod status;
 pub mod symbol;
+pub mod time;
 pub mod urls;
 
 #[cfg(test)]
