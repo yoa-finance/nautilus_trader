@@ -187,6 +187,7 @@ audit_errors_file="${work_dir}/audit-errors.txt"
 publish_plan_file="${work_dir}/publish-plan.tsv"
 blocked_dependencies_file="${work_dir}/blocked-dependencies.tsv"
 blocked_dependency_sources_file="${work_dir}/blocked-dependency-sources.tsv"
+dry_run_patch_config="${work_dir}/dry-run-patches.toml"
 response_file="${work_dir}/response.json"
 index_response_file="${work_dir}/sparse-index.json"
 
@@ -324,6 +325,17 @@ jq -r --rawfile allowed "$allowlist_file" '
     ]
   | @tsv
 ' "$metadata_file" > "$blocked_dependency_sources_file"
+
+jq -r --rawfile allowed "$allowlist_file" '
+  ($allowed | split("\n") | map(select(length > 0))) as $allowlist
+  | ["[patch.crates-io]"]
+    + [
+        .packages[]
+        | select(.name as $name | $allowlist | index($name))
+        | "\"\(.name)\" = { path = \((.manifest_path | sub("/Cargo.toml$"; "")) | @json) }"
+      ]
+  | .[]
+' "$metadata_file" > "$dry_run_patch_config"
 
 curl_crate_version() {
   local crate_name=$1
@@ -643,7 +655,9 @@ case "$publish_mode" in
   dry_run)
     while IFS=$'\t' read -r crate_name crate_version; do
       echo "Dry-running ${crate_name} ${crate_version}"
-      cargo publish --dry-run --locked --no-verify --package "$crate_name"
+      cargo publish --dry-run --locked --no-verify \
+        --config "$dry_run_patch_config" \
+        --package "$crate_name"
     done < "$publish_plan_file"
     echo "Finished dry-running Cargo crates."
     ;;

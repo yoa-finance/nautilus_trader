@@ -97,7 +97,10 @@ bash scripts/ci/publish-cargo-crates.sh \
 ```
 
 The dry-run iterates the allowlisted dependency plan. It never uses
-`cargo publish --workspace`.
+`cargo publish --workspace`. The script supplies temporary local
+`[patch.crates-io]` entries only for package verification so the new release
+train can be checked before its dependencies exist in the registry. Published
+manifests still contain normal crates.io version requirements.
 
 ## 3. Verify consumers against the local fork
 
