@@ -13390,27 +13390,25 @@ fn test_l1_ioc_market_order_cancels_remainder_instead_of_slipping(
         .quantity(Quantity::from("1.500"))
         .time_in_force(TimeInForce::Ioc)
         .client_order_id(ClientOrderId::from("O-19700101-000000-001-001-1"))
-        .submit(true)
         .build();
+    assert_eq!(market_order.status(), OrderStatus::Initialized);
     engine.process_order(&mut market_order, account_id);
 
     let saved_messages = get_order_event_handler_messages(&order_event_handler);
-    let fills: Vec<&OrderFilled> = saved_messages
-        .iter()
-        .filter_map(|event| match event {
-            OrderEventAny::Filled(f) => Some(f),
-            _ => None,
-        })
-        .collect();
-    let canceled_count = saved_messages
-        .iter()
-        .filter(|event| matches!(event, OrderEventAny::Canceled(_)))
-        .count();
+    let filled = match saved_messages.first() {
+        Some(OrderEventAny::Filled(filled)) => filled,
+        other => panic!("Expected partial fill first, was {other:?}"),
+    };
 
-    assert_eq!(fills.len(), 1);
-    assert_eq!(fills[0].last_px, Price::from("1010.00"));
-    assert_eq!(fills[0].last_qty, Quantity::from("0.500"));
-    assert_eq!(canceled_count, 1);
+    assert_eq!(saved_messages.len(), 2);
+    assert_eq!(filled.last_px, Price::from("1010.00"));
+    assert_eq!(filled.last_qty, Quantity::from("0.500"));
+    assert!(matches!(
+        saved_messages.get(1),
+        Some(OrderEventAny::Canceled(_))
+    ));
+    assert!(!engine.order_exists(market_order.client_order_id()));
+    assert_eq!(engine.cached_filled_qty_len(), 0);
 }
 
 #[rstest]

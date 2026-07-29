@@ -4837,7 +4837,7 @@ impl OrderMatchingEngine {
         let filled_in_loop = total_filled > initial_total_filled;
 
         if order.time_in_force() == TimeInForce::Ioc && leaves_remaining {
-            self.cancel_order(order, None);
+            self.cancel_ioc_residual(order);
             return;
         }
 
@@ -5636,6 +5636,25 @@ impl OrderMatchingEngine {
             return;
         }
 
+        self.cancel_order_internal(order, cancel_contingencies);
+    }
+
+    fn cancel_ioc_residual(&mut self, order: &OrderAny) {
+        // Fill events may be applied asynchronously, leaving this local clone stale.
+        // Only bypass the active-local guard when the fill accumulator proves progress.
+        let has_pending_cached_fill = self
+            .cached_filled_qty
+            .get(&order.client_order_id())
+            .is_some_and(|filled_qty| *filled_qty > order.filled_qty());
+
+        if order.is_active_local() && has_pending_cached_fill {
+            self.cancel_order_internal(order, true);
+        } else {
+            self.cancel_order(order, None);
+        }
+    }
+
+    fn cancel_order_internal(&mut self, order: &OrderAny, cancel_contingencies: bool) {
         // Check if order exists in OrderMatching core, and delete it if it does
         if self.core.order_exists(order.client_order_id()) {
             self.delete_core_order(order.client_order_id());

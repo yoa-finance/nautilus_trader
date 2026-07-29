@@ -1,9 +1,12 @@
 # StratNeo Rust Crate Release
 
 This runbook releases the pure-Rust StratNeo fork of NautilusTrader aligned to
-official `v1.230.0`. It publishes one coordinated `0.60.0` bundle to crates.io.
+official `v1.230.0`. It publishes one coordinated `0.60.1` bundle to crates.io.
 It does not publish Python wheels, an sdist, PyPI artifacts, R2 artifacts,
 container images, or an upstream-style GitHub release.
+
+`0.60.1` is a Rust-only hotfix for IOC residual cancellation after a partial
+fill when the matching engine still holds an `INITIALIZED` local snapshot.
 
 ## Release boundary
 
@@ -40,7 +43,7 @@ unpublishable-local-dependency checks.
 ## Preconditions
 
 - Confirm the fork is based on official tag `v1.230.0`.
-- Confirm all 20 packages and their workspace dependency entries are `0.60.0`.
+- Confirm all 20 packages and their workspace dependency entries are `0.60.1`.
 - Regenerate Cap'n Proto and Binance Spot SBE sources with the repository
   generators whenever their schemas change.
 - Work from a reviewed, clean release commit. Do not release from an uncommitted
@@ -79,10 +82,10 @@ nautilus_binance::STRATNEO_NAUTILUS_BINANCE_VERSION
 ```bash
 bash scripts/ci/publish-cargo-crates.sh \
   --check \
-  --version 0.60.0
+  --version 0.60.1
 ```
 
-The output must contain exactly 20 entries, all at `0.60.0`, followed by:
+The output must contain exactly 20 entries, all at `0.60.1`, followed by:
 
 ```text
 Cargo crate publish plan is valid.
@@ -93,7 +96,7 @@ Run Cargo packaging for those same 20 packages only:
 ```bash
 bash scripts/ci/publish-cargo-crates.sh \
   --dry-run \
-  --version 0.60.0
+  --version 0.60.1
 ```
 
 The dry-run iterates the allowlisted dependency plan. It never uses
@@ -151,7 +154,7 @@ CARGO_PUBLISH_SUCCESS_DELAY_SECONDS=0 \
 CARGO_PUBLISH_WAIT_TIMEOUT_SECONDS=300 \
 CARGO_PUBLISH_USER_AGENT='stratneo-rust-release (https://github.com/yoa-finance/nautilus_trader)' \
 bash scripts/ci/publish-cargo-crates.sh \
-  --version 0.60.0
+  --version 0.60.1
 ```
 
 The script publishes in dependency order, skips an already-visible immutable
@@ -162,12 +165,12 @@ sparse index before moving to the next crate.
 
 After all 20 versions are visible, validate from clean consumer checkouts with
 the local `[patch.crates-io]` overrides absent or disabled. Keep every direct
-dependency pinned to `=0.60.0`, update lockfiles through the consumer's normal
+dependency pinned to `=0.60.1`, update lockfiles through the consumer's normal
 credential wrapper, then rerun the commands from step 3 plus each workspace's
 normal check.
 
 Review lockfile changes carefully. The resolved `stratneo-nautilus-*` packages
-must all be `0.60.0` from crates.io; no Git or local-path source should remain
+must all be `0.60.1` from crates.io; no Git or local-path source should remain
 in the registry verification checkout.
 
 ## Rollout order
@@ -183,5 +186,5 @@ in the registry verification checkout.
    fatal signals, duplicate accepted events, or valuation divergence.
 
 Because crates.io versions are immutable, rollback means restoring consumer
-pins and lockfiles to the previous published bundle. Never overwrite or
-republish `0.60.0`.
+pins and lockfiles to the previous published `0.60.0` bundle. Never overwrite
+or republish `0.60.1`.

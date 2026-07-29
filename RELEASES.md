@@ -1,3 +1,14 @@
+# StratNeo Rust 0.60.1 Hotfix
+
+Released on 29th July 2026 (UTC).
+
+### Fixes
+- Fixed Rust sandbox IOC market orders dropping the residual `OrderCanceled`
+  event after a partial fill when the matching engine held a stale
+  `INITIALIZED` local order snapshot.
+
+---
+
 # NautilusTrader 1.230.0 Beta
 
 Released on 29th June 2026 (UTC).
