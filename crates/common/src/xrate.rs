@@ -315,7 +315,7 @@ mod tests {
             quotes_bid,
             quotes_ask,
         );
-        assert_eq!(result.unwrap(), None);
+        assert!(result.is_err());
     }
 
     #[rstest]
@@ -371,7 +371,7 @@ mod tests {
         )
         .unwrap();
 
-        // The shortest path is selected with deterministic currency ordering.
+        // Edge order is non-deterministic, so allow a small tolerance around the mid rate
         let expected = dec!(1.1001);
         assert!((rate.unwrap() - expected).abs() < dec!(0.0001));
     }

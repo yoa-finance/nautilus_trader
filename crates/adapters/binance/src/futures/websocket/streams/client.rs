@@ -93,6 +93,7 @@ pub struct BinanceFuturesWebSocketClient {
     heartbeat: Option<u64>,
     signal: Arc<AtomicBool>,
     slots: Arc<Mutex<Vec<ConnectionSlot>>>,
+    connect_lock: Arc<tokio::sync::Mutex<()>>,
     out_tx: Arc<Mutex<Option<tokio::sync::mpsc::UnboundedSender<BinanceFuturesWsStreamsMessage>>>>,
     out_rx:
         Arc<Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<BinanceFuturesWsStreamsMessage>>>>,
@@ -153,6 +154,7 @@ impl BinanceFuturesWebSocketClient {
             heartbeat,
             signal: Arc::new(AtomicBool::new(false)),
             slots: Arc::new(Mutex::new(Vec::new())),
+            connect_lock: Arc::new(tokio::sync::Mutex::new(())),
             out_tx: Arc::new(Mutex::new(None)),
             out_rx: Arc::new(Mutex::new(None)),
             request_id_counter: Arc::new(AtomicU64::new(1)),
@@ -212,7 +214,7 @@ impl BinanceFuturesWebSocketClient {
         let slot = self.create_connection().await?;
         self.slots.lock().expect("slots lock poisoned").push(slot);
 
-        log::info!(
+        log::debug!(
             "Connected to Binance Futures stream pool: url={}, product_type={:?}",
             self.url,
             self.product_type
@@ -244,7 +246,7 @@ impl BinanceFuturesWebSocketClient {
         *self.out_tx.lock().expect("out_tx lock poisoned") = None;
         *self.out_rx.lock().expect("out_rx lock poisoned") = None;
 
-        log::info!("Disconnected from Binance Futures stream pool");
+        log::debug!("Disconnected from Binance Futures stream pool");
         Ok(())
     }
 
@@ -259,7 +261,11 @@ impl BinanceFuturesWebSocketClient {
     /// Returns an error if the pool is exhausted or command delivery fails.
     #[expect(clippy::missing_panics_doc, reason = "mutex poisoning is not expected")]
     pub async fn subscribe(&self, streams: Vec<String>) -> BinanceWsResult<()> {
-        // Phase 1: filter already-subscribed streams (brief lock)
+        // Serialize all phases so concurrent subscribers see a consistent
+        // pool state and can't trigger spurious `Pool exhausted`.
+        let _connect_guard = self.connect_lock.lock().await;
+
+        // Phase 1: filter already-subscribed streams (brief lock).
         let new_streams: Vec<String> = {
             let slots = self.slots.lock().expect("slots lock poisoned");
             streams
@@ -272,7 +278,8 @@ impl BinanceFuturesWebSocketClient {
             return Ok(());
         }
 
-        // Phase 2: create connections if needed (no lock held during async connect)
+        // Phase 2: create connections if needed.
+
         loop {
             let (remaining_capacity, slot_count) = {
                 let slots = self.slots.lock().expect("slots lock poisoned");
@@ -293,7 +300,7 @@ impl BinanceFuturesWebSocketClient {
                 slots.push(new_slot);
                 slots.len()
             };
-            log::info!(
+            log::debug!(
                 "Pool slot {} connected: url={}, product_type={:?}",
                 slot_count - 1,
                 self.url,

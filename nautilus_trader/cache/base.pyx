@@ -37,7 +37,6 @@ from nautilus_trader.model.identifiers cimport VenueOrderId
 from nautilus_trader.model.instruments.base cimport Instrument
 from nautilus_trader.model.instruments.synthetic cimport SyntheticInstrument
 from nautilus_trader.model.objects cimport Currency
-from nautilus_trader.model.objects cimport Price
 from nautilus_trader.model.objects cimport Quantity
 
 
@@ -117,18 +116,6 @@ cdef class CacheFacade:
     cpdef TradeTick trade_tick(self, InstrumentId instrument_id, int index=0):
         """Abstract method (implement in subclass)."""
         raise NotImplementedError("method `trade_tick` must be implemented in the subclass")  # pragma: no cover
-
-    cpdef Price execution_bid_price(self, InstrumentId instrument_id):
-        """Abstract method (implement in subclass)."""
-        raise NotImplementedError("method `execution_bid_price` must be implemented in the subclass")  # pragma: no cover
-
-    cpdef Price execution_ask_price(self, InstrumentId instrument_id):
-        """Abstract method (implement in subclass)."""
-        raise NotImplementedError("method `execution_ask_price` must be implemented in the subclass")  # pragma: no cover
-
-    cpdef Price execution_last_price(self, InstrumentId instrument_id):
-        """Abstract method (implement in subclass)."""
-        raise NotImplementedError("method `execution_last_price` must be implemented in the subclass")  # pragma: no cover
 
     cpdef MarkPriceUpdate mark_price(self, InstrumentId instrument_id, int index=0):
         """Abstract method (implement in subclass)."""
@@ -252,25 +239,6 @@ cdef class CacheFacade:
     cpdef void clear_mark_xrates(self):
         """Abstract method (implement in subclass)."""
         raise NotImplementedError("method `clear_mark_xrates` must be implemented in the subclass")  # pragma: no cover
-
-    cpdef void set_execution_prices(
-        self,
-        InstrumentId instrument_id,
-        Price bid_price,
-        Price ask_price,
-        Price last_price,
-        uint64_t ts_event,
-    ):
-        """Abstract method (implement in subclass)."""
-        raise NotImplementedError("method `set_execution_prices` must be implemented in the subclass")  # pragma: no cover
-
-    cpdef void clear_execution_prices(self):
-        """Abstract method (implement in subclass)."""
-        raise NotImplementedError("method `clear_execution_prices` must be implemented in the subclass")  # pragma: no cover
-
-    cpdef void clear_execution_prices_for(self, InstrumentId instrument_id):
-        """Abstract method (implement in subclass)."""
-        raise NotImplementedError("method `clear_execution_prices_for` must be implemented in the subclass")  # pragma: no cover
 
 # -- INSTRUMENT QUERIES ---------------------------------------------------------------------------
 

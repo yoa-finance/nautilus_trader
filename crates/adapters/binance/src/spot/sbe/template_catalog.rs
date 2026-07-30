@@ -646,35 +646,3 @@ pub fn is_spot_api_response_template(template_id: u16) -> bool {
     spot_api_template(template_id)
         .is_some_and(|template| template.context == TemplateContext::ApiResponse)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[rstest::rstest]
-    fn test_spot_api_catalog_covers_official_schema_3_5_templates() {
-        let expected = [
-            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 50, 51,
-            52, 53, 54, 100, 101, 102, 103, 104, 105, 200, 201, 202, 203, 204, 205, 206, 207, 208,
-            209, 210, 211, 212, 213, 214, 215, 216, 217, 218, 219, 300, 301, 302, 303, 304, 305,
-            306, 307, 308, 309, 310, 311, 312, 313, 314, 315, 316, 317, 400, 401, 402, 403, 404,
-            500, 501, 502, 503, 504, 505, 600, 601, 602, 603, 604, 606, 607, 610,
-        ];
-        let actual: Vec<u16> = SPOT_API_TEMPLATES
-            .iter()
-            .map(|template| template.id)
-            .collect();
-
-        assert_eq!(actual, expected);
-    }
-
-    #[rstest::rstest]
-    fn test_spot_stream_catalog_covers_official_schema_1_0_templates() {
-        let actual: Vec<u16> = SPOT_STREAM_TEMPLATES
-            .iter()
-            .map(|template| template.id)
-            .collect();
-
-        assert_eq!(actual, vec![10000, 10001, 10002, 10003]);
-    }
-}

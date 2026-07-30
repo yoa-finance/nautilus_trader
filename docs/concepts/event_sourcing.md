@@ -100,6 +100,12 @@ flowchart LR
 The writer uses a bounded channel. If the writer stalls past its configured threshold, Nautilus
 halts instead of dropping entries or allowing unaudited state changes.
 
+Some messages legitimately cross more than one tap-visible boundary: the execution engine sends an
+order event to the portfolio endpoint and publishes the same event on its strategy topic, and
+trading commands hop from strategy to risk to execution. The capture adapter dedups on the
+registered message identity (event id, command id), so each logical message becomes exactly one
+entry and replay never applies the same event twice.
+
 ## Lifecycle options
 
 `EventStoreConfig` remains the serializable run policy. Process-local construction policy lives in
@@ -225,6 +231,9 @@ Operationally:
   can record anchors against the durable high-watermark.
 - A clean shutdown, kernel drop, or reset/rerun seal appends `RunEnded` and seals the manifest as
   `Ended`.
+- A fail-stopped (halted) session skips the in-process seal; the recovery sweep on the next boot
+  owns it. The halt signal is scoped to the run that fired it: a later `open()` re-arms a fresh
+  signal, so one halt does not poison subsequent runs in the same process.
 
 ## Recovery sealing
 
@@ -251,6 +260,12 @@ flowchart TD
 Boot recovery scans each `Running` predecessor and chooses a final manifest status from the durable
 tail. A clean tail without `RunEnded` seals as `CrashedRecovered`, a tail ending in `RunEnded`
 seals as `Ended`, and a hash mismatch, gap, or structural corruption seals as `Quarantined`.
+
+The sweep never leaves the trader unbootable because one run file is damaged. A hard-killed
+process (SIGKILL, OOM kill, power loss) leaves a file that redb refuses to open read-only; the
+listing falls back to a writable open, which performs redb's repair pass before recovery proceeds.
+A file that still cannot be opened, or that lacks a manifest, is skipped with a logged error and
+retried on the next boot, so recovery and retention continue over the healthy runs.
 
 Only `CrashedRecovered` predecessors become `parent_run_id`. A configured `replay_from_run_id`
 overrides a recovered parent after validation. The read-only verifier is separate: it can inspect a
@@ -283,23 +298,23 @@ to the catalog**. Unsupported catalog classes fail loading until replay adds a t
 contract for that class.
 :::
 
-## Data sequence sidecar design
+## Data marker sidecar
 
 :::note
-This section is a design target. Nautilus does not yet implement the sidecar writer, reader, or
-config flag.
+The marker sidecar shipped in `crates/event_store/src/markers/`. It is opt-in via
+`EventStoreConfig.data_markers` (`crates/system/src/event_store.rs`) and stays off by default.
 :::
 
-Exact data delivery order is not inferred from catalog timestamps. The compact sidecar design
-records data markers observed at the message-bus dispatch boundary, beside the event-store run,
-without writing full market-data payloads into `EventStoreEntry` rows.
+Exact data delivery order is not inferred from catalog timestamps. The marker sidecar records
+data observed at the message-bus dispatch boundary, beside the event-store run, without writing
+full market-data payloads into `EventStoreEntry` rows.
 
-The sidecar can support one audit claim: when marker capture is enabled, Nautilus observed data
-delivery markers in `marker_seq` order at the bus boundary for that run, and each marker contains
-enough identity to join back to candidate catalog rows. It cannot prove that catalog timestamps
-alone define bus order, reconstruct a data point when the catalog row is absent or changed, prove
-venue send order before Nautilus observed the message, or say anything about runs where marker
-capture was disabled.
+The sidecar supports one audit claim: when marker capture is enabled, Nautilus observed data
+delivery in `marker_seq` order at the bus boundary for that run, and each marker carries enough
+identity to join back to candidate catalog rows. It cannot prove that catalog timestamps alone
+define bus order, reconstruct a data point when the catalog row is absent or changed, prove venue
+send order before Nautilus observed the message, or say anything about runs where marker capture
+was disabled.
 
 Markers do not consume event-store `seq` values and do not create gaps in the entry table. Each
 marker has its own monotonically increasing `marker_seq` plus `event_seq_before`, the largest
@@ -308,17 +323,17 @@ next event-store entry after a marker from `event_seq_before + 1`; markers that 
 `event_seq_before` are ordered by `marker_seq`. Event-store `seq` remains the replay-order
 authority for state-affecting entries.
 
-The minimal marker fields are:
+The sidecar has two marker kinds:
 
-- `marker_seq`: run-local marker order.
-- `event_seq_before`: nearest prior event-store entry.
-- `topic`: bus topic observed by the tap.
-- `data_cls`: catalog class, such as `quotes`, `trades`, or `bars`.
-- `identifier`: instrument ID for quotes and trades, or bar type for bars.
-- `ts_event` and `ts_init`: catalog row timestamp keys.
-- `same_ts_ordinal`: observed ordinal among markers with the same `data_cls`, `identifier`, and
-  `ts_init`.
-- `record_fingerprint`: fixed-size hash over the canonical typed row fields.
+- **Cursor snapshots** (`DataCursorSnapshot`): the default capture mode. Each snapshot records
+  `marker_seq`, `event_seq_before`, `ts_init`, and the `StreamCursor` entries that advanced since
+  the previous snapshot. A `StreamCursor` carries the stream `slot`, the highest `ts_init` seen
+  in that slot (`ts_init_hi`), and the record `count`. A `StreamDictEntry` maps each `slot` to its
+  `data_cls` (`BookDeltas`, `BookDepth10`, `Quote`, `Trade`, `Bar`) and instrument `identifier`.
+- **High-fidelity markers** (`HiFiMarker`): opt-in per instrument via
+  `DataMarkerConfig.high_fidelity`. Each records `marker_seq`, `event_seq_before`, `slot`,
+  `ts_event`, `ts_init`, `same_ts_ordinal`, and a 32-byte `record_fingerprint` over the canonical
+  typed row fields.
 
 `same_ts_ordinal` and `record_fingerprint` disambiguate duplicate same-timestamp data without
 storing prices, quantities, sizes, or MessagePack payloads. If two catalog rows are byte-identical
@@ -330,10 +345,9 @@ The stable contract is the marker schema, opt-in capture and reader primitives, 
 verification, and catalog join rules. Analysis tools can build on that contract to select windows,
 interpret venue-specific data, rank or cluster markers, present reports, and package run bundles.
 
-The sidecar stays off by default when implemented. A separate config flag enables marker capture,
-and the disabled path installs no data marker writer. Cache replay and live restart do not read
-this sidecar: snapshot-tail replay still applies event-store entries in `seq` order, and live
-restart still boots from cache-owned state plus the event-store parent link.
+With marker capture disabled, no data marker writer is installed. Cache replay and live restart do
+not read this sidecar: snapshot-tail replay still applies event-store entries in `seq` order, and
+live restart still boots from cache-owned state plus the event-store parent link.
 
 These APIs **do not**:
 
@@ -419,8 +433,9 @@ The planner supports three modes:
 - `SnapshotAnchored`: reclaim only sealed runs older than the newest known-good restore point.
 
 A known-good restore point is a sealed, non-`Quarantined` run with a valid snapshot anchor whose
-high-watermark does not exceed the sealed manifest high-watermark. `Running` runs are never
-listed as sealed runs or selected as reclaim candidates. Missing, corrupt, or invalid snapshot
+high-watermark does not exceed the run's durable high-watermark (the last entry actually on disk,
+not the manifest's recorded value, so a tail-trimmed run cannot pose as a restore point).
+`Running` runs are never listed as sealed runs or selected as reclaim candidates. Missing, corrupt, or invalid snapshot
 anchors do not count as restore points, so the planner returns no candidates when it cannot prove
 that at least one usable restore point remains.
 
@@ -436,16 +451,22 @@ surface:
 - Process-isolated verification reports truncated or zero-tailed run files as corrupt.
 - Cache replay reconstructs the same observed account, order, and position state as a live cache
   for generated captured event streams.
+- The same order event dispatched across multiple bus boundaries is captured once.
+- Snapshot anchors that fail to decode or point past the durable high-watermark surface as
+  verifier findings instead of verifying clean.
 - Catalog-joined replay input planning covers selected slices, missing slices, time bounds, and
   event-store `seq` ordering.
 - Crash recovery seals `Running` predecessors as `Ended`, `CrashedRecovered`, or `Quarantined`
   based on the durable tail, and only `CrashedRecovered` runs become parents.
+- Boot recovery repairs hard-crashed run files and skips unreadable ones instead of failing the
+  sweep.
 
 ## Integrity and verification
 
 Every entry carries a canonical hash over its full content. Readers and verifiers recompute the
-hash and report mismatches. The verifier also checks manifest/high-watermark status and validates
-secondary indices against the entry table.
+hash and report mismatches. The verifier also checks manifest/high-watermark status, validates
+secondary indices against the entry table, and reports snapshot anchors that fail to decode or
+point past the durable high-watermark, so a run whose restore path is broken cannot verify clean.
 
 Run verification is process-isolated. This matters because some corrupted `redb` files can panic
 on open or first read, and release builds use `panic = "abort"`. The verifier runs the scan in a
@@ -453,7 +474,7 @@ worker subprocess so a bad file aborts the worker, not the caller.
 
 Verify a sealed run file:
 
-```fish
+```bash
 cargo run -p nautilus-event-store --bin verify -- /path/to/run.redb
 ```
 
@@ -486,13 +507,13 @@ Current alpha use is focused on local inspection and verification of run files.
 
 Verify a run after copying or restoring it:
 
-```fish
+```bash
 cargo run -p nautilus-event-store --bin verify -- ./event_store/trader-001/1700000000-cafe0001.redb
 ```
 
 Increase the verifier timeout for a large sealed run:
 
-```fish
+```bash
 env NAUTILUS_EVENT_STORE_VERIFY_TIMEOUT_SECS=120 \
     cargo run -p nautilus-event-store --bin verify -- ./event_store/trader-001/1700000000-cafe0001.redb
 ```

@@ -34,19 +34,19 @@ positions, the strategy can submit hedge orders.
 
 For testnet:
 
-```fish
-set -gx DERIVE_TESTNET_WALLET_ADDRESS      "0x..."
-set -gx DERIVE_TESTNET_SESSION_PRIVATE_KEY "0x..."
-set -gx DERIVE_TESTNET_SUBACCOUNT_ID       "12345"
+```bash
+export DERIVE_TESTNET_WALLET_ADDRESS="0x..."
+export DERIVE_TESTNET_SESSION_PRIVATE_KEY="0x..."
+export DERIVE_TESTNET_SUBACCOUNT_ID="12345"
 ```
 
 For mainnet:
 
-```fish
-set -gx DERIVE_WALLET_ADDRESS      "0x..."
-set -gx DERIVE_SESSION_PRIVATE_KEY "0x..."
-set -gx DERIVE_SUBACCOUNT_ID       "12345"
-set -gx DERIVE_ENVIRONMENT         "mainnet"
+```bash
+export DERIVE_WALLET_ADDRESS="0x..."
+export DERIVE_SESSION_PRIVATE_KEY="0x..."
+export DERIVE_SUBACCOUNT_ID="12345"
+export DERIVE_ENVIRONMENT="mainnet"
 ```
 
 The example defaults to testnet. Set `DERIVE_ENVIRONMENT=mainnet` only for real-funds runs.
@@ -124,19 +124,22 @@ let rehedge_delta_threshold = if hedge_enabled {
 };
 
 let hedge_instrument_id = InstrumentId::from(hedge_instrument.as_str());
-let mut strategy_config =
-    DeltaNeutralVolConfig::new(option_family, hedge_instrument_id, client_id)
-        .with_target_call_delta(env_f64("DERIVE_DELTA_NEUTRAL_TARGET_CALL_DELTA", 0.20)?)
-        .with_target_put_delta(env_f64("DERIVE_DELTA_NEUTRAL_TARGET_PUT_DELTA", -0.20)?)
-        .with_contracts(env_u64("DERIVE_DELTA_NEUTRAL_CONTRACTS", 1)?)
-        .with_rehedge_delta_threshold(rehedge_delta_threshold)
-        .with_rehedge_interval_secs(env_u64("DERIVE_DELTA_NEUTRAL_REHEDGE_INTERVAL_SECS", 30)?)
-        .with_enter_strangle(enter_strangle)
-        .with_entry_iv_offset(env_f64("DERIVE_DELTA_NEUTRAL_ENTRY_IV_OFFSET", 0.0)?)
-        .with_entry_premium_offset_ticks(env_i32("DERIVE_DELTA_NEUTRAL_ENTRY_PREMIUM_OFFSET_TICKS", 1)?);
+let mut strategy_config = DeltaNeutralVolConfig::builder()
+    .option_family(option_family)
+    .hedge_instrument_id(hedge_instrument_id)
+    .client_id(client_id)
+    .target_call_delta(env_f64("DERIVE_DELTA_NEUTRAL_TARGET_CALL_DELTA", 0.20)?)
+    .target_put_delta(env_f64("DERIVE_DELTA_NEUTRAL_TARGET_PUT_DELTA", -0.20)?)
+    .contracts(env_u64("DERIVE_DELTA_NEUTRAL_CONTRACTS", 1)?)
+    .rehedge_delta_threshold(rehedge_delta_threshold)
+    .rehedge_interval_secs(env_u64("DERIVE_DELTA_NEUTRAL_REHEDGE_INTERVAL_SECS", 30)?)
+    .enter_strangle(enter_strangle)
+    .entry_iv_offset(env_f64("DERIVE_DELTA_NEUTRAL_ENTRY_IV_OFFSET", 0.0)?)
+    .entry_premium_offset_ticks(env_i32("DERIVE_DELTA_NEUTRAL_ENTRY_PREMIUM_OFFSET_TICKS", 1)?)
+    .build();
 
 if let Some(expiry) = env_optional_string("DERIVE_DELTA_NEUTRAL_EXPIRY")? {
-    strategy_config = strategy_config.with_expiry_filter(expiry);
+    strategy_config.expiry_filter = Some(expiry);
 }
 
 let strategy = DeltaNeutralVol::new(strategy_config);
@@ -365,14 +368,14 @@ sits near the `(1 - target_call_delta)` percentile and the put near `abs(target_
 
 ### Regenerate the panels
 
-```fish
-set -gx DERIVE_ENVIRONMENT mainnet
-set -gx DERIVE_DELTA_NEUTRAL_HEDGE_ENABLED false
+```bash
+export DERIVE_ENVIRONMENT=mainnet
+export DERIVE_DELTA_NEUTRAL_HEDGE_ENABLED=false
 timeout 45 cargo run --example derive-delta-neutral --package nautilus-derive --features examples \
     > /tmp/derive_dn.log 2>&1
 
 uv sync --extra visualization
-set -gx DN_LOG /tmp/derive_dn.log
+export DN_LOG=/tmp/derive_dn.log
 python3 docs/tutorials/assets/delta_neutral_options_derive/render_panels.py
 ```
 
@@ -395,7 +398,7 @@ smoke configuration disables entry and hedge submissions.
 
 ## Running the example
 
-```fish
+```bash
 cargo run --example derive-delta-neutral --package nautilus-derive --features examples
 ```
 
@@ -404,18 +407,18 @@ close positions.
 
 For a mainnet smoke test that loads the venue and account without submitting orders:
 
-```fish
-set -gx DERIVE_ENVIRONMENT mainnet
-set -gx DERIVE_DELTA_NEUTRAL_HEDGE_ENABLED false
+```bash
+export DERIVE_ENVIRONMENT=mainnet
+export DERIVE_DELTA_NEUTRAL_HEDGE_ENABLED=false
 timeout 45 cargo run --example derive-delta-neutral --package nautilus-derive --features examples
 ```
 
 For a mainnet smoke test that submits Derive-premium option entry orders:
 
-```fish
-set -gx DERIVE_ENVIRONMENT mainnet
-set -gx DERIVE_DELTA_NEUTRAL_ENTER_STRANGLE true
-set -gx DERIVE_DELTA_NEUTRAL_ENTRY_PREMIUM_OFFSET_TICKS 1
+```bash
+export DERIVE_ENVIRONMENT=mainnet
+export DERIVE_DELTA_NEUTRAL_ENTER_STRANGLE=true
+export DERIVE_DELTA_NEUTRAL_ENTRY_PREMIUM_OFFSET_TICKS=1
 timeout --signal=INT 45 cargo run --example derive-delta-neutral --package nautilus-derive \
     --features examples
 ```

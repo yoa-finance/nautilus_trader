@@ -69,7 +69,7 @@ pub(crate) fn dispatch_ws_trading_message(
                     code_i64,
                     BINANCE_UNEXPECTED_RESPONSE_CODE | BINANCE_STATUS_UNKNOWN_CODE
                 ) {
-                    log::error!(
+                    log::warn!(
                         "Ambiguous WS submit failure for {}, awaiting reconciliation: code={code}, msg={msg}",
                         pending.client_order_id,
                     );
@@ -197,7 +197,7 @@ pub(crate) fn dispatch_ws_trading_message(
             );
         }
         BinanceFuturesWsTradingMessage::Connected => {
-            log::info!("WS trading API connected");
+            log::debug!("WS trading API connected");
         }
         BinanceFuturesWsTradingMessage::Reconnected => {
             log::info!("WS trading API reconnected");

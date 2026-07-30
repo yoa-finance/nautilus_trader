@@ -19,7 +19,7 @@ use alloy::primitives::Address;
 use futures_util::StreamExt;
 use nautilus_core::string::formatting::Separable;
 use nautilus_model::defi::{
-    SharedDex,
+    Block, SharedDex,
     amm::Pool,
     chain::SharedChain,
     reporting::{BlockchainSyncReportItems, BlockchainSyncReporter},
@@ -41,6 +41,7 @@ use crate::{
 
 const BLOCKS_PROCESS_IN_SYNC_REPORT: u64 = 50_000;
 const POOL_DB_BATCH_SIZE: usize = 2000;
+const POOL_EVENT_BLOCK_DB_BATCH_SIZE: usize = 20_000;
 
 /// Sanitizes a string by removing null bytes and other invalid characters for PostgreSQL UTF-8.
 ///
@@ -131,7 +132,7 @@ impl<'a> PoolDiscoveryService<'a> {
 
         // Skip sync if already up to date
         if effective_from_block > to_block {
-            log::info!(
+            log::debug!(
                 "DEX {} already synced to block {} (current: {}), skipping sync",
                 dex.dex.name,
                 last_synced_block.unwrap_or(0).separate_with_commas(),
@@ -141,7 +142,7 @@ impl<'a> PoolDiscoveryService<'a> {
         }
 
         let total_blocks = to_block.saturating_sub(effective_from_block) + 1;
-        log::info!(
+        log::debug!(
             "Syncing DEX exchange pools from {} to {} (total: {} blocks){}",
             effective_from_block.separate_with_commas(),
             to_block.separate_with_commas(),
@@ -155,7 +156,7 @@ impl<'a> PoolDiscoveryService<'a> {
                 String::new()
             },
         );
-        log::info!(
+        log::debug!(
             "Syncing {} pool creation events from factory contract {} on chain {}",
             dex.dex.name,
             dex.factory,
@@ -195,6 +196,7 @@ impl<'a> PoolDiscoveryService<'a> {
         // LEVEL 2: DB buffers (large, optimize for throughput)
         let mut token_db_buffer: Vec<Token> = Vec::new();
         let mut pool_events_buffer: Vec<PoolCreatedEvent> = Vec::new();
+        let mut block_db_buffer: Vec<Block> = Vec::new();
 
         let mut last_block_saved = effective_from_block;
 
@@ -207,15 +209,21 @@ impl<'a> PoolDiscoveryService<'a> {
         let cancellation_token = self.cancellation_token.clone();
         let sync_result = tokio::select! {
             () = cancellation_token.cancelled() => {
-                log::info!("Exchange pool sync cancelled");
+                log::debug!("Exchange pool sync cancelled");
                 Err(anyhow::anyhow!("Sync cancelled"))
             }
 
             result = async {
                 while let Some(item) = pools_stream.next().await {
-                    // Pool discovery does not need block data
                     let log = match item {
-                        PoolEventStreamItem::Block(_) => continue,
+                        PoolEventStreamItem::Block(block) => {
+                            self.cache.cache_block_timestamp(block.number, block.timestamp);
+                            block_db_buffer.push(block);
+                            if block_db_buffer.len() >= POOL_EVENT_BLOCK_DB_BATCH_SIZE {
+                                self.flush_pool_event_blocks(&mut block_db_buffer).await?;
+                            }
+                            continue;
+                        }
                         PoolEventStreamItem::Log(log) => log,
                     };
                     let block_number = extract_block_number(&log)?;
@@ -319,6 +327,7 @@ impl<'a> PoolDiscoveryService<'a> {
                     self.cache.add_pools_batch(pools).await?;
                 }
 
+                self.flush_pool_event_blocks(&mut block_db_buffer).await?;
                 metrics.log_final_stats();
 
                 // Update the last synced block after successful completion.
@@ -326,7 +335,7 @@ impl<'a> PoolDiscoveryService<'a> {
                     .update_dex_last_synced_block(&dex.dex.name, to_block)
                     .await?;
 
-                log::info!(
+                log::debug!(
                     "Successfully synced DEX {} pools up to block {} | Summary: discovered={}, saved={}, skipped_exists={}, skipped_invalid_tokens={}",
                     dex.dex.name,
                     to_block.separate_with_commas(),
@@ -348,6 +357,16 @@ impl<'a> PoolDiscoveryService<'a> {
         }
 
         Ok(())
+    }
+
+    async fn flush_pool_event_blocks(&mut self, blocks: &mut Vec<Block>) -> anyhow::Result<()> {
+        if blocks.is_empty() {
+            return Ok(());
+        }
+
+        self.cache
+            .add_pool_event_blocks_batch(std::mem::take(blocks))
+            .await
     }
 
     /// Fetches token metadata via RPC and updates in-memory cache immediately.
@@ -455,6 +474,12 @@ impl<'a> PoolDiscoveryService<'a> {
                 }
             };
 
+            let ts_init = self
+                .cache
+                .get_block_timestamp(pool_event.block_number)
+                .copied()
+                .unwrap_or_default();
+
             let mut pool = Pool::new(
                 self.chain.clone(),
                 dex.clone(),
@@ -465,7 +490,7 @@ impl<'a> PoolDiscoveryService<'a> {
                 token1,
                 pool_event.fee,
                 pool_event.tick_spacing,
-                nautilus_core::UnixNanos::default(),
+                ts_init,
             );
 
             // Set hooks if available (UniswapV4)

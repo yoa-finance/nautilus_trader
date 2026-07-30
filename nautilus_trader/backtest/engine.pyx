@@ -2209,8 +2209,9 @@ cdef class BacktestEngine:
 
             # Calculate statistics
             self._kernel.portfolio.analyzer.calculate_statistics(account, venue_positions)
+            venue_currencies.update(self._kernel.portfolio.analyzer.currencies)
 
-            # Present PnL performance stats per asset
+            # Present PnL performance stats per asset and account currency
             for currency in sorted(list(venue_currencies), key=lambda x: x.code):
                 self._log.info(f" PnL Statistics ({str(currency)})")
                 self._log.info(f"{color}-----------------------------------------------------------------")
@@ -3710,9 +3711,12 @@ cdef class SimulatedExchange:
         if expiration_ns == 0:
             return
 
-        cdef str timer_name = self._instrument_expiration_timer_name(matching_engine.instrument.id)
+        cdef str timer_name = self._instrument_expiration_timer_name(
+            matching_engine.instrument.id.venue,
+            expiration_ns,
+        )
         if timer_name in self._clock.timer_names:
-            self._clock.cancel_timer(timer_name)
+            return
 
         self._clock.set_time_alert_ns(
             name=timer_name,
@@ -3725,8 +3729,8 @@ cdef class SimulatedExchange:
         for matching_engine in self._matching_engines.values():
             self._set_instrument_expiration_timer(matching_engine)
 
-    cdef str _instrument_expiration_timer_name(self, InstrumentId instrument_id):
-        return f"INSTRUMENT-EXPIRATION:{instrument_id.value}"
+    cdef str _instrument_expiration_timer_name(self, Venue venue, uint64_t expiration_ns):
+        return f"INSTRUMENT-EXPIRATION:{venue.value}:{expiration_ns}"
 
     cpdef void reset(self):
         """
@@ -4087,7 +4091,6 @@ cdef class OrderMatchingEngine:
         self._last_quote_ask_raw = 0
         self._has_quote_context = False
         self._tob_initialized = False
-        self.cache.clear_execution_prices_for(self.instrument.id)
 
         self._position_count = 0
         self._order_count = 0
@@ -4571,7 +4574,6 @@ cdef class OrderMatchingEngine:
             self._has_quote_context = True
 
         self.iterate(tick.ts_init)
-        self._update_execution_price_context(tick.ts_event)
 
     cpdef void process_trade_tick(self, TradeTick tick):
         """
@@ -4644,7 +4646,6 @@ cdef class OrderMatchingEngine:
                     self._core.set_ask_raw(best_ask.raw)
 
             self._clock.set_time(tick.ts_init)
-            self._update_execution_price_context(tick.ts_event, tick.price)
             return
 
         aggressor_side = tick.aggressor_side
@@ -4721,8 +4722,6 @@ cdef class OrderMatchingEngine:
             elif aggressor_side == AggressorSide.NO_AGGRESSOR:
                 self._core.set_bid_raw(original_bid)
                 self._core.set_ask_raw(original_ask)
-
-        self._update_execution_price_context(tick.ts_event, tick.price)
 
     cpdef void process_bar(self, Bar bar):
         """
@@ -4879,21 +4878,6 @@ cdef class OrderMatchingEngine:
         # Reset flag after bar processing for correct inter-bar behavior
         self._fill_at_market = True
 
-    cdef void _update_execution_price_context(self, uint64_t ts_event, Price last_price = None):
-        cdef Price bid_price = self._book.best_bid_price()
-        cdef Price ask_price = self._book.best_ask_price()
-
-        if last_price is None and self._core.is_last_initialized:
-            last_price = self._core.last
-
-        self.cache.set_execution_prices(
-            self.instrument.id,
-            bid_price,
-            ask_price,
-            last_price,
-            ts_event,
-        )
-
     cdef TradeTick _create_base_trade_tick(self, Bar bar, Quantity size):
         return TradeTick(
             bar.bar_type.instrument_id,
@@ -4914,7 +4898,6 @@ cdef class OrderMatchingEngine:
             self._book.update_trade_tick(tick)
             self.iterate(tick.ts_init)
             self._core.set_last_raw(bar._mem.open.raw)
-            self._update_execution_price_context(tick.ts_event, tick.price)
 
     cdef void _process_trade_bar_high(self, Bar bar, TradeTick tick):
         if bar._mem.high.raw > self._core.last_raw:
@@ -4928,7 +4911,6 @@ cdef class OrderMatchingEngine:
             self._book.update_trade_tick(tick)
             self.iterate(tick.ts_init)
             self._core.set_last_raw(bar._mem.high.raw)
-            self._update_execution_price_context(tick.ts_event, tick.price)
 
     cdef void _process_trade_bar_low(self, Bar bar, TradeTick tick):
         if bar._mem.low.raw < self._core.last_raw:
@@ -4942,7 +4924,6 @@ cdef class OrderMatchingEngine:
             self._book.update_trade_tick(tick)
             self.iterate(tick.ts_init)
             self._core.set_last_raw(bar._mem.low.raw)
-            self._update_execution_price_context(tick.ts_event, tick.price)
 
     cdef void _process_trade_bar_close(self, Bar bar, TradeTick tick, Quantity close_size = None):
         if bar._mem.close.raw != self._core.last_raw:
@@ -4962,7 +4943,6 @@ cdef class OrderMatchingEngine:
             self._book.update_trade_tick(tick)
             self.iterate(tick.ts_init)
             self._core.set_last_raw(bar._mem.close.raw)
-            self._update_execution_price_context(tick.ts_event, tick.price)
 
     cdef void _process_quote_ticks_from_bar(self):
         if self._last_bid_bar is None or self._last_ask_bar is None:
@@ -5030,7 +5010,6 @@ cdef class OrderMatchingEngine:
         self._fill_at_market = True  # Gap from previous bar
         self._book.update_quote_tick(tick)
         self.iterate(tick.ts_init)
-        self._update_execution_price_context(tick.ts_event)
 
     cdef void _process_quote_bar_high(self, QuoteTick tick):
         self._fill_at_market = False  # Market moving through prices
@@ -5038,7 +5017,6 @@ cdef class OrderMatchingEngine:
         tick._mem.ask_price = self._last_ask_bar._mem.high
         self._book.update_quote_tick(tick)
         self.iterate(tick.ts_init)
-        self._update_execution_price_context(tick.ts_event)
 
     cdef void _process_quote_bar_low(self, QuoteTick tick):
         self._fill_at_market = False  # Market moving through prices
@@ -5046,7 +5024,6 @@ cdef class OrderMatchingEngine:
         tick._mem.ask_price = self._last_ask_bar._mem.low
         self._book.update_quote_tick(tick)
         self.iterate(tick.ts_init)
-        self._update_execution_price_context(tick.ts_event)
 
     cdef void _process_quote_bar_close(self, QuoteTick tick, Quantity bid_close_size = None, Quantity ask_close_size = None):
         self._fill_at_market = False  # Market moving through prices
@@ -5064,7 +5041,6 @@ cdef class OrderMatchingEngine:
         self._last_quote_ask_raw = tick._mem.ask_price.raw
         self._has_quote_context = True
         self.iterate(tick.ts_init)
-        self._update_execution_price_context(tick.ts_event)
 
     # -- TRADING COMMANDS -----------------------------------------------------------------------------
 
@@ -7308,6 +7284,11 @@ cdef class OrderMatchingEngine:
         cdef:
             bint initial_market_to_limit_fill = False
             Price last_fill_px = None
+            Quantity cached_reduce_only_filled
+            QuantityRaw reduce_only_remaining_raw = 0
+            QuantityRaw reduce_only_filled_raw = 0
+            QuantityRaw reduce_only_target_raw = 0
+            bint reduce_only_exhausts_position = False
         if not fills:
             # For L1 with consumption tracking, empty fills means liquidity was consumed
             # Allow orders to slip to next level (preserves L1 exhausted book behavior)
@@ -7342,6 +7323,14 @@ cdef class OrderMatchingEngine:
 
         if self.oms_type == OmsType.NETTING:
             venue_position_id = None  # No position IDs generated by the venue
+
+        if self._use_reduce_only and order.is_reduce_only and position is not None:
+            cached_reduce_only_filled = self._cached_filled_qty.get(
+                order.client_order_id,
+                order.filled_qty,
+            )
+            reduce_only_remaining_raw = position.quantity._mem.raw
+            reduce_only_filled_raw = cached_reduce_only_filled._mem.raw
 
         if is_logging_initialized():
             self._log.debug(
@@ -7397,19 +7386,26 @@ cdef class OrderMatchingEngine:
                         f"invalid `OrderSide`, was {order.side}",  # pragma: no cover (design-time error)
                     )
 
-            # Check reduce only order
-            if self._use_reduce_only and order.is_reduce_only and fill_qty._mem.raw > position.quantity._mem.raw:
-                if position.quantity._mem.raw == 0:
+            if self._use_reduce_only and order.is_reduce_only:
+                if reduce_only_remaining_raw == 0:
                     return  # Done
 
-                # Adjust fill to honor reduce only execution (fill remaining position size only)
-                fill_qty = Quantity.from_raw_c(position.quantity._mem.raw, self._size_prec)
-                self._generate_order_updated(
-                    order=order,
-                    qty=fill_qty,
-                    price=None,
-                    trigger_price=None,
-                )
+                reduce_only_exhausts_position = fill_qty._mem.raw >= reduce_only_remaining_raw
+                if fill_qty._mem.raw > reduce_only_remaining_raw:
+                    fill_qty = Quantity.from_raw_c(reduce_only_remaining_raw, self._size_prec)
+
+                if reduce_only_exhausts_position:
+                    reduce_only_target_raw = reduce_only_filled_raw + fill_qty._mem.raw
+                    if reduce_only_target_raw < order.quantity._mem.raw:
+                        self._generate_order_updated(
+                            order=order,
+                            qty=Quantity.from_raw_c(reduce_only_target_raw, self._size_prec),
+                            price=None,
+                            trigger_price=None,
+                        )
+
+                reduce_only_remaining_raw -= fill_qty._mem.raw
+                reduce_only_filled_raw += fill_qty._mem.raw
 
             if fill_qty._mem.raw == 0:
                 if len(fills) == 1 and order.status_c() == OrderStatus.SUBMITTED:
@@ -7465,10 +7461,32 @@ cdef class OrderMatchingEngine:
                 elif order.side == OrderSide.SELL and fill_px._mem.raw < protection_price._mem.raw:
                     return  # Slip fill would exceed protection boundary
 
+            fill_qty = order.leaves_qty
+            if self._use_reduce_only and order.is_reduce_only:
+                if reduce_only_remaining_raw == 0:
+                    return
+
+                reduce_only_exhausts_position = fill_qty._mem.raw >= reduce_only_remaining_raw
+                if fill_qty._mem.raw > reduce_only_remaining_raw:
+                    fill_qty = Quantity.from_raw_c(reduce_only_remaining_raw, self._size_prec)
+
+                if reduce_only_exhausts_position:
+                    reduce_only_target_raw = reduce_only_filled_raw + fill_qty._mem.raw
+                    if reduce_only_target_raw < order.quantity._mem.raw:
+                        self._generate_order_updated(
+                            order=order,
+                            qty=Quantity.from_raw_c(reduce_only_target_raw, self._size_prec),
+                            price=None,
+                            trigger_price=None,
+                        )
+
+                reduce_only_remaining_raw -= fill_qty._mem.raw
+                reduce_only_filled_raw += fill_qty._mem.raw
+
             self.fill_order(
                 order=order,
                 last_px=fill_px,
-                last_qty=order.leaves_qty,
+                last_qty=fill_qty,
                 liquidity_side=order.liquidity_side,
                 venue_position_id=venue_position_id,
                 position=position,
@@ -7501,10 +7519,29 @@ cdef class OrderMatchingEngine:
                 else:
                     # Market moved through limit price, assumption is there was enough liquidity to fill entire order
                     fill_px = order.price
+                    fill_qty = order.leaves_qty
+                    if self._use_reduce_only and order.is_reduce_only:
+                        if reduce_only_remaining_raw == 0:
+                            return
+
+                        reduce_only_exhausts_position = fill_qty._mem.raw >= reduce_only_remaining_raw
+                        if fill_qty._mem.raw > reduce_only_remaining_raw:
+                            fill_qty = Quantity.from_raw_c(reduce_only_remaining_raw, self._size_prec)
+
+                        if reduce_only_exhausts_position:
+                            reduce_only_target_raw = reduce_only_filled_raw + fill_qty._mem.raw
+                            if reduce_only_target_raw < order.quantity._mem.raw:
+                                self._generate_order_updated(
+                                    order=order,
+                                    qty=Quantity.from_raw_c(reduce_only_target_raw, self._size_prec),
+                                    price=None,
+                                    trigger_price=None,
+                                )
+
                     self.fill_order(
                         order=order,
                         last_px=fill_px,
-                        last_qty=order.leaves_qty,
+                        last_qty=fill_qty,
                         liquidity_side=order.liquidity_side,
                         venue_position_id=venue_position_id,
                         position=position,
@@ -7522,10 +7559,29 @@ cdef class OrderMatchingEngine:
                         f"invalid `OrderSide`, was {order.side}",  # pragma: no cover (design-time error)
                     )
 
+                fill_qty = order.leaves_qty
+                if self._use_reduce_only and order.is_reduce_only:
+                    if reduce_only_remaining_raw == 0:
+                        return
+
+                    reduce_only_exhausts_position = fill_qty._mem.raw >= reduce_only_remaining_raw
+                    if fill_qty._mem.raw > reduce_only_remaining_raw:
+                        fill_qty = Quantity.from_raw_c(reduce_only_remaining_raw, self._size_prec)
+
+                    if reduce_only_exhausts_position:
+                        reduce_only_target_raw = reduce_only_filled_raw + fill_qty._mem.raw
+                        if reduce_only_target_raw < order.quantity._mem.raw:
+                            self._generate_order_updated(
+                                order=order,
+                                qty=Quantity.from_raw_c(reduce_only_target_raw, self._size_prec),
+                                price=None,
+                                trigger_price=None,
+                            )
+
                 self.fill_order(
                     order=order,
                     last_px=fill_px,
-                    last_qty=order.leaves_qty,
+                    last_qty=fill_qty,
                     liquidity_side=order.liquidity_side,
                     venue_position_id=venue_position_id,
                     position=position,

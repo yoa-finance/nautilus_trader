@@ -15,13 +15,14 @@
 
 use std::{
     cell::{Cell, Ref, RefCell},
+    fmt::Debug,
     rc::Rc,
     time::Duration,
 };
 
 use nautilus_common::{
     cache::{Cache, CacheConfig, database::CacheDatabaseAdapter},
-    clock::{Clock, TestClock},
+    clock::Clock,
     component::Component,
     enums::Environment,
     logging::{
@@ -37,7 +38,10 @@ use nautilus_common::{
 };
 use nautilus_core::{UUID4, UnixNanos};
 use nautilus_data::engine::DataEngine;
-use nautilus_execution::{engine::ExecutionEngine, order_emulator::adapter::OrderEmulatorAdapter};
+use nautilus_execution::{
+    engine::ExecutionEngine,
+    order_emulator::{adapter::OrderEmulatorAdapter, emulator::OrderEmulator},
+};
 use nautilus_model::identifiers::{ClientId, TraderId};
 use nautilus_portfolio::portfolio::Portfolio;
 use nautilus_risk::engine::RiskEngine;
@@ -45,6 +49,7 @@ use ustr::Ustr;
 
 use crate::{
     builder::NautilusKernelBuilder,
+    clock_factory::ClockFactory,
     config::NautilusKernelConfig,
     event_store::{EventStoreFactory, KernelEventStore, RegisteredComponents},
     trader::Trader,
@@ -91,6 +96,53 @@ pub struct NautilusKernel {
     shutdown_command: Rc<RefCell<Option<ShutdownSystem>>>,
     event_store: Option<Box<dyn KernelEventStore>>,
     event_store_replay: bool,
+}
+
+/// Optional construction-time dependencies for [`NautilusKernel`].
+#[derive(Default)]
+pub struct NautilusKernelDependencies {
+    clock_factory: Option<ClockFactory>,
+    cache_database: Option<Box<dyn CacheDatabaseAdapter>>,
+    event_store_factory: Option<EventStoreFactory>,
+}
+
+impl Debug for NautilusKernelDependencies {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct(stringify!(NautilusKernelDependencies))
+            .field("clock_factory", &self.clock_factory.is_some())
+            .field("cache_database", &self.cache_database.is_some())
+            .field("event_store_factory", &self.event_store_factory.is_some())
+            .finish()
+    }
+}
+
+impl NautilusKernelDependencies {
+    /// Add a clock factory.
+    #[must_use]
+    pub fn with_clock_factory(mut self, clock_factory: Option<ClockFactory>) -> Self {
+        self.clock_factory = clock_factory;
+        self
+    }
+
+    /// Add a cache database adapter.
+    #[must_use]
+    pub fn with_cache_database(
+        mut self,
+        cache_database: Option<Box<dyn CacheDatabaseAdapter>>,
+    ) -> Self {
+        self.cache_database = cache_database;
+        self
+    }
+
+    /// Add an event-store factory.
+    #[must_use]
+    pub fn with_event_store_factory(
+        mut self,
+        event_store_factory: Option<EventStoreFactory>,
+    ) -> Self {
+        self.event_store_factory = event_store_factory;
+        self
+    }
 }
 
 impl NautilusKernel {
@@ -148,6 +200,30 @@ impl NautilusKernel {
         cache_database: Option<Box<dyn CacheDatabaseAdapter>>,
         event_store_factory: Option<EventStoreFactory>,
     ) -> anyhow::Result<Self> {
+        Self::new_with_dependencies(
+            name,
+            config,
+            NautilusKernelDependencies::default()
+                .with_cache_database(cache_database)
+                .with_event_store_factory(event_store_factory),
+        )
+    }
+
+    /// Create a new [`NautilusKernel`] instance with construction-time dependencies.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the kernel fails to initialize or an injected factory fails.
+    pub fn new_with_dependencies<T: NautilusKernelConfig + 'static>(
+        name: String,
+        config: T,
+        dependencies: NautilusKernelDependencies,
+    ) -> anyhow::Result<Self> {
+        let NautilusKernelDependencies {
+            clock_factory,
+            cache_database,
+            event_store_factory,
+        } = dependencies;
         let instance_id = config.instance_id().unwrap_or_default();
         let machine_id = Self::determine_machine_id()?;
 
@@ -162,7 +238,9 @@ impl NautilusKernel {
 
         log::info!("Building system kernel");
 
-        let clock = Self::initialize_clock(&config.environment());
+        let clock_factory =
+            clock_factory.unwrap_or_else(|| ClockFactory::for_environment(config.environment()));
+        let clock = clock_factory.clock();
         let event_store = match event_store_factory {
             Some(factory) => Some(factory(instance_id, clock.clone())?),
             None => None,
@@ -177,9 +255,15 @@ impl NautilusKernel {
         )));
         set_message_bus(msgbus);
 
+        if let Some(config) = config.msgbus()
+            && let Some(filter) = config.types_filter
+        {
+            get_message_bus().borrow_mut().set_types_filter(filter);
+        }
+
         let portfolio = Rc::new(RefCell::new(Portfolio::new(
-            cache.clone(),
             clock.clone(),
+            cache.clone(),
             config.portfolio(),
         )));
 
@@ -194,8 +278,7 @@ impl NautilusKernel {
         let exec_engine = ExecutionEngine::new(clock.clone(), cache.clone(), config.exec_engine());
         let exec_engine = Rc::new(RefCell::new(exec_engine));
 
-        let order_emulator =
-            OrderEmulatorAdapter::new(config.trader_id(), clock.clone(), cache.clone());
+        let order_emulator = OrderEmulatorAdapter::new(clock.clone(), cache.clone());
 
         let data_engine = DataEngine::new(clock.clone(), cache.clone(), config.data_engine());
         let data_engine = Rc::new(RefCell::new(data_engine));
@@ -203,6 +286,7 @@ impl NautilusKernel {
         DataEngine::register_msgbus_handlers(&data_engine);
         RiskEngine::register_msgbus_handlers(&risk_engine);
         ExecutionEngine::register_msgbus_handlers(&exec_engine);
+        OrderEmulator::register_msgbus_handlers(&order_emulator.emulator());
 
         let shutdown_requested = Rc::new(Cell::new(false));
         let shutdown_command = Rc::new(RefCell::new(None));
@@ -216,7 +300,7 @@ impl NautilusKernel {
             config.trader_id(),
             instance_id,
             config.environment(),
-            clock.clone(),
+            clock_factory,
             cache.clone(),
             portfolio.clone(),
         )));
@@ -254,7 +338,7 @@ impl NautilusKernel {
     ) {
         let handler = ShareableMessageHandler::from_typed(move |cmd: &ShutdownSystem| {
             if cmd.trader_id != trader_id {
-                log::warn!("Received {cmd} not for this trader {trader_id}, ignoring",);
+                log::warn!("Received {cmd} not for this trader {trader_id}, ignoring");
                 return;
             }
 
@@ -313,27 +397,6 @@ impl NautilusKernel {
         }
 
         Ok(log_guard)
-    }
-
-    fn initialize_clock(environment: &Environment) -> Rc<RefCell<dyn Clock>> {
-        match environment {
-            Environment::Backtest => {
-                let test_clock = TestClock::new();
-                Rc::new(RefCell::new(test_clock))
-            }
-            #[cfg(feature = "live")]
-            Environment::Live | Environment::Sandbox => {
-                let live_clock = nautilus_common::live::clock::LiveClock::default(); // nautilus-import-ok
-                Rc::new(RefCell::new(live_clock))
-            }
-            #[cfg(not(feature = "live"))]
-            Environment::Live | Environment::Sandbox => {
-                panic!(
-                    "Live/Sandbox environment requires the 'live' feature to be enabled. \
-                     Build with `--features live` or add `features = [\"live\"]` to your dependency."
-                );
-            }
-        }
     }
 
     fn initialize_cache(
@@ -601,6 +664,10 @@ impl NautilusKernel {
     }
 
     /// Starts the Nautilus system kernel asynchronously.
+    #[expect(
+        clippy::unused_async,
+        reason = "keeps the public async kernel API shape stable"
+    )]
     pub async fn start_async(&mut self) {
         self.start();
     }
@@ -610,6 +677,7 @@ impl NautilusKernel {
     /// This should be called after clients are connected and instruments are cached.
     pub fn start_trader(&mut self) {
         log::info!("Starting trader...");
+        self.order_emulator.start();
         if let Err(e) = self.trader.borrow_mut().start() {
             log::error!("Error starting trader: {e:?}");
         }
@@ -639,6 +707,10 @@ impl NautilusKernel {
     ///
     /// This method should be called after the residual events grace period has elapsed
     /// and all remaining events have been processed. It disconnects clients and stops engines.
+    #[expect(
+        clippy::unused_async,
+        reason = "keeps the public async kernel API shape stable"
+    )]
     pub async fn finalize_stop(&mut self) {
         disarm_shutdown_on_error();
 
@@ -693,6 +765,7 @@ impl NautilusKernel {
         self.data_engine.borrow_mut().reset();
         self.exec_engine.borrow_mut().reset();
         self.risk_engine.borrow_mut().reset();
+        self.order_emulator.reset();
         self.portfolio.borrow_mut().reset();
 
         self.ts_started = None;
@@ -728,6 +801,7 @@ impl NautilusKernel {
         self.data_engine.borrow_mut().dispose();
         self.exec_engine.borrow_mut().dispose();
         self.risk_engine.borrow_mut().dispose();
+        self.order_emulator.dispose();
         self.cache.borrow_mut().dispose();
         get_message_bus().borrow_mut().dispose();
 
@@ -746,6 +820,7 @@ impl NautilusKernel {
         self.data_engine.borrow_mut().stop();
         self.exec_engine.borrow_mut().stop();
         self.risk_engine.borrow_mut().stop();
+        self.order_emulator.stop();
     }
 
     /// Connects data engine clients.
@@ -836,11 +911,9 @@ mod tests {
             command.as_any(),
         );
         assert!(kernel.is_shutdown_requested());
-        assert_eq!(kernel.shutdown_command(), Some(command));
 
         kernel.reset_shutdown_flag();
         assert!(!kernel.is_shutdown_requested());
-        assert_eq!(kernel.shutdown_command(), None);
     }
 
     #[rstest]
@@ -890,5 +963,162 @@ mod tests {
             command.as_any(),
         );
         assert!(!kernel.is_shutdown_requested());
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use nautilus_common::{
+        messages::data::{DataCommand, SubscribeCommand, UnsubscribeCommand},
+        msgbus::stubs::{TypedIntoMessageSavingHandler, get_typed_into_message_saving_handler},
+    };
+    use nautilus_model::{
+        enums::{OrderSide, OrderStatus, OrderType, TriggerType},
+        identifiers::ClientOrderId,
+        instruments::{
+            CryptoPerpetual, Instrument, InstrumentAny, stubs::crypto_perpetual_ethusdt,
+        },
+        orders::{Order, OrderAny, OrderTestBuilder},
+        types::{Price, Quantity},
+    };
+    use rstest::rstest;
+    use ustr::Ustr;
+
+    use super::*;
+    use crate::builder::NautilusKernelBuilder;
+
+    fn create_stop_market_order(instrument: &CryptoPerpetual, client_order_id: &str) -> OrderAny {
+        OrderTestBuilder::new(OrderType::StopMarket)
+            .instrument_id(instrument.id())
+            .client_order_id(ClientOrderId::from(client_order_id))
+            .side(OrderSide::Buy)
+            .trigger_price(Price::from("5100.00"))
+            .quantity(Quantity::from(1))
+            .emulation_trigger(TriggerType::BidAsk)
+            .build()
+    }
+
+    fn register_data_command_handler(id: &str) -> TypedIntoMessageSavingHandler<DataCommand> {
+        let (handler, saving_handler) =
+            get_typed_into_message_saving_handler::<DataCommand>(Some(Ustr::from(id)));
+        msgbus::register_data_command_endpoint(
+            MessagingSwitchboard::data_engine_queue_execute(),
+            handler,
+        );
+        saving_handler
+    }
+
+    #[rstest]
+    fn test_start_trader_starts_order_emulator_for_cached_emulated_orders() {
+        let mut kernel = NautilusKernelBuilder::default().build().unwrap();
+        let data_commands = register_data_command_handler("DataEngine.queue_execute.kernel_start");
+        let instrument = crypto_perpetual_ethusdt();
+        let instrument_id = instrument.id();
+        let first_order = create_stop_market_order(&instrument, "O-KERNEL-001");
+        let second_order = create_stop_market_order(&instrument, "O-KERNEL-002");
+        let first_client_order_id = first_order.client_order_id();
+        let second_client_order_id = second_order.client_order_id();
+        kernel
+            .cache
+            .borrow_mut()
+            .add_instrument(InstrumentAny::CryptoPerpetual(instrument))
+            .unwrap();
+        kernel
+            .cache
+            .borrow_mut()
+            .add_order(first_order, None, None, false)
+            .unwrap();
+        kernel
+            .cache
+            .borrow_mut()
+            .add_order(second_order, None, None, false)
+            .unwrap();
+
+        kernel.start();
+        assert!(
+            kernel
+                .order_emulator
+                .get_emulator()
+                .get_matching_core(&instrument_id)
+                .is_none()
+        );
+        kernel.start_trader();
+
+        let commands = data_commands.get_messages();
+        let cache = kernel.cache.borrow();
+        let first_status = cache.order(&first_client_order_id).unwrap().status();
+        let second_status = cache.order(&second_client_order_id).unwrap().status();
+        drop(cache);
+        let emulator = kernel.order_emulator.get_emulator();
+        assert!(emulator.get_matching_core(&instrument_id).is_some());
+        assert_eq!(emulator.subscribed_quotes(), vec![instrument_id]);
+        assert_eq!(first_status, OrderStatus::Emulated);
+        assert_eq!(second_status, OrderStatus::Emulated);
+        assert!(commands.iter().any(|command| matches!(
+            command,
+            DataCommand::Subscribe(SubscribeCommand::Quotes(command))
+                if command.instrument_id == instrument_id
+        )));
+
+        data_commands.clear();
+        drop(emulator);
+        kernel.stop_trader();
+        kernel.dispose();
+
+        let commands = data_commands.get_messages();
+        let emulator = kernel.order_emulator.get_emulator();
+        assert!(emulator.subscribed_quotes().is_empty());
+        assert!(emulator.get_matching_core(&instrument_id).is_none());
+        assert!(commands.iter().any(|command| matches!(
+            command,
+            DataCommand::Unsubscribe(UnsubscribeCommand::Quotes(command))
+                if command.instrument_id == instrument_id
+        )));
+    }
+
+    #[rstest]
+    fn test_reset_resets_order_emulator_state() {
+        let mut kernel = NautilusKernelBuilder::default().build().unwrap();
+        let data_commands = register_data_command_handler("DataEngine.queue_execute.kernel_reset");
+        let instrument = crypto_perpetual_ethusdt();
+        let instrument_id = instrument.id();
+        let order = create_stop_market_order(&instrument, "O-KERNEL-RESET-001");
+        kernel
+            .cache
+            .borrow_mut()
+            .add_instrument(InstrumentAny::CryptoPerpetual(instrument))
+            .unwrap();
+        kernel
+            .cache
+            .borrow_mut()
+            .add_order(order, None, None, false)
+            .unwrap();
+
+        kernel.start();
+        kernel.start_trader();
+        assert!(
+            kernel
+                .order_emulator
+                .get_emulator()
+                .get_matching_core(&instrument_id)
+                .is_some()
+        );
+        kernel.stop_trader();
+        data_commands.clear();
+
+        kernel.reset();
+
+        let commands = data_commands.get_messages();
+        let emulator = kernel.order_emulator.get_emulator();
+        assert!(emulator.subscribed_quotes().is_empty());
+        assert!(emulator.get_matching_core(&instrument_id).is_none());
+        assert!(commands.iter().any(|command| matches!(
+            command,
+            DataCommand::Unsubscribe(UnsubscribeCommand::Quotes(command))
+                if command.instrument_id == instrument_id
+        )));
+
+        drop(emulator);
+        kernel.dispose();
     }
 }

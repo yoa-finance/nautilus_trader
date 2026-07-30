@@ -234,10 +234,6 @@ class BacktestDataConfig(NautilusConfig, frozen=True):
     optimize_file_loading : bool, default False
         If True, registers entire directories with the query backend for efficient
         loading. If False, registers each file individually (e.g. for precise file control).
-    catalog_files : list[str], optional
-        The exact catalog files to query, bypassing catalog file discovery.
-    catalog_instrument_files : list[str], optional
-        The exact instrument metadata files to query, bypassing catalog file discovery.
 
     """
 
@@ -256,8 +252,6 @@ class BacktestDataConfig(NautilusConfig, frozen=True):
     instrument_ids: list[str] | None = None
     bar_types: list[str] | None = None
     optimize_file_loading: bool = False
-    catalog_files: list[str] | None = None
-    catalog_instrument_files: list[str] | None = None
 
     @property
     def data_type(self) -> type:
@@ -284,11 +278,6 @@ class BacktestDataConfig(NautilusConfig, frozen=True):
         dict[str, Any]
 
         """
-        if self.catalog_files is not None and self.optimize_file_loading:
-            raise ValueError(
-                "`optimize_file_loading` must be False when `catalog_files` is specified",
-            )
-
         identifiers = []
 
         if self.data_cls is Bar:
@@ -308,7 +297,7 @@ class BacktestDataConfig(NautilusConfig, frozen=True):
             elif self.instrument_ids:
                 identifiers = self.instrument_ids
 
-        query = {
+        return {
             "data_cls": self.data_type,
             "identifiers": identifiers,
             "start": self.start_time,
@@ -317,9 +306,6 @@ class BacktestDataConfig(NautilusConfig, frozen=True):
             "metadata": self.metadata,
             "optimize_file_loading": self.optimize_file_loading,
         }
-        if self.catalog_files is not None:
-            query["files"] = self.catalog_files
-        return query
 
     @property
     def start_time_nanos(self) -> int:

@@ -102,7 +102,7 @@ impl<T> Iterator for EagerStream<T> {
                     Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
                     Err(error) => panic!("Eager stream task failed: {error}"),
                 },
-                Err(_) => continue,
+                Err(_) => {}
             }
         }
     }

@@ -12,7 +12,7 @@ include = [
   "Cargo.toml",
   "README.md",
 ]
-version = "0.58.1"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
@@ -58,7 +58,8 @@ ignored = [
 ]
 
 [package.metadata.docs.rs]
-all-features = true
+# Python docs depend on the local pyo3-stub-gen patch for now, which published crates do not carry
+features = ["arrow", "capnp", "display", "high-precision", "sbe"]
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]

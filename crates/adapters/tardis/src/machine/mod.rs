@@ -129,7 +129,7 @@ async fn stream_from_websocket(
     let (ws_stream, ws_resp) = connect_async(url).await?;
 
     handle_connection_response(&ws_resp)?;
-    log::info!("Connected to {base_url}");
+    log::debug!("Connected to {base_url}");
 
     Ok(stream! {
         let (writer, mut reader) = ws_stream.split();
@@ -138,7 +138,7 @@ async fn stream_from_websocket(
         // Timeout awaiting the next record before checking signal
         let timeout = Duration::from_millis(10);
 
-        log::info!("Streaming from websocket...");
+        log::debug!("Streaming from websocket...");
 
         loop {
             if signal.load(Ordering::Relaxed) {
@@ -165,7 +165,7 @@ async fn stream_from_websocket(
                         if frame.code == CloseCode::Normal {
                             log::debug!("Connection closed normally: {reason}");
                         } else {
-                            log::error!(
+                            log::warn!(
                                 "Connection closed abnormally with code: {:?}, reason: {reason}", frame.code
                             );
                             yield Err(Error::ConnectionClosed { reason });
@@ -173,7 +173,7 @@ async fn stream_from_websocket(
                         break;
                     }
                     tungstenite::Message::Close(None) => {
-                        log::error!("Connection closed without a frame");
+                        log::warn!("Connection closed without a frame");
                         yield Err(Error::ConnectionClosed {
                             reason: "No close frame provided".to_string()
                         });
@@ -190,12 +190,12 @@ async fn stream_from_websocket(
                     }
                 },
                 Some(Err(e)) => {
-                    log::error!("WebSocket error: {e}");
+                    log::warn!("WebSocket error: {e}");
                     yield Err(Error::ConnectFailed(e));
                     break;
                 }
                 None => {
-                    log::error!("Connection closed unexpectedly");
+                    log::warn!("Connection closed unexpectedly");
                     yield Err(Error::ConnectionClosed {
                         reason: "Unexpected connection close".to_string(),
                     });
@@ -204,7 +204,7 @@ async fn stream_from_websocket(
             }
         }
 
-        log::info!("Shutdown stream");
+        log::debug!("Shutdown stream");
     })
 }
 

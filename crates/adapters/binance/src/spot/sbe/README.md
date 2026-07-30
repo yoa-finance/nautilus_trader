@@ -7,6 +7,13 @@
 - `stream/` contains hand-written decoders for Binance market data stream messages (schema 1:0).
 - Generic cursor/error utilities are shared from `nautilus-serialization` behind the `sbe` feature and re-exported from this module for compatibility.
 
+## Market data streams
+
+Binance Spot SBE market data streams use SBE-specific update speeds. The SBE
+`<symbol>@depth` diff-depth stream updates every 25ms, while `<symbol>@depth20`
+partial-depth snapshots update every 50ms. Public JSON stream suffixes and update
+speeds are separate from this SBE surface.
+
 ## Licensing
 
 - The `generated/` codecs are generated using the Apache-2.0 licensed Real Logic
@@ -16,22 +23,24 @@
 
 ## Modifications
 
-The generated `generated/` code has been modified from the original SBE generator output:
+The repository generator adapts the upstream crate-shaped output to this
+adapter's module layout:
 
 - Added module-level lint suppression attributes in `generated/mod.rs` for clippy compatibility
 - Rewrote `crate::` -> `super::` and collapsed the three `pub use crate::SBE_*` lines into a single
   `pub use super::{SBE_SCHEMA_ID, SBE_SCHEMA_VERSION, SBE_SEMANTIC_VERSION};`
-- Reordered the `pub use decoder::...; pub use encoder::...;` block to come before `use super::*;`
-  (fixes rustfmt)
-- Removed unused codec modules (institutional/allocations, order amendments, user data stream
-  management, block trades). See the strip list in the regeneration steps below.
+- Normalized generated whitespace and formatted `generated/mod.rs`
 
 ## Regeneration
 
-The current `generated/` tree was produced by Real Logic SBE **v1.37.1** against Binance's
-`spot_3_5.xml` schema. Stay on the same SBE tool version when bumping the schema; SBE v1.38+
-emits a different (fluent-encoder) API that would force call-site rewrites in
-`spot/http/parse.rs`, `spot/http/client.rs`, and `spot/websocket/trading/decode_sbe.rs`.
+The current `generated/` tree was produced by Real Logic SBE **v1.37.1** against
+Binance's `spot_3_5.xml` schema at commit
+`6b8372cad7cecbdf5dd88a3372eafff51988c5cf`. The repository generator verifies
+the pinned jar and schema SHA-256 values before replacing any generated files.
+Stay on the same SBE tool version when bumping the schema; SBE v1.38+ emits a
+different (fluent-encoder) API that would force call-site rewrites in
+`spot/http/parse.rs`, `spot/http/client.rs`, and
+`spot/websocket/trading/decode_sbe.rs`.
 
 ### Prerequisites
 
@@ -56,41 +65,31 @@ emits a different (fluent-encoder) API that would force call-site rewrites in
 
   ```bash
   curl -fsSL -o spot_3_5.xml \
-    "https://raw.githubusercontent.com/binance/binance-spot-api-docs/master/sbe/schemas/spot_3_5.xml"
+    "https://raw.githubusercontent.com/binance/binance-spot-api-docs/6b8372cad7cecbdf5dd88a3372eafff51988c5cf/sbe/schemas/spot_3_5.xml"
   ```
 
   Use the explicit `spot_<id>_<version>.xml` file for the intended bump. The CHANGELOG for breaking
   and additive changes is at <https://github.com/binance/binance-spot-api-docs/blob/master/CHANGELOG.md>.
 
-### Generate
+### Generate and install
 
 ```bash
-mkdir -p /tmp/sbegen/out
-"$JAVA" \
-  --add-opens java.base/jdk.internal.misc=ALL-UNNAMED \
-  -Dsbe.target.language=Rust \
-  -Dsbe.output.dir=/tmp/sbegen/out \
-  -Dsbe.errorLog=yes \
-  -jar /tmp/sbegen/sbe-all-1.37.1.jar /tmp/sbegen/spot_3_5.xml
+cd /home/allen/StratNeo/nautilus_trader
+RUSTFMT="$(rustup which --toolchain nightly rustfmt)" \
+python3 scripts/generate-binance-spot-sbe.py \
+  --java "$JAVA" \
+  --jar /tmp/sbegen/sbe-all-1.37.1.jar \
+  --schema /tmp/sbegen/spot_3_5.xml
 ```
 
-This produces `/tmp/sbegen/out/spot_sbe/` shaped as a crate (with `Cargo.toml`, `src/lib.rs`, and
-one `src/<message>.rs` per codec). The `numInGroup` UINT8/UINT16 warnings on every group are from
-Binance's schema (they use `groupSizeEncoding` rather than a primitive) and can be ignored.
+When `--jar` or `--schema` is omitted, the script downloads the pinned SBE
+v1.37.1 jar or official `spot_3_5.xml` schema at the pinned Binance commit.
+Locally supplied files must have the same recorded SHA-256 values. The script
+stages the output, applies the documented module transformations, and replaces only
+`crates/adapters/binance/src/spot/sbe/generated`.
 
-### Transform and lift into `generated/`
-
-Each generated file needs three text rewrites to fit the project's module layout:
-
-1. `use crate::*;` -> `use super::*;`
-2. `pub use crate::SBE_SCHEMA_ID;` + `..._VERSION;` + `..._SEMANTIC_VERSION;` (three lines) ->
-   `pub use super::{SBE_SCHEMA_ID, SBE_SCHEMA_VERSION, SBE_SEMANTIC_VERSION};`
-3. Remaining `crate::` -> `super::`
-4. Move the `pub use decoder::...; pub use encoder::...;` block above the `use super::*;` line.
-
-A reference Python script that does all four steps lives at `/tmp/sbegen/transform.py` while
-regenerating; see the commit history for `crates/adapters/binance/src/spot/sbe/generated/` for
-the most recent regen for an example.
+The `numInGroup` UINT8/UINT16 warnings are caused by Binance's
+`groupSizeEncoding` definitions and can be ignored.
 
 ### Keep official response/event codecs
 
@@ -99,27 +98,14 @@ features the adapter does not currently consume should be classified in
 `template_catalog.rs` as `KnownUnsupported`, so ingress code can distinguish official-but-unused
 payloads from genuinely unknown wire data.
 
-### Rebuild `mod.rs`
-
-Take the transformed file list and replace the existing `pub mod` declarations in
-`generated/mod.rs`. Keep the existing header (`//!` doc comment naming the schema version, the
-`#![forbid(unsafe_code)]` and `#![allow(...)]` / `#![expect(...)]` lint attributes, and the
-trait/buffer definitions below `SBE_SEMANTIC_VERSION`). Update:
-
-- The doc comment `//! Generated SBE codecs for Binance Spot API (schema 3:N).`
-- `pub const SBE_SCHEMA_ID: u16 = <id>;`
-- `pub const SBE_SCHEMA_VERSION: u16 = <version>;`
-- `pub const SBE_SEMANTIC_VERSION: &str = "<semantic>";`
-
 ### Final fixups
 
-- Run `cargo +nightly fmt -p nautilus-binance` to normalise the generator's whitespace.
+- Run `cargo +nightly fmt -p stratneo-nautilus-binance`.
 - Bump the hand-written `SBE_SCHEMA_HEADER` constant in `spot/http/client.rs` (e.g. `"3:5"`).
 - Update the two schema-version assertions in `spot/http/client.rs::tests`
   (`test_schema_constants` and `test_default_headers_include_sbe`).
 - Update the schema reference in this README.
-- `cargo build -p nautilus-binance` and `cargo test -p nautilus-binance` must pass.
-- `cargo clippy -p nautilus-binance --all-targets` must pass.
+- `cargo +1.96.0 check -p stratneo-nautilus-binance --all-targets` must pass.
 
 ### Forward compatibility note
 

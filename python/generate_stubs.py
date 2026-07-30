@@ -156,6 +156,45 @@ MODULE_FIXUPS: dict[str, StubFixup] = {
     ),
 }
 
+# Re-exports of hand-written (pure-Python) symbols to inject into generated module
+# stubs. PyO3's stub generator only knows about Rust pyclasses, so it drops these on
+# every regeneration; the redundant `as` alias marks them as explicit re-exports so
+# `from <module> import <symbol>` type-checks. Keyed by stub path suffix.
+EXTRA_REEXPORTS: dict[str, tuple[str, ...]] = {
+    "nautilus_trader/analysis/__init__.pyi": (
+        "from nautilus_trader.analysis.config import GridLayout as GridLayout",
+        "from nautilus_trader.analysis.config import TearsheetBarsWithFillsChart as TearsheetBarsWithFillsChart",
+        "from nautilus_trader.analysis.config import TearsheetChart as TearsheetChart",
+        "from nautilus_trader.analysis.config import TearsheetConfig as TearsheetConfig",
+        "from nautilus_trader.analysis.config import TearsheetCustomChart as TearsheetCustomChart",
+        "from nautilus_trader.analysis.config import TearsheetDistributionChart as TearsheetDistributionChart",
+        "from nautilus_trader.analysis.config import TearsheetDrawdownChart as TearsheetDrawdownChart",
+        "from nautilus_trader.analysis.config import TearsheetEquityChart as TearsheetEquityChart",
+        "from nautilus_trader.analysis.config import TearsheetMonthlyReturnsChart as TearsheetMonthlyReturnsChart",
+        "from nautilus_trader.analysis.config import TearsheetRollingSharpeChart as TearsheetRollingSharpeChart",
+        "from nautilus_trader.analysis.config import TearsheetRunInfoChart as TearsheetRunInfoChart",
+        "from nautilus_trader.analysis.config import TearsheetStatsTableChart as TearsheetStatsTableChart",
+        "from nautilus_trader.analysis.config import TearsheetYearlyReturnsChart as TearsheetYearlyReturnsChart",
+        "from nautilus_trader.analysis.reporter import ReportProvider as ReportProvider",
+        "from nautilus_trader.analysis.tearsheet import create_bars_with_fills as create_bars_with_fills",
+        "from nautilus_trader.analysis.tearsheet import create_drawdown_chart as create_drawdown_chart",
+        "from nautilus_trader.analysis.tearsheet import create_equity_curve as create_equity_curve",
+        "from nautilus_trader.analysis.tearsheet import create_monthly_returns_heatmap as create_monthly_returns_heatmap",
+        "from nautilus_trader.analysis.tearsheet import create_returns_distribution as create_returns_distribution",
+        "from nautilus_trader.analysis.tearsheet import create_rolling_sharpe as create_rolling_sharpe",
+        "from nautilus_trader.analysis.tearsheet import create_tearsheet as create_tearsheet",
+        "from nautilus_trader.analysis.tearsheet import create_tearsheet_from_stats as create_tearsheet_from_stats",
+        "from nautilus_trader.analysis.tearsheet import create_yearly_returns as create_yearly_returns",
+        "from nautilus_trader.analysis.tearsheet import get_chart as get_chart",
+        "from nautilus_trader.analysis.tearsheet import list_charts as list_charts",
+        "from nautilus_trader.analysis.tearsheet import register_chart as register_chart",
+        "from nautilus_trader.analysis.tearsheet import register_tearsheet_chart as register_tearsheet_chart",
+        "from nautilus_trader.analysis.themes import get_theme as get_theme",
+        "from nautilus_trader.analysis.themes import list_themes as list_themes",
+        "from nautilus_trader.analysis.themes import register_theme as register_theme",
+    ),
+}
+
 MODEL_EXPORTS = frozenset(MODULE_FIXUPS["model"].all_exports)
 
 
@@ -311,6 +350,32 @@ def generate_stubs() -> bool:
     return True
 
 
+def inject_reexports(content: str, stub_path: Path) -> str:
+    """
+    Inject configured re-export imports for hand-written symbols into a module stub.
+    """
+    posix = stub_path.as_posix()
+    reexports = next((v for k, v in EXTRA_REEXPORTS.items() if posix.endswith(k)), None)
+
+    if not reexports:
+        return content
+
+    lines = content.split("\n")
+    missing = [imp for imp in reexports if imp not in lines]
+
+    if not missing:
+        return content
+
+    insert_at = 0
+
+    for i, line in enumerate(lines):
+        if line.startswith(("import ", "from ")):
+            insert_at = i + 1
+
+    lines[insert_at:insert_at] = missing
+    return "\n".join(lines)
+
+
 def post_process_stubs(root: Path) -> None:
     """Post-process all stub files: fix headers, rename methods, fix return types."""
     workspace_root = Path(__file__).parent.parent
@@ -360,6 +425,9 @@ def post_process_stubs(root: Path) -> None:
 
         # Import model symbols used without a module qualifier
         content = add_missing_model_imports(content)
+
+        # Inject re-exports for hand-written Python symbols (e.g. ReportProvider)
+        content = inject_reexports(content, stub_file)
 
         # Normalize formatting
         content = normalize_stub_content(content)
@@ -1007,7 +1075,7 @@ def _collect_pymethod_fixups(source: str, fixups: dict[str, ClassMethodFixup]) -
 
         j = i + 1
         while j < len(lines) and lines[j].strip().startswith("#["):
-            j += 1
+            _, j = consume_rust_attribute(lines, j)
 
         if j >= len(lines):
             break

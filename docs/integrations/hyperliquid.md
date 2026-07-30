@@ -17,8 +17,8 @@ The Hyperliquid adapter includes multiple components:
 - `HyperliquidInstrumentProvider`: Instrument parsing and loading functionality.
 - `HyperliquidDataClient`: Market data feed manager.
 - `HyperliquidExecutionClient`: Account management and trade execution gateway.
-- `HyperliquidLiveDataClientFactory`: Factory for Hyperliquid data clients (used by the trading node builder).
-- `HyperliquidLiveExecClientFactory`: Factory for Hyperliquid execution clients (used by the trading node builder).
+- `HyperliquidDataClientFactory`: Factory for Hyperliquid data clients (used by the trading node builder).
+- `HyperliquidExecutionClientFactory`: Factory for Hyperliquid execution clients (used by the trading node builder).
 
 :::note
 Most users will define a configuration for a live trading node (as shown below)
@@ -29,19 +29,82 @@ and won't need to work directly with these lower-level components.
 
 You can find live example scripts [here](https://github.com/nautechsystems/nautilus_trader/tree/develop/examples/live/hyperliquid/).
 
-## Builder address
+## Builder code attribution
 
-Mainnet orders submitted through the adapter include a NautilusTrader builder address with a
-**zero fee rate**, so it adds no trading cost to your orders. This helps us gauge real usage of
-the integration and prioritize ongoing maintenance and improvements.
+Submitted mainnet orders carry the NautilusTrader builder code at a **zero fee rate**, so
+attribution adds no trading cost. This helps us gauge real usage of the integration and
+prioritize ongoing maintenance. Users who attribute order flow may also qualify for direct
+support through the [Institutional](https://nautilustrader.io/institutional/) tier when trading
+at scale.
 
-The builder address is omitted from orders in two cases:
+You may opt out of attribution with `include_builder_attribution: false` in serialized config,
+or `include_builder_attribution=False` in Python.
 
-- **Testnet.** Hyperliquid testnet rejects orders that include a builder address the wallet has
+The builder address is omitted from orders in three cases:
+
+- **Testnet**: Hyperliquid testnet rejects orders that include a builder address the wallet has
   not explicitly approved (faucet-funded testnet wallets typically have no approval), so testnet
   orders never include the builder.
-- **Vault trading** (`vault_address` configured). Hyperliquid does not allow vaults to approve
+- **Vault trading** (`vault_address` configured): Hyperliquid does not allow vaults to approve
   builder fees, so including the builder address would cause the exchange to reject the order.
+- **Attribution disabled** (`include_builder_attribution=False`): Users who choose not to
+  attribute their order flow can disable builder attribution explicitly.
+
+```python
+from nautilus_trader.adapters.hyperliquid import HyperliquidExecClientConfig
+
+config = HyperliquidExecClientConfig(
+    include_builder_attribution=False,
+)
+```
+
+### Builder fee approval
+
+Hyperliquid requires a one-time `ApproveBuilderFee` approval before orders can carry the builder
+address: orders from a wallet that has never approved a builder fee are rejected with the reason
+`Builder fee has not been approved` (any prior approval, including at a 0% rate, satisfies the
+check). The approval must be signed by the master wallet's private key, which the adapter does
+not hold in agent (API) wallet setups, so it runs as a one-time script rather than at execution
+client startup. The 0% max fee rate permits attribution only: no builder fee is ever charged,
+and raising the rate would require a new approval signed by you.
+
+Run the approval script once per wallet (reads `HYPERLIQUID_PK`, or `HYPERLIQUID_TESTNET_PK`
+with `HYPERLIQUID_TESTNET=true`):
+
+```bash
+cargo run -p nautilus-hyperliquid --bin hyperliquid-builder-fee-approve
+```
+
+Or from Python:
+
+```python
+from nautilus_trader.adapters.hyperliquid import builder_fee_approve
+
+builder_fee_approve()
+```
+
+### Revoking the approval
+
+Use revocation to cap a previously approved builder fee at 0% (for example, an approval from a
+version that charged builder fees). Revocation caps the fee; it does not remove the approval
+record, so attribution continues unless `include_builder_attribution` is disabled.
+
+```bash
+cargo run -p nautilus-hyperliquid --bin hyperliquid-builder-fee-revoke
+```
+
+Or from Python:
+
+```python
+from nautilus_trader.adapters.hyperliquid import builder_fee_revoke
+
+builder_fee_revoke()
+```
+
+The Rust scripts print a summary of the action and pause for an Enter keypress before signing;
+abort with `Ctrl+C` if anything in the summary looks wrong, or pass `--yes` to skip the prompt.
+The Python bindings do not prompt: review the active environment variables yourself before
+calling.
 
 ## Testnet setup
 
@@ -116,19 +179,22 @@ though orders are live on the venue. See [GH-4010](https://github.com/nautechsys
 Hyperliquid offers linear perpetual futures, HIP-3 builder-deployed perpetuals, native
 spot markets, and HIP-4 binary outcome markets.
 
-| Product Type      | Data Feed | Trading | Notes                                           |
-|-------------------|-----------|---------|-------------------------------------------------|
-| Spot              | ✓         | ✓       | Native spot markets.                            |
-| Perpetual Futures | ✓         | ✓       | USDC‑settled linear perps (validator‑operated). |
-| HIP‑3 Perpetuals  | ✓         | ✓       | Builder‑deployed perps. Opt‑in.                 |
-| HIP‑4 Outcomes    | ✓         | ✓       | USDH‑settled binary outcomes. Opt‑in.           |
+| Product Type      | Data Feed | Trading | Notes                                                   |
+|-------------------|-----------|---------|---------------------------------------------------------|
+| Spot              | ✓         | ✓       | Native spot markets.                                    |
+| Perpetual Futures | ✓         | ✓       | USDC‑settled linear perps (validator‑operated).         |
+| HIP‑3 Perpetuals  | ✓         | ✓       | Builder‑deployed perps with per‑dex collateral. Opt‑in. |
+| HIP‑4 Outcomes    | ✓         | ✓       | USDH‑settled binary outcomes. Opt‑in.                   |
 
 :::note
-All perpetual futures on Hyperliquid are settled in USDC. Spot markets are standard
-currency pairs. See [HIP-3 builder-deployed perpetuals](#hip-3-builder-deployed-perpetuals)
-and [HIP-4 outcome markets](#hip-4-outcome-markets) for configuration and opt-in details.
-Hyperliquid's current API docs mark `outcomeMeta` as testnet-only, so HIP-4 discovery
-depends on that payload being available from the selected environment.
+Standard Hyperliquid perpetuals are settled in USDC. HIP-3 dexes may settle in
+their own collateral token, such as USDH, USDE, or USDT0, while keeping Nautilus
+symbols quoted as `USD`. Spot markets are standard currency pairs. See
+[HIP-3 builder-deployed perpetuals](#hip-3-builder-deployed-perpetuals) and
+[HIP-4 outcome markets](#hip-4-outcome-markets) for configuration and opt-in
+details. Hyperliquid's current API docs mark `outcomeMeta` as testnet-only, so
+HIP-4 discovery depends on that payload being available from the selected
+environment.
 :::
 
 ## Symbology
@@ -236,55 +302,32 @@ allows qualified deployers to launch permissionless perp dexes on Hyperliquid. T
 include equities (TSLA, NVDA, AAPL), commodities (gold, crude oil), indices (S&P 500), and
 pre-IPO tokens (SpaceX, OpenAI).
 
-HIP-3 instruments are excluded by default. To load them, include
-`HyperliquidProductType.PERP_HIP3` in the requested product types.
+In a live `TradingNode`, HIP-3 perpetuals load automatically alongside standard perpetuals at
+connect: the adapter fetches every perp dex (standard and builder-deployed) from `allPerpMetas`,
+so no additional client configuration is required.
 
-For direct instrument provider usage:
-
-```python
-from nautilus_trader.adapters.hyperliquid.enums import HyperliquidProductType
-from nautilus_trader.adapters.hyperliquid.providers import HyperliquidInstrumentProvider
-
-provider = HyperliquidInstrumentProvider(
-    client=client,
-    product_types=[
-        HyperliquidProductType.PERP,
-        HyperliquidProductType.SPOT,
-        HyperliquidProductType.PERP_HIP3,
-    ],
-)
-```
-
-For live `TradingNode` usage, pass the same `product_types` through the Hyperliquid
-client config:
-
-```python
-from nautilus_trader.adapters.hyperliquid import HyperliquidDataClientConfig
-from nautilus_trader.adapters.hyperliquid import HyperliquidExecClientConfig
-from nautilus_trader.adapters.hyperliquid import HyperliquidEnvironment
-from nautilus_trader.adapters.hyperliquid import HyperliquidProductType
-
-HyperliquidDataClientConfig(
-    product_types=(
-        HyperliquidProductType.PERP,
-        HyperliquidProductType.PERP_HIP3,
-    ),
-)
-
-HyperliquidExecClientConfig(
-    product_types=(
-        HyperliquidProductType.PERP,
-        HyperliquidProductType.PERP_HIP3,
-    ),
-)
-```
-
-Once HIP-3 instruments are loaded, you can filter them with `InstrumentProviderConfig`:
+To narrow the loaded set, filter with `InstrumentProviderConfig`:
 
 ```python
 instrument_provider=InstrumentProviderConfig(
     load_all=True,
     filters={"market_types": ["perp_hip3"]},
+)
+```
+
+For direct `HyperliquidHttpClient` usage, the HIP-3 perp dexes are excluded unless you opt in
+through `load_instrument_definitions`:
+
+```python
+from nautilus_trader.adapters.hyperliquid import HyperliquidEnvironment
+from nautilus_trader.adapters.hyperliquid import HyperliquidHttpClient
+
+client = HyperliquidHttpClient.from_env(HyperliquidEnvironment.MAINNET)
+instruments = await client.load_instrument_definitions(
+    include_spot=True,
+    include_perps=True,
+    include_perps_hip3=True,
+    include_outcomes=False,
 )
 ```
 
@@ -295,6 +338,11 @@ The key differences are:
 
 - **Higher fees**: 2x standard perp fees by default. The deployer receives half.
 - **Isolated margin**: HIP-3 markets default to isolated-only margin.
+- **Per-dex collateral**: Each HIP-3 dex declares its settlement token through
+  its `collateralToken` entry in `allPerpMetas`. Nautilus resolves that token
+  through `spotMeta` and keeps the symbol's quote leg as `USD`. If a non-USDC
+  collateral token cannot resolve from `spotMeta`, instrument loading returns
+  an error rather than falling back to USDC.
 - **Deployer-managed oracles**: The deployer operates the oracle feed, not validators.
 - **Growth mode**: Some dexes enable growth mode, which reduces protocol fees by 90%.
 
@@ -348,21 +396,23 @@ return that payload.
 
 ### Loading outcome instruments
 
-Include `HyperliquidProductType.OUTCOME` in `product_types` on both the data
-and exec client configs. This opts into outcome discovery where the venue
-exposes `outcomeMeta`; current Hyperliquid docs mark that metadata endpoint as
-testnet-only.
+In a live `TradingNode`, outcome instruments load automatically (best-effort) when the venue
+exposes `outcomeMeta`; current Hyperliquid docs mark that metadata endpoint as testnet-only, and
+the adapter skips HIP-4 instruments when the payload is unavailable. No client configuration is
+required.
+
+For direct `HyperliquidHttpClient` usage, opt in through `load_instrument_definitions`:
 
 ```python
-from nautilus_trader.adapters.hyperliquid import HyperliquidDataClientConfig
-from nautilus_trader.adapters.hyperliquid import HyperliquidProductType
+from nautilus_trader.adapters.hyperliquid import HyperliquidEnvironment
+from nautilus_trader.adapters.hyperliquid import HyperliquidHttpClient
 
-HyperliquidDataClientConfig(
-    product_types=(
-        HyperliquidProductType.SPOT,
-        HyperliquidProductType.PERP,
-        HyperliquidProductType.OUTCOME,
-    ),
+client = HyperliquidHttpClient.from_env(HyperliquidEnvironment.TESTNET)
+instruments = await client.load_instrument_definitions(
+    include_spot=True,
+    include_perps=True,
+    include_perps_hip3=False,
+    include_outcomes=True,
 )
 ```
 
@@ -539,7 +589,7 @@ The adapter supports the following data subscriptions. All perpetual data types
 
 | Data type         | Sub. | Snapshot | Hist. | Nautilus type                 | Notes                                 |
 |-------------------|------|----------|-------|-------------------------------|---------------------------------------|
-| Trade ticks       | ✓    | -        | -     | `TradeTick`                   | WebSocket trades.                     |
+| Trade ticks       | ✓    | -        | ✓     | `TradeTick`                   | WebSocket trades; `recentTrades`.     |
 | Quote ticks       | ✓    | -        | -     | `QuoteTick`                   | Best bid/offer.                       |
 | Order book deltas | ✓    | ✓        | -     | `OrderBookDelta`              | L2 snapshots.                         |
 | Order book depth  | ✓    | -        | -     | `OrderBookDepth10`            | Top-10 L2 snapshots.                  |
@@ -552,9 +602,15 @@ The adapter supports the following data subscriptions. All perpetual data types
 | All dex contexts  | ✓    | -        | -     | `HyperliquidAllDexsAssetCtxs` | Custom data from `allDexsAssetCtxs`.  |
 
 :::note
-Historical quote and trade requests are not supported. Hyperliquid does not publish
-a public trade-tape endpoint; real-time trades are available via the WebSocket
-`trades` channel. `request_trades` returns an explicit error.
+Historical quote requests are not supported. Historical trade requests use the
+`recentTrades` info endpoint, which returns a recent snapshot of public trades
+(newest first) with no time range. `request_trades` filters that snapshot to the
+requested `[start, end]` window and applies `limit` by keeping the most recent
+trades. When the request reaches below the snapshot's oldest trade, the adapter
+logs a warning and serves the available subset (or an empty response). The
+endpoint depends on the Hyperliquid indexer: self-hosted `/info` nodes return
+HTTP 422, which the adapter treats as no coverage and answers with an empty
+response. Real-time trades remain available via the WebSocket `trades` channel.
 :::
 
 ### Order book precision controls
@@ -761,10 +817,9 @@ Market orders require cached quote data. The adapter uses the best ask (for buys
 Hyperliquid's price constraints before submission. Ensure you subscribe to quotes for any
 instrument you intend to trade with market orders.
 
-When using the Rust-native execution client, the slippage buffer is controlled by
-`market_order_slippage_bps` on `HyperliquidExecClientConfig` and can be overridden per-order
-via the `market_order_slippage_bps` key in `SubmitOrder.params`. The Python `TradingNode` path
-uses a fixed 50 bps slippage and does not expose this knob on its config.
+The slippage buffer is controlled by `market_order_slippage_bps` on `HyperliquidExecClientConfig`
+(default 50 bps) and can be overridden per-order via the `market_order_slippage_bps` key in
+`SubmitOrder.params`.
 :::
 
 :::note
@@ -875,13 +930,6 @@ back to the raw `OrderStatusReport` / `FillReport` so the engine can reconcile. 
 compares the report's `venue_order_id` against the last cached value for the `cloid`; when
 they differ it promotes the `ACCEPTED` to `OrderUpdated` and suppresses the paired stale cancel:
 
-:::note
-The Python `HyperliquidExecutionClient` in `nautilus_trader/adapters/hyperliquid/execution.py`
-still runs its own equivalent detection inside `_handle_order_status_report_pyo3` because the
-pyo3 WebSocket binding forwards raw reports to Python. The Rust dispatch described below is
-additive, for the Rust-native execution client.
-:::
-
 ```mermaid
 sequenceDiagram
     participant Strategy
@@ -910,6 +958,20 @@ HTTP success, so a failed modify never leaves stale race state. Because detectio
 relies on the cached `venue_order_id`, the adapter also recovers a modify that times out on the
 HTTP call but still reaches the venue: the eventual WS `ACCEPTED(new_oid)` sees the old cached
 `oid` and translates to `OrderUpdated`. See [GH-3827](https://github.com/nautechsystems/nautilus_trader/issues/3827).
+
+The same marker guards the inflight query and single-order reconcile paths. While a modify is in
+flight, `query_order` and `generate_order_status_report` drop a `Canceled` for the superseded leg,
+so an out-of-band status probe that resolves the old `oid` before the replacement appears cannot
+terminate the live order. A non-cancel status for the old leg (such as a late `Filled`) is still
+forwarded so reconciliation can recover it.
+
+These paths also promote the replacement. Hyperliquid lists the replacement under the same `cloid`
+with a new `oid` in `frontendOpenOrders`, so when the replacement `ACCEPTED(new_oid)` was dropped
+on the WebSocket and no fill has arrived, the query resolves it by `cloid` and promotes it to
+`OrderUpdated` directly (rebinding the `cloid` to `new_oid` and clearing the pending-modify
+marker). The order is therefore not left bound to the canceled leg, and subsequent modifies and
+cancels target the live replacement. See
+[GH-4270](https://github.com/nautechsystems/nautilus_trader/issues/4270).
 
 :::note
 One narrow edge case remains when all three conditions occur together:
@@ -1105,8 +1167,7 @@ match the venue limit.
 |---------------------|-----------|-------------------------------------------------|
 | `environment`       | `None`    | Environment enum (`MAINNET` or `TESTNET`). |
 | `base_url_ws`       | `None`    | Override for the WebSocket base URL. |
-| `product_types`     | `None`    | Optional product types to load, for example `PERP_HIP3` for HIP-3 perps. |
-| `http_timeout_secs` | `10`      | Timeout (seconds) applied to REST calls. |
+| `http_timeout_secs` | `60`      | Timeout (seconds) applied to REST calls. |
 | `proxy_url`         | `None`    | Optional proxy URL for HTTP and WebSocket transports. |
 | `transport_backend` | `Sockudo` | WebSocket transport backend. |
 
@@ -1119,25 +1180,23 @@ match the venue limit.
 | `account_address`              | `None`    | Main account address for agent wallet trading; loaded from `HYPERLIQUID_ACCOUNT_ADDRESS`. |
 | `environment`                  | `None`    | Environment enum (`MAINNET` or `TESTNET`); resolves to `MAINNET` when unset. |
 | `base_url_ws`                  | `None`    | Override for the WebSocket base URL. |
-| `product_types`                | `None`    | Optional product types to load, for example `PERP_HIP3` for HIP-3 perps. |
-| `max_retries`                  | `None`    | Maximum retry attempts for submit, cancel, or modify order requests. Rust‑only. |
-| `retry_delay_initial_ms`       | `None`    | Initial delay (milliseconds) between retries. Rust‑only. |
-| `retry_delay_max_ms`           | `None`    | Maximum delay (milliseconds) between retries. Rust‑only. |
-| `http_timeout_secs`            | `10`      | Timeout (seconds) applied to REST calls. |
+| `max_retries`                  | `3`       | Maximum retry attempts for submit, cancel, or modify order requests. |
+| `retry_delay_initial_ms`       | `100`     | Initial delay (milliseconds) between retries. |
+| `retry_delay_max_ms`           | `5000`    | Maximum delay (milliseconds) between retries. |
+| `http_timeout_secs`            | `60`      | Timeout (seconds) applied to REST calls. |
 | `normalize_prices`             | `True`    | Normalize order prices to 5 significant figures before submission. |
-| `market_order_slippage_bps`    | `50`      | Slippage buffer (bps) applied to MARKET and stop trigger derivations. Rust‑only. |
+| `include_builder_attribution`  | `True`    | Include zero‑fee Nautilus builder attribution on eligible mainnet orders. |
+| `market_order_slippage_bps`    | `50`      | Slippage buffer (bps) applied to MARKET and stop trigger derivations. Overridable per‑order via `SubmitOrder.params`. |
 | `outcome_settlement_poll_secs` | `0`       | HIP‑4 `outcomeMeta` settlement poll interval (seconds). Rust‑only; venue `Settlement` fills cover settlement, so polling is disabled by default. |
 | `proxy_url`                    | `None`    | Optional proxy URL for HTTP and WebSocket transports. |
 | `transport_backend`            | `Sockudo` | WebSocket transport backend. |
 
 :::note
-"Rust‑only" options apply when the execution client is created through the Rust-native
-`HyperliquidExecutionClientFactory`. `market_order_slippage_bps` and
-`outcome_settlement_poll_secs` are not exposed on the Python
-`HyperliquidExecClientConfig` and will be rejected by the config validator if set on
-that path. `max_retries`, `retry_delay_initial_ms`, and `retry_delay_max_ms` are
-declared on the Python config but are not yet forwarded to the Python execution
-client.
+`outcome_settlement_poll_secs` is the only Rust-only option: it is not exposed on the
+`HyperliquidExecClientConfig` Python constructor and always uses its default. The
+`max_retries`, `retry_delay_initial_ms`, and `retry_delay_max_ms` fields are accepted on
+both the Rust and Python config but are not yet consumed by the execution client (its HTTP
+client is constructed with only the request timeout and proxy).
 :::
 
 ### Configuration example
@@ -1145,8 +1204,8 @@ client.
 ```python
 from nautilus_trader.adapters.hyperliquid import HYPERLIQUID
 from nautilus_trader.adapters.hyperliquid import HyperliquidDataClientConfig
+from nautilus_trader.adapters.hyperliquid import HyperliquidEnvironment
 from nautilus_trader.adapters.hyperliquid import HyperliquidExecClientConfig
-from nautilus_trader.adapters.hyperliquid import HyperliquidProductType
 from nautilus_trader.config import InstrumentProviderConfig
 from nautilus_trader.config import TradingNodeConfig
 
@@ -1154,10 +1213,6 @@ config = TradingNodeConfig(
     data_clients={
         HYPERLIQUID: HyperliquidDataClientConfig(
             instrument_provider=InstrumentProviderConfig(load_all=True),
-            product_types=(
-                HyperliquidProductType.PERP,
-                HyperliquidProductType.PERP_HIP3,
-            ),
             environment=HyperliquidEnvironment.TESTNET,
         ),
     },
@@ -1166,10 +1221,6 @@ config = TradingNodeConfig(
             private_key=None,  # Loads from HYPERLIQUID_TESTNET_PK env var
             vault_address=None,  # Optional: loads from HYPERLIQUID_TESTNET_VAULT
             instrument_provider=InstrumentProviderConfig(load_all=True),
-            product_types=(
-                HyperliquidProductType.PERP,
-                HyperliquidProductType.PERP_HIP3,
-            ),
             environment=HyperliquidEnvironment.TESTNET,
             normalize_prices=True,  # Rounds prices to 5 significant figures
         ),
@@ -1187,16 +1238,16 @@ Then, create a `TradingNode` and add the client factories:
 
 ```python
 from nautilus_trader.adapters.hyperliquid import HYPERLIQUID
-from nautilus_trader.adapters.hyperliquid import HyperliquidLiveDataClientFactory
-from nautilus_trader.adapters.hyperliquid import HyperliquidLiveExecClientFactory
+from nautilus_trader.adapters.hyperliquid import HyperliquidDataClientFactory
+from nautilus_trader.adapters.hyperliquid import HyperliquidExecutionClientFactory
 from nautilus_trader.live.node import TradingNode
 
 # Instantiate the live trading node with a configuration
 node = TradingNode(config=config)
 
 # Register the client factories with the node
-node.add_data_client_factory(HYPERLIQUID, HyperliquidLiveDataClientFactory)
-node.add_exec_client_factory(HYPERLIQUID, HyperliquidLiveExecClientFactory)
+node.add_data_client_factory(HYPERLIQUID, HyperliquidDataClientFactory)
+node.add_exec_client_factory(HYPERLIQUID, HyperliquidExecutionClientFactory)
 
 # Finally build the node
 node.build()

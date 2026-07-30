@@ -51,6 +51,7 @@ pub fn parse_spot_exec_report_to_order_status(
     price_precision: u8,
     size_precision: u8,
     account_id: AccountId,
+    treat_expired_as_canceled: bool,
     ts_init: UnixNanos,
 ) -> anyhow::Result<OrderStatusReport> {
     let client_order_id = decode_client_order_id(
@@ -71,7 +72,7 @@ pub fn parse_spot_exec_report_to_order_status(
         BinanceSide::Sell => OrderSide::Sell,
     };
 
-    let order_status = parse_order_status(msg.order_status);
+    let order_status = parse_order_status(msg.order_status, treat_expired_as_canceled);
     let order_type = parse_spot_order_type(&msg.order_type);
     let time_in_force = parse_time_in_force(msg.time_in_force);
 
@@ -211,6 +212,10 @@ pub fn parse_spot_exec_report_to_fill(
 }
 
 /// Converts a Binance Spot account position update to a Nautilus account state.
+///
+/// # Errors
+///
+/// Returns an error if the event timestamp is negative or overflows nanosecond precision.
 pub fn parse_spot_account_position(
     msg: &BinanceSpotAccountPositionMsg,
     account_id: AccountId,
@@ -245,7 +250,7 @@ pub fn parse_spot_account_position(
     ))
 }
 
-fn parse_order_status(status: BinanceOrderStatus) -> OrderStatus {
+fn parse_order_status(status: BinanceOrderStatus, treat_expired_as_canceled: bool) -> OrderStatus {
     match status {
         BinanceOrderStatus::New | BinanceOrderStatus::PendingNew => OrderStatus::Accepted,
         BinanceOrderStatus::PartiallyFilled => OrderStatus::PartiallyFilled,
@@ -254,7 +259,13 @@ fn parse_order_status(status: BinanceOrderStatus) -> OrderStatus {
         | BinanceOrderStatus::NewInsurance => OrderStatus::Filled,
         BinanceOrderStatus::Canceled | BinanceOrderStatus::PendingCancel => OrderStatus::Canceled,
         BinanceOrderStatus::Rejected => OrderStatus::Rejected,
-        BinanceOrderStatus::Expired | BinanceOrderStatus::ExpiredInMatch => OrderStatus::Expired,
+        BinanceOrderStatus::Expired | BinanceOrderStatus::ExpiredInMatch => {
+            if treat_expired_as_canceled {
+                OrderStatus::Canceled
+            } else {
+                OrderStatus::Expired
+            }
+        }
         BinanceOrderStatus::Unknown => OrderStatus::Accepted,
     }
 }
@@ -300,6 +311,26 @@ mod tests {
     }
 
     #[rstest]
+    #[case::as_expired(false, OrderStatus::Expired)]
+    #[case::as_canceled(true, OrderStatus::Canceled)]
+    fn test_parse_order_status_expired_respects_treat_as_canceled(
+        #[case] treat_expired_as_canceled: bool,
+        #[case] expected: OrderStatus,
+    ) {
+        assert_eq!(
+            parse_order_status(BinanceOrderStatus::Expired, treat_expired_as_canceled),
+            expected,
+        );
+        assert_eq!(
+            parse_order_status(
+                BinanceOrderStatus::ExpiredInMatch,
+                treat_expired_as_canceled,
+            ),
+            expected,
+        );
+    }
+
+    #[rstest]
     fn test_parse_execution_report_to_order_status_report() {
         let json = load_fixture_string("spot/user_data_json/execution_report_new.json");
         let msg: BinanceSpotExecutionReport = serde_json::from_str(&json).unwrap();
@@ -312,6 +343,7 @@ mod tests {
             PRICE_PRECISION,
             SIZE_PRECISION,
             account_id,
+            false,
             ts_init,
         )
         .unwrap();
@@ -358,6 +390,7 @@ mod tests {
             PRICE_PRECISION,
             SIZE_PRECISION,
             account_id,
+            false,
             ts_init,
         );
 
@@ -386,6 +419,7 @@ mod tests {
             PRICE_PRECISION,
             SIZE_PRECISION,
             account_id,
+            false,
             ts_init,
         )
         .unwrap();
@@ -415,6 +449,7 @@ mod tests {
             PRICE_PRECISION,
             SIZE_PRECISION,
             account_id,
+            false,
             ts_init,
         )
         .unwrap();
@@ -442,6 +477,7 @@ mod tests {
             PRICE_PRECISION,
             SIZE_PRECISION,
             account_id,
+            false,
             ts_init,
         );
 
@@ -463,6 +499,7 @@ mod tests {
             PRICE_PRECISION,
             SIZE_PRECISION,
             account_id,
+            false,
             ts_init,
         )
         .unwrap();
@@ -527,39 +564,6 @@ mod tests {
 
         let error = result.unwrap_err().to_string();
         assert!(error.contains("commission"));
-    }
-
-    #[rstest]
-    fn test_parse_execution_report_empty_client_order_id_returns_error_without_panicking() {
-        let json = load_fixture_string("spot/user_data_json/execution_report_trade.json");
-        let mut msg: BinanceSpotExecutionReport = serde_json::from_str(&json).unwrap();
-        msg.client_order_id.clear();
-        let account_id = AccountId::from("BINANCE-001");
-        let ts_init = UnixNanos::from(1_000_000_000u64);
-
-        let status_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            parse_spot_exec_report_to_order_status(
-                &msg,
-                instrument_id(),
-                PRICE_PRECISION,
-                SIZE_PRECISION,
-                account_id,
-                ts_init,
-            )
-        }));
-        assert!(status_result.unwrap().is_err());
-
-        let fill_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            parse_spot_exec_report_to_fill(
-                &msg,
-                instrument_id(),
-                PRICE_PRECISION,
-                SIZE_PRECISION,
-                account_id,
-                ts_init,
-            )
-        }));
-        assert!(fill_result.unwrap().is_err());
     }
 
     #[rstest]

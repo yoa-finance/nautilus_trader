@@ -135,10 +135,6 @@ cdef class Cache(CacheFacade):
         self._bars: dict[BarType, deque[Bar]] = {}
         self._bars_bid: dict[InstrumentId, Bar] = {}
         self._bars_ask: dict[InstrumentId, Bar] = {}
-        self._execution_bid_prices: dict[InstrumentId, Price] = {}
-        self._execution_ask_prices: dict[InstrumentId, Price] = {}
-        self._execution_last_prices: dict[InstrumentId, Price] = {}
-        self._execution_price_timestamps: dict[InstrumentId, int] = {}
         self._accounts: dict[AccountId, Account] = {}
         self._orders: dict[ClientOrderId, Order] = {}
         self._order_lists: dict[OrderListId, OrderList] = {}
@@ -1306,10 +1302,6 @@ cdef class Cache(CacheFacade):
         self._bars.clear()
         self._bars_bid.clear()
         self._bars_ask.clear()
-        self._execution_bid_prices.clear()
-        self._execution_ask_prices.clear()
-        self._execution_last_prices.clear()
-        self._execution_price_timestamps.clear()
         self._accounts.clear()
         self._orders.clear()
         self._order_lists.clear()
@@ -1785,77 +1777,6 @@ cdef class Cache(CacheFacade):
             self._trade_ticks[instrument_id] = ticks
 
         ticks.appendleft(tick)
-
-    cpdef void set_execution_prices(
-        self,
-        InstrumentId instrument_id,
-        Price bid_price,
-        Price ask_price,
-        Price last_price,
-        uint64_t ts_event,
-    ):
-        """
-        Set the current executable price context for the given instrument.
-
-        Parameters
-        ----------
-        instrument_id : InstrumentId
-            The instrument ID for the execution price context.
-        bid_price : Price or ``None``
-            The current executable bid price.
-        ask_price : Price or ``None``
-            The current executable ask price.
-        last_price : Price or ``None``
-            The current executable last price.
-        ts_event : uint64_t
-            The market-data event timestamp for the price context.
-
-        """
-        Condition.not_none(instrument_id, "instrument_id")
-
-        if bid_price is None:
-            self._execution_bid_prices.pop(instrument_id, None)
-        else:
-            self._execution_bid_prices[instrument_id] = bid_price
-
-        if ask_price is None:
-            self._execution_ask_prices.pop(instrument_id, None)
-        else:
-            self._execution_ask_prices[instrument_id] = ask_price
-
-        if last_price is None:
-            self._execution_last_prices.pop(instrument_id, None)
-        else:
-            self._execution_last_prices[instrument_id] = last_price
-
-        self._execution_price_timestamps[instrument_id] = ts_event
-
-    cpdef void clear_execution_prices(self):
-        """
-        Clear all executable price context.
-
-        """
-        self._execution_bid_prices.clear()
-        self._execution_ask_prices.clear()
-        self._execution_last_prices.clear()
-        self._execution_price_timestamps.clear()
-
-    cpdef void clear_execution_prices_for(self, InstrumentId instrument_id):
-        """
-        Clear executable price context for the given instrument.
-
-        Parameters
-        ----------
-        instrument_id : InstrumentId
-            The instrument ID for the execution price context.
-
-        """
-        Condition.not_none(instrument_id, "instrument_id")
-
-        self._execution_bid_prices.pop(instrument_id, None)
-        self._execution_ask_prices.pop(instrument_id, None)
-        self._execution_last_prices.pop(instrument_id, None)
-        self._execution_price_timestamps.pop(instrument_id, None)
 
     cpdef void add_mark_price(self, MarkPriceUpdate mark_price):
         """
@@ -3348,60 +3269,6 @@ cdef class Cache(CacheFacade):
         except IndexError:
             return None
 
-    cpdef Price execution_bid_price(self, InstrumentId instrument_id):
-        """
-        Return the current executable bid price for the given instrument.
-
-        Parameters
-        ----------
-        instrument_id : InstrumentId
-            The instrument ID for the price to get.
-
-        Returns
-        -------
-        Price or ``None``
-
-        """
-        Condition.not_none(instrument_id, "instrument_id")
-
-        return self._execution_bid_prices.get(instrument_id)
-
-    cpdef Price execution_ask_price(self, InstrumentId instrument_id):
-        """
-        Return the current executable ask price for the given instrument.
-
-        Parameters
-        ----------
-        instrument_id : InstrumentId
-            The instrument ID for the price to get.
-
-        Returns
-        -------
-        Price or ``None``
-
-        """
-        Condition.not_none(instrument_id, "instrument_id")
-
-        return self._execution_ask_prices.get(instrument_id)
-
-    cpdef Price execution_last_price(self, InstrumentId instrument_id):
-        """
-        Return the current executable last price for the given instrument.
-
-        Parameters
-        ----------
-        instrument_id : InstrumentId
-            The instrument ID for the price to get.
-
-        Returns
-        -------
-        Price or ``None``
-
-        """
-        Condition.not_none(instrument_id, "instrument_id")
-
-        return self._execution_last_prices.get(instrument_id)
-
     cpdef MarkPriceUpdate mark_price(self, InstrumentId instrument_id, int index = 0):
         """
         Return the mark price for the given instrument ID at the given index (if found).
@@ -4325,67 +4192,55 @@ cdef class Cache(CacheFacade):
 
     cdef set _build_order_query_filter_set(
         self,
+        set base,
         Venue venue,
         InstrumentId instrument_id,
         StrategyId strategy_id,
         AccountId account_id,
     ):
-        cdef set query = None
+        # Seed the query with the base set so each intersection below is bounded
+        # by its size; the per-key index sets grow with every order created and
+        # must not be intersected with each other directly.
+        cdef set query = base
 
-        # Build potential query set
         if venue is not None:
-            query = self._index_venue_orders.get(venue, set())
+            query = query.intersection(self._index_venue_orders.get(venue, set()))
 
         if instrument_id is not None:
-            if query is None:
-                query = self._index_instrument_orders.get(instrument_id, set())
-            else:
-                query = query.intersection(self._index_instrument_orders.get(instrument_id, set()))
+            query = query.intersection(self._index_instrument_orders.get(instrument_id, set()))
 
         if strategy_id is not None:
-            if query is None:
-                query = self._index_strategy_orders.get(strategy_id, set())
-            else:
-                query = query.intersection(self._index_strategy_orders.get(strategy_id, set()))
+            query = query.intersection(self._index_strategy_orders.get(strategy_id, set()))
 
         if account_id is not None:
-            if query is None:
-                query = self._index_account_orders.get(account_id, set())
-            else:
-                query = query.intersection(self._index_account_orders.get(account_id, set()))
+            query = query.intersection(self._index_account_orders.get(account_id, set()))
 
         return query
 
     cdef set _build_position_query_filter_set(
         self,
+        set base,
         Venue venue,
         InstrumentId instrument_id,
         StrategyId strategy_id,
         AccountId account_id,
     ):
-        cdef set query = None
+        # Seed the query with the base set so each intersection below is bounded
+        # by its size; the per-key index sets grow with every position created
+        # and must not be intersected with each other directly.
+        cdef set query = base
 
-        # Build potential query set
         if venue is not None:
-            query = self._index_venue_positions.get(venue, set())
+            query = query.intersection(self._index_venue_positions.get(venue, set()))
 
         if instrument_id is not None:
-            if query is None:
-                query = self._index_instrument_positions.get(instrument_id, set())
-            else:
-                query = query.intersection(self._index_instrument_positions.get(instrument_id, set()))
+            query = query.intersection(self._index_instrument_positions.get(instrument_id, set()))
 
         if strategy_id is not None:
-            if query is None:
-                query = self._index_strategy_positions.get(strategy_id, set())
-            else:
-                query = query.intersection(self._index_strategy_positions.get(strategy_id, set()))
+            query = query.intersection(self._index_strategy_positions.get(strategy_id, set()))
 
         if account_id is not None:
-            if query is None:
-                query = self._index_account_positions.get(account_id, set())
-            else:
-                query = query.intersection(self._index_account_positions.get(account_id, set()))
+            query = query.intersection(self._index_account_positions.get(account_id, set()))
 
         return query
 
@@ -4448,14 +4303,13 @@ cdef class Cache(CacheFacade):
         set[ClientOrderId]
 
         """
-        cdef set query = self._build_order_query_filter_set(venue, instrument_id, strategy_id, account_id)
-        cdef set order_ids
-        if query is None:
-            order_ids = self._index_orders
-        else:
-            order_ids = self._index_orders.intersection(query)
-
-        return order_ids
+        return self._build_order_query_filter_set(
+            self._index_orders,
+            venue,
+            instrument_id,
+            strategy_id,
+            account_id,
+        )
 
     cpdef set client_order_ids_open(
         self,
@@ -4483,14 +4337,13 @@ cdef class Cache(CacheFacade):
         set[ClientOrderId]
 
         """
-        cdef set query = self._build_order_query_filter_set(venue, instrument_id, strategy_id, account_id)
-        cdef set order_ids
-        if query is None:
-            order_ids = self._index_orders_open
-        else:
-            order_ids = self._index_orders_open.intersection(query)
-
-        return order_ids
+        return self._build_order_query_filter_set(
+            self._index_orders_open,
+            venue,
+            instrument_id,
+            strategy_id,
+            account_id,
+        )
 
     cpdef set client_order_ids_closed(
         self,
@@ -4518,14 +4371,13 @@ cdef class Cache(CacheFacade):
         set[ClientOrderId]
 
         """
-        cdef set query = self._build_order_query_filter_set(venue, instrument_id, strategy_id, account_id)
-        cdef set order_ids
-        if query is None:
-            order_ids = self._index_orders_closed
-        else:
-            order_ids = self._index_orders_closed.intersection(query)
-
-        return order_ids
+        return self._build_order_query_filter_set(
+            self._index_orders_closed,
+            venue,
+            instrument_id,
+            strategy_id,
+            account_id,
+        )
 
     cpdef set client_order_ids_emulated(
         self,
@@ -4553,14 +4405,13 @@ cdef class Cache(CacheFacade):
         set[ClientOrderId]
 
         """
-        cdef set query = self._build_order_query_filter_set(venue, instrument_id, strategy_id, account_id)
-        cdef set order_ids
-        if query is None:
-            order_ids = self._index_orders_emulated
-        else:
-            order_ids = self._index_orders_emulated.intersection(query)
-
-        return order_ids
+        return self._build_order_query_filter_set(
+            self._index_orders_emulated,
+            venue,
+            instrument_id,
+            strategy_id,
+            account_id,
+        )
 
     cpdef set client_order_ids_inflight(
         self,
@@ -4588,14 +4439,13 @@ cdef class Cache(CacheFacade):
         set[ClientOrderId]
 
         """
-        cdef set query = self._build_order_query_filter_set(venue, instrument_id, strategy_id, account_id)
-        cdef set order_ids
-        if query is None:
-            order_ids = self._index_orders_inflight
-        else:
-            order_ids = self._index_orders_inflight.intersection(query)
-
-        return order_ids
+        return self._build_order_query_filter_set(
+            self._index_orders_inflight,
+            venue,
+            instrument_id,
+            strategy_id,
+            account_id,
+        )
 
     cpdef set order_list_ids(
         self,
@@ -4654,14 +4504,13 @@ cdef class Cache(CacheFacade):
         set[PositionId]
 
         """
-        cdef set query = self._build_position_query_filter_set(venue, instrument_id, strategy_id, account_id)
-        cdef set position_ids
-        if query is None:
-            position_ids = self._index_positions
-        else:
-            position_ids = self._index_positions.intersection(query)
-
-        return position_ids
+        return self._build_position_query_filter_set(
+            self._index_positions,
+            venue,
+            instrument_id,
+            strategy_id,
+            account_id,
+        )
 
     cpdef set position_open_ids(
         self,
@@ -4689,14 +4538,13 @@ cdef class Cache(CacheFacade):
         set[PositionId]
 
         """
-        cdef set query = self._build_position_query_filter_set(venue, instrument_id, strategy_id, account_id)
-        cdef set position_ids
-        if query is None:
-            position_ids = self._index_positions_open
-        else:
-            position_ids = self._index_positions_open.intersection(query)
-
-        return position_ids
+        return self._build_position_query_filter_set(
+            self._index_positions_open,
+            venue,
+            instrument_id,
+            strategy_id,
+            account_id,
+        )
 
     cpdef set position_closed_ids(
         self,
@@ -4724,14 +4572,13 @@ cdef class Cache(CacheFacade):
         set[PositionId]
 
         """
-        cdef set query = self._build_position_query_filter_set(venue, instrument_id, strategy_id, account_id)
-        cdef set position_ids
-        if query is None:
-            position_ids = self._index_positions_closed
-        else:
-            position_ids = self._index_positions_closed.intersection(query)
-
-        return position_ids
+        return self._build_position_query_filter_set(
+            self._index_positions_closed,
+            venue,
+            instrument_id,
+            strategy_id,
+            account_id,
+        )
 
     cpdef set actor_ids(self):
         """
@@ -5409,12 +5256,16 @@ cdef class Cache(CacheFacade):
         """
         Condition.not_none(exec_algorithm_id, "exec_algorithm_id")
 
-        cdef set query = self._build_order_query_filter_set(venue, instrument_id, strategy_id, account_id)
         cdef set exec_algorithm_order_ids = self._index_exec_algorithm_orders.get(exec_algorithm_id) or set()
-        if query is not None:
-            exec_algorithm_order_ids = query.intersection(exec_algorithm_order_ids)
+        cdef set order_ids = self._build_order_query_filter_set(
+            exec_algorithm_order_ids,
+            venue,
+            instrument_id,
+            strategy_id,
+            account_id,
+        )
 
-        return self._get_orders_for_ids(exec_algorithm_order_ids, side)
+        return self._get_orders_for_ids(order_ids, side)
 
     cpdef list orders_for_exec_spawn(self, ClientOrderId exec_spawn_id):
         """

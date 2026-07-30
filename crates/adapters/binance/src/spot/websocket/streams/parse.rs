@@ -75,6 +75,10 @@ pub fn decode_market_data(buf: &[u8]) -> Result<MarketDataMessage, StreamDecodeE
 }
 
 /// Parses a trades stream event into a vector of `TradeTick`.
+///
+/// # Errors
+///
+/// Returns an error if the event timestamp is negative or overflows nanosecond precision.
 pub fn parse_trades_event(
     event: &TradesStreamEvent,
     instrument: &InstrumentAny,
@@ -121,6 +125,10 @@ pub fn parse_trades_event(
 }
 
 /// Parses a best bid/ask event into a `QuoteTick`.
+///
+/// # Errors
+///
+/// Returns an error if the event timestamp is negative or overflows nanosecond precision.
 pub fn parse_bbo_event(
     event: &BestBidAskStreamEvent,
     instrument: &InstrumentAny,
@@ -169,6 +177,10 @@ pub fn parse_bbo_event(
 /// Parses a depth snapshot event into `OrderBookDeltas`.
 ///
 /// Returns `None` if the snapshot contains no levels.
+///
+/// # Errors
+///
+/// Returns an error if the event timestamp is negative or overflows nanosecond precision.
 pub fn parse_depth_snapshot(
     event: &DepthSnapshotStreamEvent,
     instrument: &InstrumentAny,
@@ -267,6 +279,10 @@ pub fn parse_depth_snapshot(
 /// Parses a depth diff event into `OrderBookDeltas`.
 ///
 /// Returns `None` if the diff contains no updates.
+///
+/// # Errors
+///
+/// Returns an error if the event timestamp is negative or overflows nanosecond precision.
 pub fn parse_depth_diff(
     event: &DepthDiffStreamEvent,
     instrument: &InstrumentAny,
@@ -369,7 +385,7 @@ pub fn parse_depth_diff(
 
 #[cfg(test)]
 mod tests {
-    use nautilus_core::nanos::UnixNanos;
+    use nautilus_core::UnixNanos;
     use rstest::rstest;
     use ustr::Ustr;
 

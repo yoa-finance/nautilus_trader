@@ -30,6 +30,7 @@ use std::{
 
 use ahash::{AHashMap, AHashSet};
 use chrono::{DateTime, Utc};
+use nautilus_common::cache::InstrumentLookupError;
 use nautilus_core::{
     AtomicMap, AtomicTime, consts::NAUTILUS_USER_AGENT, env::get_or_env_var_opt, nanos::UnixNanos,
     time::get_atomic_clock_realtime,
@@ -77,7 +78,7 @@ use super::{
         BybitCancelAllOrdersParamsBuilder, BybitCancelOrderParamsBuilder, BybitFeeRateParams,
         BybitFeeRateParamsBuilder, BybitFundingParams, BybitFundingParamsBuilder,
         BybitInstrumentsInfoParams, BybitKlinesParams, BybitKlinesParamsBuilder,
-        BybitNoConvertRepayParamsBuilder, BybitOpenOrdersParamsBuilder,
+        BybitNativeTpSlParams, BybitNoConvertRepayParamsBuilder, BybitOpenOrdersParamsBuilder,
         BybitOrderHistoryParamsBuilder, BybitOrderbookParams, BybitOrderbookParamsBuilder,
         BybitPlaceOrderParamsBuilder, BybitPositionListParams, BybitSetLeverageParamsBuilder,
         BybitSetMarginModeParamsBuilder, BybitSetTradingStopParams, BybitSubApiKeysParams,
@@ -92,7 +93,7 @@ use crate::common::{
     enums::{
         BybitAccountType, BybitBboSideType, BybitContractType, BybitEnvironment, BybitMarginMode,
         BybitOpenOnly, BybitOrderFilter, BybitOrderSide, BybitOrderType, BybitPositionIdx,
-        BybitPositionMode, BybitProductType,
+        BybitPositionMode, BybitProductType, BybitTpSlMode,
     },
     models::{BybitCursorListResponse, BybitErrorCheck, BybitResponseCheck},
     parse::{
@@ -2424,6 +2425,7 @@ impl BybitHttpClient {
         position_idx: Option<BybitPositionIdx>,
         bbo_side_type: Option<BybitBboSideType>,
         bbo_level: Option<String>,
+        native_tp_sl: Option<&BybitNativeTpSlParams>,
     ) -> anyhow::Result<OrderStatusReport> {
         let instrument = self.instrument_from_cache(&instrument_id.symbol)?;
         let bybit_symbol = BybitSymbol::new(instrument_id.symbol.as_str())?;
@@ -2480,6 +2482,63 @@ impl BybitHttpClient {
 
         order_entry.bbo_side_type(bbo_side_type);
         order_entry.bbo_level(bbo_level);
+
+        if let Some(tp_sl) = native_tp_sl {
+            if let Some(ref tp) = tp_sl.take_profit {
+                order_entry.take_profit(Some(tp.clone()));
+            }
+
+            if let Some(ref sl) = tp_sl.stop_loss {
+                order_entry.stop_loss(Some(sl.clone()));
+            }
+
+            if let Some(tp_trigger) = tp_sl.tp_trigger_by {
+                order_entry.tp_trigger_by(Some(tp_trigger));
+            }
+
+            if let Some(sl_trigger) = tp_sl.sl_trigger_by {
+                order_entry.sl_trigger_by(Some(sl_trigger));
+            }
+
+            if let Some(tp_ot) = tp_sl.tp_order_type {
+                order_entry.tp_order_type(Some(tp_ot));
+            }
+
+            if let Some(sl_ot) = tp_sl.sl_order_type {
+                order_entry.sl_order_type(Some(sl_ot));
+            }
+
+            if let Some(ref tp_lp) = tp_sl.tp_limit_price {
+                order_entry.tp_limit_price(Some(tp_lp.clone()));
+            }
+
+            if let Some(ref sl_lp) = tp_sl.sl_limit_price {
+                order_entry.sl_limit_price(Some(sl_lp.clone()));
+            }
+
+            // Default to `Full` when TP or SL is set without an explicit mode, mirroring the WS
+            // path, so Bybit accepts the field instead of rejecting it.
+            let mode = tp_sl.tpsl_mode.or_else(|| {
+                (tp_sl.take_profit.is_some() || tp_sl.stop_loss.is_some())
+                    .then_some(BybitTpSlMode::Full)
+            });
+
+            if let Some(m) = mode {
+                order_entry.tpsl_mode(Some(m));
+            }
+
+            if let Some(close) = tp_sl.close_on_trigger {
+                order_entry.close_on_trigger(Some(close));
+            }
+
+            if let Some(ref iv) = tp_sl.order_iv {
+                order_entry.order_iv(Some(iv.clone()));
+            }
+
+            if let Some(mmp) = tp_sl.mmp {
+                order_entry.mmp(Some(mmp));
+            }
+        }
 
         let order_entry = order_entry.build().build_anyhow()?;
 
@@ -3391,6 +3450,134 @@ impl BybitHttpClient {
         Ok(instruments)
     }
 
+    /// Requests full instrument definitions and their market statuses in a single endpoint pass.
+    ///
+    /// Both are parsed from the same `/v5/market/instruments-info` response, avoiding a second
+    /// round-trip when a caller needs definitions and statuses together (e.g. the polling loop
+    /// serving both instrument and status subscriptions).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request fails or parsing fails.
+    pub async fn request_instruments_with_statuses(
+        &self,
+        product_type: BybitProductType,
+    ) -> anyhow::Result<(
+        Vec<InstrumentAny>,
+        AHashMap<InstrumentId, MarketStatusAction>,
+    )> {
+        let ts_init = self.generate_ts_init();
+        let mut statuses = AHashMap::new();
+
+        let default_fee_rate = |symbol: Ustr| BybitFeeRate {
+            symbol,
+            taker_fee_rate: "0.001".to_string(),
+            maker_fee_rate: "0.001".to_string(),
+            base_coin: None,
+        };
+
+        // A perp with a non-zero delivery time is scheduled for delisting.
+        let perp_status = |status: MarketStatusAction, is_scheduled_perp: bool| {
+            if status == MarketStatusAction::Trading && is_scheduled_perp {
+                MarketStatusAction::PreClose
+            } else {
+                status
+            }
+        };
+
+        let instruments = match product_type {
+            BybitProductType::Spot => {
+                let fee_map = self.fetch_fee_map(product_type, None).await?;
+                self.paginate_instruments::<BybitInstrumentSpot, _>(
+                    product_type,
+                    &None::<String>,
+                    None,
+                    |def| {
+                        let id = InstrumentId::new(
+                            Symbol::from(make_bybit_symbol(def.symbol, product_type)),
+                            *BYBIT_VENUE,
+                        );
+                        statuses.insert(id, MarketStatusAction::from(def.status));
+                        let fee = fee_map
+                            .get(&def.symbol)
+                            .cloned()
+                            .unwrap_or_else(|| default_fee_rate(def.symbol));
+                        parse_spot_instrument(def, &fee, ts_init, ts_init).ok()
+                    },
+                )
+                .await?
+            }
+            BybitProductType::Linear => {
+                let fee_map = self.fetch_fee_map(product_type, None).await?;
+                self.paginate_instruments::<BybitInstrumentLinear, _>(
+                    product_type,
+                    &None::<String>,
+                    None,
+                    |def| {
+                        let id = InstrumentId::new(
+                            Symbol::from(make_bybit_symbol(def.symbol, product_type)),
+                            *BYBIT_VENUE,
+                        );
+                        let scheduled = def.contract_type == BybitContractType::LinearPerpetual
+                            && def.delivery_time != "0";
+                        statuses.insert(id, perp_status(def.status.into(), scheduled));
+                        let fee = fee_map
+                            .get(&def.symbol)
+                            .cloned()
+                            .unwrap_or_else(|| default_fee_rate(def.symbol));
+                        parse_linear_instrument(def, &fee, ts_init, ts_init).ok()
+                    },
+                )
+                .await?
+            }
+            BybitProductType::Inverse => {
+                let fee_map = self.fetch_fee_map(product_type, None).await?;
+                self.paginate_instruments::<BybitInstrumentInverse, _>(
+                    product_type,
+                    &None::<String>,
+                    None,
+                    |def| {
+                        let id = InstrumentId::new(
+                            Symbol::from(make_bybit_symbol(def.symbol, product_type)),
+                            *BYBIT_VENUE,
+                        );
+                        let scheduled = def.contract_type == BybitContractType::InversePerpetual
+                            && def.delivery_time != "0";
+                        statuses.insert(id, perp_status(def.status.into(), scheduled));
+                        let fee = fee_map
+                            .get(&def.symbol)
+                            .cloned()
+                            .unwrap_or_else(|| default_fee_rate(def.symbol));
+                        parse_inverse_instrument(def, &fee, ts_init, ts_init).ok()
+                    },
+                )
+                .await?
+            }
+            BybitProductType::Option => {
+                let fee_map = self.fetch_option_fee_map(None).await?;
+                self.paginate_instruments::<BybitInstrumentOption, _>(
+                    product_type,
+                    &None::<String>,
+                    None,
+                    |def| {
+                        let id = InstrumentId::new(
+                            Symbol::from(make_bybit_symbol(def.symbol, product_type)),
+                            *BYBIT_VENUE,
+                        );
+                        statuses.insert(id, MarketStatusAction::from(def.status));
+                        let fee = fee_map.get(&def.base_coin);
+                        parse_option_instrument(def, fee, ts_init, ts_init).ok()
+                    },
+                )
+                .await?
+            }
+        };
+
+        self.cache_instruments(&instruments);
+
+        Ok((instruments, statuses))
+    }
+
     /// Request ticker information for market data.
     ///
     /// Fetches ticker data from Bybit's `/v5/market/tickers` endpoint and returns
@@ -3490,7 +3677,7 @@ impl BybitHttpClient {
         instrument_id: InstrumentId,
         limit: Option<u32>,
     ) -> anyhow::Result<Vec<TradeTick>> {
-        let instrument = self.instrument_from_cache(&instrument_id.symbol)?;
+        let instrument = self.instrument_from_cache_by_id(instrument_id)?;
         let bybit_symbol = BybitSymbol::new(instrument_id.symbol.as_str())?;
 
         let mut params_builder = BybitTradesParamsBuilder::default();
@@ -3535,7 +3722,7 @@ impl BybitHttpClient {
         end: Option<DateTime<Utc>>,
         limit: Option<u32>,
     ) -> anyhow::Result<Vec<FundingRateUpdate>> {
-        let instrument = self.instrument_from_cache(&instrument_id.symbol)?;
+        let instrument = self.instrument_from_cache_by_id(instrument_id)?;
         let bybit_symbol = BybitSymbol::new(instrument_id.symbol.as_str())?;
 
         let start_ms = start.map(|dt| dt.timestamp_millis());
@@ -3661,7 +3848,7 @@ impl BybitHttpClient {
         instrument_id: InstrumentId,
         limit: Option<u32>,
     ) -> anyhow::Result<OrderBookDeltas> {
-        let instrument = self.instrument_from_cache(&instrument_id.symbol)?;
+        let instrument = self.instrument_from_cache_by_id(instrument_id)?;
         let bybit_symbol = BybitSymbol::new(instrument_id.symbol.as_str())?;
 
         let mut params_builder = BybitOrderbookParamsBuilder::default();
@@ -3712,8 +3899,9 @@ impl BybitHttpClient {
         limit: Option<u32>,
         timestamp_on_close: bool,
     ) -> anyhow::Result<Vec<Bar>> {
-        let instrument = self.instrument_from_cache(&bar_type.instrument_id().symbol)?;
-        let bybit_symbol = BybitSymbol::new(bar_type.instrument_id().symbol.as_str())?;
+        let instrument_id = bar_type.instrument_id();
+        let instrument = self.instrument_from_cache_by_id(instrument_id)?;
+        let bybit_symbol = BybitSymbol::new(instrument_id.symbol.as_str())?;
 
         // Convert Nautilus BarSpec to Bybit interval
         let interval = bar_spec_to_bybit_interval(
@@ -3853,6 +4041,14 @@ impl BybitHttpClient {
         }
 
         Ok(all_bars)
+    }
+
+    fn instrument_from_cache_by_id(
+        &self,
+        instrument_id: InstrumentId,
+    ) -> anyhow::Result<InstrumentAny> {
+        self.get_instrument(&instrument_id.symbol.inner())
+            .ok_or_else(|| InstrumentLookupError::not_found(instrument_id).into())
     }
 
     /// Requests trading fee rates for the specified product type and optional filters.

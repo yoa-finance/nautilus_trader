@@ -1,7 +1,7 @@
 [package]
 name = "stratneo-nautilus-binance"
 readme = "README.md"
-version = "0.59.4-stratneo.9"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
@@ -47,7 +47,8 @@ python = [
 ]
 
 [package.metadata.docs.rs]
-all-features = true
+# Python docs depend on the local pyo3-stub-gen patch for now, which published crates do not carry
+features = ["examples", "high-precision"]
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]

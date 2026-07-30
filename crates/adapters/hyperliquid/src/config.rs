@@ -58,7 +58,8 @@ pub struct HyperliquidDataClientConfig {
     /// Interval for refreshing instruments in minutes.
     #[builder(default = 60)]
     pub update_instruments_interval_mins: u64,
-    /// WebSocket transport backend (defaults to `Tungstenite`).
+    /// WebSocket transport backend (`Sockudo` by default; `Tungstenite` when
+    /// the `transport-sockudo` feature is disabled).
     #[builder(default)]
     pub transport_backend: TransportBackend,
 }
@@ -167,7 +168,11 @@ pub struct HyperliquidExecClientConfig {
     /// `SubmitOrder.params["market_order_slippage_bps"]`.
     #[builder(default = 50)]
     pub market_order_slippage_bps: u32,
-    /// WebSocket transport backend (defaults to `Tungstenite`).
+    /// If true, attach Nautilus builder attribution to eligible mainnet orders.
+    #[builder(default = true)]
+    pub include_builder_attribution: bool,
+    /// WebSocket transport backend (`Sockudo` by default; `Tungstenite` when
+    /// the `transport-sockudo` feature is disabled).
     #[builder(default)]
     pub transport_backend: TransportBackend,
     /// Timeout in seconds for WebSocket post trading requests.
@@ -265,11 +270,23 @@ transport_backend = "tungstenite"
             config.market_order_slippage_bps,
             expected.market_order_slippage_bps,
         );
+        assert_eq!(
+            config.include_builder_attribution,
+            expected.include_builder_attribution,
+        );
         assert_eq!(config.transport_backend, expected.transport_backend);
         assert_eq!(config.ws_post_timeout_secs, expected.ws_post_timeout_secs);
         assert_eq!(
             config.outcome_settlement_poll_secs,
             expected.outcome_settlement_poll_secs,
         );
+    }
+
+    #[rstest]
+    fn test_exec_config_toml_include_builder_attribution_false() {
+        let config: HyperliquidExecClientConfig =
+            toml::from_str("include_builder_attribution = false").unwrap();
+
+        assert!(!config.include_builder_attribution);
     }
 }

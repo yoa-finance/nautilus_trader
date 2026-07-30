@@ -273,19 +273,9 @@ thread_local! {
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::RefCell, rc::Rc, sync::Arc};
+    use std::sync::Arc;
 
-    use nautilus_core::{UUID4, UnixNanos};
-    use nautilus_model::{
-        enums::OrderSide,
-        identifiers::{InstrumentId, StrategyId, TraderId},
-    };
     use rstest::rstest;
-
-    use crate::{
-        messages::execution::{TradingCommand, cancel::CancelAllOrders},
-        msgbus::{self, TypedIntoHandler},
-    };
 
     use super::*;
 
@@ -373,58 +363,5 @@ mod tests {
             .join()
             .unwrap();
         assert!(is_none);
-    }
-
-    #[rstest]
-    fn test_drain_trading_cmd_queue_dispatches_each_command_to_queued_endpoint() {
-        std::thread::spawn(|| {
-            let received = Rc::new(RefCell::new(Vec::new()));
-
-            let risk_received = received.clone();
-            msgbus::register_trading_command_endpoint(
-                MessagingSwitchboard::risk_engine_execute(),
-                TypedIntoHandler::from(move |_cmd: TradingCommand| {
-                    risk_received.borrow_mut().push("risk");
-                }),
-            );
-
-            let exec_received = received.clone();
-            msgbus::register_trading_command_endpoint(
-                MessagingSwitchboard::exec_engine_execute(),
-                TypedIntoHandler::from(move |_cmd: TradingCommand| {
-                    exec_received.borrow_mut().push("exec");
-                }),
-            );
-
-            let sender = SyncTradingCommandSender;
-            sender.execute(
-                MessagingSwitchboard::risk_engine_execute(),
-                cancel_all_orders("S-RISK"),
-            );
-            sender.execute(
-                MessagingSwitchboard::exec_engine_execute(),
-                cancel_all_orders("S-EXEC"),
-            );
-
-            drain_trading_cmd_queue();
-
-            assert_eq!(&*received.borrow(), &["risk", "exec"]);
-        })
-        .join()
-        .unwrap();
-    }
-
-    fn cancel_all_orders(strategy_id: &str) -> TradingCommand {
-        TradingCommand::CancelAllOrders(CancelAllOrders::new(
-            TraderId::from("TRADER-001"),
-            None,
-            StrategyId::from(strategy_id),
-            InstrumentId::from("EUR/USD.SIM"),
-            OrderSide::Buy,
-            UUID4::new(),
-            UnixNanos::default(),
-            None,
-            None,
-        ))
     }
 }

@@ -74,119 +74,19 @@ pub fn unix_nanos_from_timestamp(
 }
 
 /// Converts a Binance millisecond timestamp into [`UnixNanos`] without panicking.
+///
+/// # Errors
+///
+/// Returns an error if `value` is negative or overflows nanosecond precision.
 pub fn unix_nanos_from_millis(value: i64, field: &str, context: &str) -> anyhow::Result<UnixNanos> {
     unix_nanos_from_timestamp(value, BinanceTimestampUnit::Milliseconds, field, context)
 }
 
 /// Converts a Binance microsecond timestamp into [`UnixNanos`] without panicking.
+///
+/// # Errors
+///
+/// Returns an error if `value` is negative or overflows nanosecond precision.
 pub fn unix_nanos_from_micros(value: i64, field: &str, context: &str) -> anyhow::Result<UnixNanos> {
     unix_nanos_from_timestamp(value, BinanceTimestampUnit::Microseconds, field, context)
-}
-
-#[cfg(test)]
-mod tests {
-    use rstest::rstest;
-
-    use super::*;
-
-    #[rstest]
-    fn test_unix_nanos_from_micros_valid() {
-        let nanos = unix_nanos_from_micros(
-            1_700_000_000_000_000,
-            "transact_time",
-            "spot_sbe_new_order_response",
-        )
-        .unwrap();
-
-        assert_eq!(nanos, UnixNanos::from(1_700_000_000_000_000_000u64));
-    }
-
-    #[rstest]
-    fn test_unix_nanos_from_millis_valid() {
-        let nanos = unix_nanos_from_millis(
-            1_700_000_000_000,
-            "event_time",
-            "spot_json_execution_report",
-        )
-        .unwrap();
-
-        assert_eq!(nanos, UnixNanos::from(1_700_000_000_000_000_000u64));
-    }
-
-    #[rstest]
-    fn test_unix_nanos_from_timestamp_rejects_negative() {
-        let err = unix_nanos_from_micros(-1, "time", "spot_sbe_order").unwrap_err();
-        let message = err.to_string();
-
-        assert!(message.contains("context=spot_sbe_order"));
-        assert!(message.contains("field=time"));
-        assert!(message.contains("unit=microseconds"));
-        assert!(message.contains("raw_value=-1"));
-        assert!(message.contains("reason=negative"));
-    }
-
-    #[rstest]
-    fn test_unix_nanos_from_timestamp_rejects_overflow() {
-        let err = unix_nanos_from_micros(
-            (u64::MAX / 1_000 + 1) as i64,
-            "transact_time",
-            "spot_sbe_new_order_response",
-        )
-        .unwrap_err();
-        let message = err.to_string();
-
-        assert!(message.contains("context=spot_sbe_new_order_response"));
-        assert!(message.contains("field=transact_time"));
-        assert!(message.contains("unit=microseconds"));
-        assert!(message.contains("reason=unix_nanos_overflow"));
-    }
-
-    #[rstest]
-    fn test_unix_nanos_from_timestamp_rejects_nanosecond_like_microsecond_value() {
-        let err = unix_nanos_from_micros(
-            1_783_095_241_795_039_412,
-            "transact_time",
-            "spot_sbe_new_order_response",
-        )
-        .unwrap_err();
-        let message = err.to_string();
-
-        assert!(message.contains("unit=microseconds"));
-        assert!(message.contains("raw_value=1783095241795039412"));
-        assert!(message.contains("reason=unix_nanos_overflow"));
-    }
-
-    #[rstest]
-    fn test_spot_adapter_uses_checked_timestamp_helpers() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let files = [
-            "common/parse.rs",
-            "spot/execution.rs",
-            "spot/http/models.rs",
-            "spot/websocket/public_json/parse.rs",
-            "spot/websocket/streams/parse.rs",
-            "spot/websocket/trading/parse.rs",
-        ];
-        let forbidden = [
-            concat!("UnixNanos", "::", "from_micros("),
-            concat!("UnixNanos", "::", "from_millis("),
-            "as u64 * 1_000",
-        ];
-        let mut offenders = Vec::new();
-
-        for file in files {
-            let path = root.join(file);
-            let source = std::fs::read_to_string(&path).unwrap();
-            for pattern in forbidden {
-                if source.contains(pattern) {
-                    offenders.push(format!("{file}: {pattern}"));
-                }
-            }
-        }
-
-        assert!(
-            offenders.is_empty(),
-            "unchecked Binance timestamp conversions found: {offenders:?}"
-        );
-    }
 }

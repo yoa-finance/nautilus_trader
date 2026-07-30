@@ -429,7 +429,7 @@ impl BybitWebSocketClient {
                             log::info!("WebSocket reconnected");
                         }
                         BybitWsMessage::Auth(_) => {
-                            log::info!("WebSocket authenticated");
+                            log::debug!("WebSocket authenticated");
                         }
                     }
                 }
@@ -445,7 +445,7 @@ impl BybitWebSocketClient {
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             if let Err(e) = client.close().await {
-                log::error!("Error on close: {e}");
+                log::warn!("Error on close: {e}");
             }
             Ok(())
         })

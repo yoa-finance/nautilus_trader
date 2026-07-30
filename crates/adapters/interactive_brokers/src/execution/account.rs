@@ -24,6 +24,7 @@ use ibapi::{
         types::{AccountGroup, AccountId as IbAccountId},
     },
     client::Client,
+    prelude::{StreamExt, SubscriptionItemStreamExt},
 };
 use nautilus_common::{
     live::runner::get_exec_event_sender,
@@ -72,12 +73,13 @@ pub async fn subscribe_account_summary(
     ];
 
     let group = AccountGroup("All".to_string());
-    let mut subscription = client
+    let subscription = client
         .account_summary(&group, tags)
         .await
         .context("Failed to subscribe to account summary")?;
+    let mut subscription = subscription.filter_data();
 
-    tracing::info!("Subscribed to account summary for account: {}", account_id);
+    tracing::debug!("Subscribed to account summary for account: {}", account_id);
 
     // Process initial account summary snapshot
     // We collect all summary items until the API sends AccountSummaryResult::End, so the
@@ -132,7 +134,7 @@ pub async fn subscribe_account_summary(
         }
     }
 
-    tracing::info!(
+    tracing::debug!(
         "Received account summary: {} balances, {} margins",
         balances.len(),
         margins.len()
@@ -214,19 +216,20 @@ fn merge_account_summary_balance(
 /// Returns an error if subscription fails.
 pub async fn subscribe_pnl(client: &Arc<Client>, account_id: AccountId) -> anyhow::Result<()> {
     let account = IbAccountId(raw_ib_account_code(&account_id));
-    let mut subscription = client
+    let subscription = client
         .pnl(&account, None)
         .await
         .context("Failed to subscribe to PnL")?;
+    let mut subscription = subscription.filter_data();
 
-    tracing::info!("Subscribed to PnL updates for account: {}", account_id);
+    tracing::debug!("Subscribed to PnL updates for account: {}", account_id);
 
     // Process PnL updates in background task
     nautilus_common::live::get_runtime().spawn(async move {
         while let Some(result) = subscription.next().await {
             match result {
                 Ok(pnl) => {
-                    tracing::info!(
+                    tracing::debug!(
                         "PnL update - Daily: {:.2}, Unrealized: {:?}, Realized: {:?}",
                         pnl.daily_pnl,
                         pnl.unrealized_pnl,
@@ -301,12 +304,13 @@ pub async fn initialize_position_tracking(
     position_tracker: PositionTracker,
 ) -> anyhow::Result<()> {
     let raw_account_id = raw_ib_account_code(&account_id);
-    let mut subscription = client
+    let subscription = client
         .positions()
         .await
         .context("Failed to request positions")?;
+    let mut subscription = subscription.filter_data();
 
-    tracing::info!("Initializing position tracking for account: {}", account_id);
+    tracing::debug!("Initializing position tracking for account: {}", account_id);
 
     let mut position_count = 0;
     let mut tracker = position_tracker.lock().await;
@@ -337,7 +341,7 @@ pub async fn initialize_position_tracking(
         }
     }
 
-    tracing::info!(
+    tracing::debug!(
         "Initialized tracking for {} existing positions",
         position_count
     );
@@ -360,12 +364,13 @@ pub async fn subscribe_positions(
     instrument_provider: Arc<crate::providers::instruments::InteractiveBrokersInstrumentProvider>,
 ) -> anyhow::Result<()> {
     let raw_account_id = raw_ib_account_code(&account_id);
-    let mut subscription = client
+    let subscription = client
         .positions()
         .await
         .context("Failed to subscribe to positions")?;
+    let mut subscription = subscription.filter_data();
 
-    tracing::info!("Subscribed to position updates for account: {}", account_id);
+    tracing::debug!("Subscribed to position updates for account: {}", account_id);
 
     let exec_sender = get_exec_event_sender();
     let clock = get_atomic_clock_realtime();

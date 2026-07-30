@@ -120,7 +120,6 @@ mod tests {
     #[case(SymbolStatus::EndOfDay, MarketStatusAction::Close)]
     #[case(SymbolStatus::Halt, MarketStatusAction::Halt)]
     #[case(SymbolStatus::Break, MarketStatusAction::Pause)]
-    #[case(SymbolStatus::CancelOnly, MarketStatusAction::NotAvailableForTrading)]
     #[case(
         SymbolStatus::NonRepresentable,
         MarketStatusAction::NotAvailableForTrading

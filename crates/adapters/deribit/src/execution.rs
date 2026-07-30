@@ -181,26 +181,34 @@ impl DeribitExecutionClient {
         }
         .to_string();
 
-        let time_in_force = Some(
-            match order.time_in_force() {
-                TimeInForce::Gtc => "good_til_cancelled",
-                TimeInForce::Ioc => "immediate_or_cancel",
-                TimeInForce::Fok => "fill_or_kill",
-                TimeInForce::Gtd => {
-                    if order.expire_time().is_some() {
-                        log::warn!(
-                            "Deribit GTD orders expire at 8:00 UTC only - custom expire_time is ignored. \
-                            For custom expiry times, use managed GTD with emulation_trigger"
-                        );
+        let time_in_force = if matches!(
+            order.order_type(),
+            OrderType::Market | OrderType::StopMarket | OrderType::MarketIfTouched
+        ) {
+            // Deribit rejects `time_in_force` on market-style order types
+            None
+        } else {
+            Some(
+                match order.time_in_force() {
+                    TimeInForce::Gtc => "good_til_cancelled",
+                    TimeInForce::Ioc => "immediate_or_cancel",
+                    TimeInForce::Fok => "fill_or_kill",
+                    TimeInForce::Gtd => {
+                        if order.expire_time().is_some() {
+                            log::warn!(
+                                "Deribit GTD orders expire at 8:00 UTC only - custom expire_time is ignored. \
+                                For custom expiry times, use managed GTD with emulation_trigger"
+                            );
+                        }
+                        "good_til_day"
                     }
-                    "good_til_day"
+                    other => {
+                        anyhow::bail!("Unsupported time_in_force {other:?} for Deribit");
+                    }
                 }
-                other => {
-                    anyhow::bail!("Unsupported time_in_force {other:?} for Deribit");
-                }
-            }
-            .to_string(),
-        );
+                .to_string(),
+            )
+        };
 
         // Deribit's `valid_until` is a REQUEST timeout, not order expiry.
         // Deribit's `good_til_day` expires at end of trading session (8 UTC).
@@ -314,7 +322,7 @@ impl DeribitExecutionClient {
         });
 
         self.ws_stream_handle = Some(handle);
-        log::info!("WebSocket stream handler started");
+        log::debug!("WebSocket stream handler started");
     }
 }
 
@@ -417,7 +425,7 @@ impl ExecutionClient for DeribitExecutionClient {
                     continue;
                 }
 
-                log::info!("Fetched {} {product_type:?} instruments", instruments.len());
+                log::debug!("Fetched {} {product_type:?} instruments", instruments.len());
                 self.ws_client.cache_instruments(&instruments);
                 self.http_client.cache_instruments(&instruments);
             }
@@ -443,7 +451,7 @@ impl ExecutionClient for DeribitExecutionClient {
             .await
             .map_err(|e| anyhow::anyhow!("failed to authenticate WebSocket session: {e}"))?;
 
-        log::info!("WebSocket client authenticated for execution");
+        log::debug!("WebSocket client authenticated for execution");
 
         // Subscribe to user order and trade updates for all instruments
         self.ws_client
@@ -467,7 +475,7 @@ impl ExecutionClient for DeribitExecutionClient {
             anyhow::bail!("subscription confirmation failed: {e}");
         }
 
-        log::info!("Subscribed to user order, trade, and portfolio updates");
+        log::debug!("Subscribed to user order, trade, and portfolio updates");
 
         // Spawn stream handler to dispatch WebSocket messages to the execution engine
         let stream = self.ws_client.stream()?;
@@ -694,7 +702,7 @@ impl ExecutionClient for DeribitExecutionClient {
         let strategy_id = cmd.strategy_id;
         let instrument_id = cmd.instrument_id;
 
-        log::info!("Querying order state: order_id={order_id}, client_order_id={client_order_id}");
+        log::debug!("Querying order state: order_id={order_id}, client_order_id={client_order_id}");
 
         // Spawn async task to query order state via WebSocket
         // Response will be dispatched through the WebSocket stream handler as OrderStatusReport
@@ -716,12 +724,7 @@ impl ExecutionClient for DeribitExecutionClient {
     }
 
     fn submit_order(&self, cmd: SubmitOrder) -> anyhow::Result<()> {
-        let order = self
-            .core
-            .cache()
-            .order(&cmd.client_order_id)
-            .map(|o| o.clone())
-            .ok_or_else(|| anyhow::anyhow!("Order not found: {}", cmd.client_order_id))?;
+        let order = self.core.cache().try_order_owned(&cmd.client_order_id)?;
         self.submit_single_order(&order, "submit_order");
         Ok(())
     }
@@ -734,7 +737,7 @@ impl ExecutionClient for DeribitExecutionClient {
 
         let orders = self.core.get_orders_for_list(&cmd.order_list)?;
 
-        log::info!(
+        log::debug!(
             "Submitting order list {} with {} orders for instrument={}",
             cmd.order_list.id,
             orders.len(),
@@ -802,7 +805,7 @@ impl ExecutionClient for DeribitExecutionClient {
         let strategy_id = cmd.strategy_id;
         let instrument_id = cmd.instrument_id;
 
-        log::info!(
+        log::debug!(
             "Modifying order: order_id={order_id}, quantity={quantity}, price={price}, client_order_id={client_order_id}"
         );
 
@@ -851,7 +854,7 @@ impl ExecutionClient for DeribitExecutionClient {
         let strategy_id = cmd.strategy_id;
         let instrument_id = cmd.instrument_id;
 
-        log::info!("Canceling order: order_id={order_id}, client_order_id={client_order_id}");
+        log::debug!("Canceling order: order_id={order_id}, client_order_id={client_order_id}");
 
         // Spawn async task to send cancel via WebSocket
         self.spawn_task("cancel_order", async move {
@@ -881,7 +884,7 @@ impl ExecutionClient for DeribitExecutionClient {
 
         // If NoOrderSide, use efficient bulk cancel via Deribit API
         if cmd.order_side == OrderSide::NoOrderSide {
-            log::info!(
+            log::debug!(
                 "Cancelling all orders: instrument={instrument_id}, order_side=NoOrderSide (bulk)"
             );
 
@@ -899,7 +902,7 @@ impl ExecutionClient for DeribitExecutionClient {
 
         // For specific side (Buy/Sell), filter from cache and cancel individually
         // Deribit API doesn't support side filtering, so we implement it locally
-        log::info!(
+        log::debug!(
             "Cancelling orders by side: instrument={}, order_side={}",
             instrument_id,
             cmd.order_side
@@ -933,7 +936,7 @@ impl ExecutionClient for DeribitExecutionClient {
             return Ok(());
         }
 
-        log::info!(
+        log::debug!(
             "Cancelling {} {} orders for {}",
             orders_to_cancel.len(),
             cmd.order_side,
@@ -976,7 +979,7 @@ impl ExecutionClient for DeribitExecutionClient {
             return Ok(());
         }
 
-        log::info!(
+        log::debug!(
             "Batch cancelling {} orders for instrument={}",
             cmd.cancels.len(),
             cmd.instrument_id

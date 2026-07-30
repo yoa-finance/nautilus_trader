@@ -155,10 +155,10 @@ cdef class Portfolio(PortfolioFacade):
 
         self._unrealized_pnls: dict[InstrumentId, dict[AccountId, Money]] = {}
         self._realized_pnls: dict[InstrumentId, dict[AccountId, Money]] = {}
-        self._snapshot_sum_per_position_by_instrument: dict[InstrumentId, dict[PositionId, Money]] = {}
-        self._snapshot_last_per_position_by_instrument: dict[InstrumentId, dict[PositionId, Money]] = {}
-        self._snapshot_processed_counts_by_instrument: dict[InstrumentId, dict[PositionId, int]] = {}
-        self._snapshot_account_ids_by_instrument: dict[InstrumentId, dict[PositionId, AccountId]] = {}
+        self._snapshot_sum_per_position: dict[PositionId, Money] = {}
+        self._snapshot_last_per_position: dict[PositionId, Money] = {}
+        self._snapshot_processed_counts: dict[PositionId, int] = {}
+        self._snapshot_account_ids: dict[PositionId, AccountId] = {}
         self._net_positions: dict[InstrumentId, dict[AccountId, Decimal]] = {}
         self._bet_positions: dict[InstrumentId, object] = {}
         self._index_bet_positions: dict[InstrumentId, set[PositionId]] = defaultdict(set)
@@ -631,10 +631,7 @@ cdef class Portfolio(PortfolioFacade):
             snapshot_ids = self._cache.position_snapshot_ids(event.instrument_id)
             if event.position_id in snapshot_ids:
                 # Compare with last snapshot PnL - if different, it's a new cycle
-                last_snapshot_pnl = self._snapshot_last_per_position_by_instrument.get(
-                    event.instrument_id,
-                    {},
-                ).get(event.position_id)
+                last_snapshot_pnl = self._snapshot_last_per_position.get(event.position_id)
                 if last_snapshot_pnl is not None and updated_position.realized_pnl is not None:
                     if (
                         updated_position.realized_pnl.currency != last_snapshot_pnl.currency
@@ -664,6 +661,36 @@ cdef class Portfolio(PortfolioFacade):
         account, instrument = self._validate_event_account_and_instrument(event, "position")
         if account is None or instrument is None:
             return
+
+        cdef Money converted_pnl
+        if updated_position is not None and updated_position.is_closed_c() and updated_position.realized_pnl is not None:
+            self.analyzer.record_trade(
+                updated_position.id,
+                updated_position.realized_pnl,
+                updated_position.ts_last,
+            )
+
+            if (
+                account.base_currency is not None
+                and updated_position.realized_pnl.currency != account.base_currency
+            ):
+                converted_pnl = self._convert_money_if_needed(
+                    updated_position.realized_pnl,
+                    account.base_currency,
+                    venue=event.instrument_id.venue,
+                )
+                if converted_pnl is not None:
+                    self.analyzer.record_trade(
+                        updated_position.id,
+                        converted_pnl,
+                        updated_position.ts_last,
+                    )
+                else:
+                    self._log.warning(
+                        f"Cannot record account-currency realized PnL for {updated_position.id}: "
+                        f"conversion failed from {updated_position.realized_pnl.currency} "
+                        f"to {account.base_currency}",
+                    )
 
         if account.type != AccountType.MARGIN or not account.calculate_account_state:
             return  # Nothing to calculate
@@ -753,10 +780,10 @@ cdef class Portfolio(PortfolioFacade):
         self._realized_pnls.clear()
         self._unrealized_pnls.clear()
         self._pending_calcs.clear()
-        self._snapshot_sum_per_position_by_instrument.clear()
-        self._snapshot_last_per_position_by_instrument.clear()
-        self._snapshot_processed_counts_by_instrument.clear()
-        self._snapshot_account_ids_by_instrument.clear()
+        self._snapshot_sum_per_position.clear()
+        self._snapshot_last_per_position.clear()
+        self._snapshot_processed_counts.clear()
+        self._snapshot_account_ids.clear()
         self._venues_missing_price.clear()
         self.analyzer.reset()
 
@@ -2082,8 +2109,6 @@ cdef class Portfolio(PortfolioFacade):
             Instrument inst
             set[PositionId] snapshot_ids
             PositionId position_id
-            dict snapshot_account_ids
-            AccountId snapshot_account_id
 
         if is_realized:
             # For realized PnL, check all positions (open and closed) and snapshots
@@ -2102,9 +2127,8 @@ cdef class Portfolio(PortfolioFacade):
 
             # Also check snapshots for account_ids
             snapshot_ids = self._cache.position_snapshot_ids(instrument_id)
-            snapshot_account_ids = self._snapshot_account_ids_by_instrument.get(instrument_id, {})
             for position_id in snapshot_ids:
-                snapshot_account_id = snapshot_account_ids.get(position_id)
+                snapshot_account_id = self._snapshot_account_ids.get(position_id)
                 if snapshot_account_id is not None:
                     account_ids.add(snapshot_account_id)
         else:
@@ -2274,23 +2298,14 @@ cdef class Portfolio(PortfolioFacade):
         return result
 
     cdef void _ensure_snapshot_pnls_cached_for(self, InstrumentId instrument_id):  # noqa: C901
-        # Keep snapshot PnL state scoped to the queried instrument. A global
-        # position-id cache causes alternating multi-instrument backtests to
-        # prune another instrument's processed counts and replay old snapshots.
+        # Performance: This method maintains an incremental cache of snapshot PnLs
+        # It only unpickles new snapshots that haven't been processed yet
+        # Tracks sum and last PnL per position for efficient NETTING OMS support
+
+        # Get all position IDs that have snapshots for this instrument
         cdef set[PositionId] snapshot_position_ids = self._cache.position_snapshot_ids(instrument_id)
         if not snapshot_position_ids:
-            if (
-                instrument_id in self._snapshot_processed_counts_by_instrument
-                or instrument_id in self._snapshot_sum_per_position_by_instrument
-                or instrument_id in self._snapshot_last_per_position_by_instrument
-                or instrument_id in self._snapshot_account_ids_by_instrument
-            ):
-                self._snapshot_processed_counts_by_instrument.pop(instrument_id, None)
-                self._snapshot_sum_per_position_by_instrument.pop(instrument_id, None)
-                self._snapshot_last_per_position_by_instrument.pop(instrument_id, None)
-                self._snapshot_account_ids_by_instrument.pop(instrument_id, None)
-                self._realized_pnls.pop(instrument_id, None)
-            return
+            return  # Nothing to process
 
         cdef bint rebuild = False
         cdef bint has_new_snapshots = False
@@ -2301,21 +2316,15 @@ cdef class Portfolio(PortfolioFacade):
             list position_id_snapshots
             int prev_count
             int curr_count
-            int idx
-            object s
             dict[PositionId, list] snapshot_data = {}
-            dict processed_counts = self._snapshot_processed_counts_by_instrument.setdefault(instrument_id, {})
-            dict sum_per_position = self._snapshot_sum_per_position_by_instrument.setdefault(instrument_id, {})
-            dict last_per_position = self._snapshot_last_per_position_by_instrument.setdefault(instrument_id, {})
-            dict account_ids = self._snapshot_account_ids_by_instrument.setdefault(instrument_id, {})
 
-        # Pre-fetch and detect changes for this instrument only.
+        # Pre-fetch and detect changes
         for position_id in snapshot_position_ids:
             position_id_snapshots = self._cache.position_snapshot_bytes(position_id)
             curr_count = len(position_id_snapshots)
             snapshot_data[position_id] = position_id_snapshots
 
-            prev_count = processed_counts.get(position_id, 0)
+            prev_count = self._snapshot_processed_counts.get(position_id, 0)
             if prev_count > curr_count:
                 rebuild = True
                 has_purge = True
@@ -2328,11 +2337,10 @@ cdef class Portfolio(PortfolioFacade):
             Money last_pnl
 
         if rebuild:
-            # Full rebuild for this instrument only.
+            # Full rebuild: process all snapshots from scratch
             for position_id in snapshot_position_ids:
                 sum_pnl = None
                 last_pnl = None
-                account_ids.pop(position_id, None)
                 position_id_snapshots = snapshot_data[position_id]
                 curr_count = len(position_id_snapshots)
 
@@ -2340,85 +2348,96 @@ cdef class Portfolio(PortfolioFacade):
                     for s in position_id_snapshots:
                         snapshot = pickle.loads(s)
 
+                        # Track account_id for this position snapshot
                         if snapshot.account_id is not None:
-                            account_ids[position_id] = snapshot.account_id
+                            self._snapshot_account_ids[position_id] = snapshot.account_id
 
                         if snapshot.realized_pnl is not None:
                             if sum_pnl is None:
                                 sum_pnl = snapshot.realized_pnl
                             elif sum_pnl.currency == snapshot.realized_pnl.currency:
+                                # Accumulate all snapshot PnLs
                                 sum_pnl = Money(
                                     sum_pnl.as_double() + snapshot.realized_pnl.as_double(),
-                                    sum_pnl.currency,
+                                    sum_pnl.currency
                                 )
 
+                            # Always update last to the most recent snapshot
                             last_pnl = snapshot.realized_pnl
 
+                # Update tracking structures
                 if sum_pnl is not None:
-                    sum_per_position[position_id] = sum_pnl
-                    last_per_position[position_id] = last_pnl
+                    self._snapshot_sum_per_position[position_id] = sum_pnl
+                    self._snapshot_last_per_position[position_id] = last_pnl
                 else:
-                    sum_per_position.pop(position_id, None)
-                    last_per_position.pop(position_id, None)
+                    self._snapshot_sum_per_position.pop(position_id, None)
+                    self._snapshot_last_per_position.pop(position_id, None)
 
-                processed_counts[position_id] = curr_count
+                self._snapshot_processed_counts[position_id] = curr_count
         else:
-            # Incremental path: only process new snapshots for this instrument.
+            # Incremental path: only process new snapshots
             for position_id in snapshot_position_ids:
                 position_id_snapshots = snapshot_data[position_id]
                 curr_count = len(position_id_snapshots)
                 if curr_count == 0:
                     continue
 
-                prev_count = processed_counts.get(position_id, 0)
+                prev_count = self._snapshot_processed_counts.get(position_id, 0)
                 if prev_count >= curr_count:
                     continue
 
-                sum_pnl = sum_per_position.get(position_id)
-                last_pnl = last_per_position.get(position_id)
+                sum_pnl = self._snapshot_sum_per_position.get(position_id)
+                last_pnl = self._snapshot_last_per_position.get(position_id)
 
+                # Process only new snapshots
                 for idx in range(prev_count, curr_count):
                     snapshot = pickle.loads(position_id_snapshots[idx])
 
+                    # Track account_id for this position snapshot
                     if snapshot.account_id is not None:
-                        account_ids[position_id] = snapshot.account_id
+                        self._snapshot_account_ids[position_id] = snapshot.account_id
 
                     if snapshot.realized_pnl is not None:
                         if sum_pnl is None:
                             sum_pnl = snapshot.realized_pnl
                         elif sum_pnl.currency == snapshot.realized_pnl.currency:
+                            # Add to running sum
                             sum_pnl = Money(
                                 sum_pnl.as_double() + snapshot.realized_pnl.as_double(),
-                                sum_pnl.currency,
+                                sum_pnl.currency
                             )
 
+                        # Update last to most recent
                         last_pnl = snapshot.realized_pnl
 
+                # Update tracking structures
                 if sum_pnl is not None:
-                    sum_per_position[position_id] = sum_pnl
-                    last_per_position[position_id] = last_pnl
+                    self._snapshot_sum_per_position[position_id] = sum_pnl
+                    self._snapshot_last_per_position[position_id] = last_pnl
                 else:
-                    sum_per_position.pop(position_id, None)
-                    last_per_position.pop(position_id, None)
+                    self._snapshot_sum_per_position.pop(position_id, None)
+                    self._snapshot_last_per_position.pop(position_id, None)
 
-                processed_counts[position_id] = curr_count
+                self._snapshot_processed_counts[position_id] = curr_count
 
-        # Prune stale entries for this instrument only.
+        # Prune stale entries (positions that no longer have snapshots)
         cdef list[PositionId] stale_ids = []
         cdef PositionId stale_position_id
-        for stale_position_id in processed_counts:
+        for stale_position_id in self._snapshot_processed_counts:
             if stale_position_id not in snapshot_position_ids:
                 stale_ids.append(stale_position_id)
 
+        # If positions were purged, invalidate PnL cache
         if stale_ids:
             has_purge = True
 
         for stale_position_id in stale_ids:
-            processed_counts.pop(stale_position_id, None)
-            sum_per_position.pop(stale_position_id, None)
-            last_per_position.pop(stale_position_id, None)
-            account_ids.pop(stale_position_id, None)
+            self._snapshot_processed_counts.pop(stale_position_id, None)
+            self._snapshot_sum_per_position.pop(stale_position_id, None)
+            self._snapshot_last_per_position.pop(stale_position_id, None)
+            self._snapshot_account_ids.pop(stale_position_id, None)
 
+        # Invalidate PnL cache when snapshots change (new snapshots or purges)
         if has_new_snapshots or has_purge:
             self._realized_pnls.pop(instrument_id, None)
 
@@ -2436,11 +2455,9 @@ cdef class Portfolio(PortfolioFacade):
             set[PositionId] snapshot_ids = self._cache.position_snapshot_ids(instrument_id)
             set[PositionId] processed_ids = set()
             double total_pnl = 0.0
-            dict snapshot_account_ids = self._snapshot_account_ids_by_instrument.get(instrument_id, {})
-            dict snapshot_sum_per_position = self._snapshot_sum_per_position_by_instrument.get(instrument_id, {})
-            dict snapshot_last_per_position = self._snapshot_last_per_position_by_instrument.get(instrument_id, {})
             PositionId position_id
             Money sum_pnl
+            Money last_pnl
             object contribution_result
             double contribution
             AccountId snapshot_account_id
@@ -2451,11 +2468,11 @@ cdef class Portfolio(PortfolioFacade):
 
         for position_id in snapshot_ids:
             # Only process snapshots for the requested account
-            snapshot_account_id = snapshot_account_ids.get(position_id)
+            snapshot_account_id = self._snapshot_account_ids.get(position_id)
             if snapshot_account_id != account_id:
                 continue  # Skip snapshots from other accounts
 
-            sum_pnl = snapshot_sum_per_position.get(position_id)
+            sum_pnl = self._snapshot_sum_per_position.get(position_id)
             if sum_pnl is None:
                 continue  # No PnL for this position
 
@@ -2464,7 +2481,6 @@ cdef class Portfolio(PortfolioFacade):
                 active_position_ids=active_position_ids,
                 positions=positions,
                 sum_pnl=sum_pnl,
-                snapshot_last_per_position=snapshot_last_per_position,
                 processed_ids=processed_ids,
             )
             if contribution_result is None:
@@ -2508,7 +2524,6 @@ cdef class Portfolio(PortfolioFacade):
         set active_position_ids,
         list positions,
         Money sum_pnl,
-        dict snapshot_last_per_position,
         set processed_ids,
     ):
         # Calculate the contribution from a snapshot using the 3-case combination rule
@@ -2545,7 +2560,7 @@ cdef class Portfolio(PortfolioFacade):
                 # when we add the position realized below, net effect is `sum`.
                 # If not equal (new closed cycle not snapshotted), include full `sum` here
                 # and add the position realized below (net `sum + realized`).
-                last_pnl = snapshot_last_per_position.get(position_id)
+                last_pnl = self._snapshot_last_per_position.get(position_id)
                 if (
                     last_pnl is not None
                     and position.realized_pnl is not None

@@ -64,6 +64,7 @@ pub struct LiveTimer {
     next_time_ns: Arc<AtomicU64>,
     callback: TimeEventCallback,
     task_handle: Option<JoinHandle<()>>,
+    canceled: bool,
     sender: Option<Arc<dyn TimeEventSender>>,
 }
 
@@ -91,7 +92,7 @@ impl LiveTimer {
             start_time_ns.as_u64() + interval_ns.get()
         };
 
-        log::debug!("Creating timer '{name}'");
+        log::trace!("Creating timer '{name}'");
 
         Self {
             name,
@@ -102,6 +103,7 @@ impl LiveTimer {
             next_time_ns: Arc::new(AtomicU64::new(next_time_ns)),
             callback,
             task_handle: None,
+            canceled: false,
             sender,
         }
     }
@@ -120,9 +122,11 @@ impl LiveTimer {
     /// A timer that has not been started is not expired.
     #[must_use]
     pub fn is_expired(&self) -> bool {
-        self.task_handle
-            .as_ref()
-            .is_some_and(tokio::task::JoinHandle::is_finished)
+        self.canceled
+            || self
+                .task_handle
+                .as_ref()
+                .is_some_and(tokio::task::JoinHandle::is_finished)
     }
 
     /// Starts the timer.
@@ -253,29 +257,37 @@ impl LiveTimer {
         });
 
         self.task_handle = Some(handle);
+        self.canceled = false;
     }
 
     /// Cancels the timer.
     ///
     /// The timer will not generate a final event.
     pub fn cancel(&mut self) {
-        log::debug!("Cancel timer '{}'", self.name);
+        log::trace!("Cancel timer '{}'", self.name);
 
-        if let Some(ref handle) = self.task_handle {
+        if let Some(handle) = self.task_handle.take() {
             handle.abort();
         }
+        self.canceled = true;
     }
 }
 
 impl Timer for LiveTimer {
     fn is_expired(&self) -> bool {
-        self.task_handle
-            .as_ref()
-            .is_some_and(tokio::task::JoinHandle::is_finished)
+        Self::is_expired(self)
     }
 
     fn cancel(&mut self) {
         Self::cancel(self);
+    }
+}
+
+impl Drop for LiveTimer {
+    fn drop(&mut self) {
+        if let Some(handle) = self.task_handle.take() {
+            handle.abort();
+        }
     }
 }
 

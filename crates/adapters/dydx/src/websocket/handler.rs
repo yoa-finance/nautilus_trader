@@ -209,7 +209,8 @@ impl FeedHandler {
                     if let Err(e) = self.replay_subscriptions().await {
                         log::error!("Failed to replay subscriptions after reconnect: {e}");
                     }
-                    return vec![DydxWsOutputMessage::Reconnected];
+                    let topics = self.subscriptions.all_topics();
+                    return vec![DydxWsOutputMessage::Reconnected { topics }];
                 }
 
                 // Hot path: zero-copy parse for feed messages (orderbook/trades/candles)
@@ -298,7 +299,7 @@ impl FeedHandler {
             Message::Ping(_data) => vec![],
             Message::Binary(_bin) => vec![],
             Message::Close(_frame) => {
-                log::info!("WebSocket close frame received");
+                log::debug!("WebSocket close frame received");
                 vec![]
             }
             Message::Frame(_) => vec![],
@@ -734,7 +735,7 @@ impl FeedHandler {
     ) -> DydxWsResult<Vec<DydxWsOutputMessage>> {
         match msg {
             DydxWsMessage::Connected(_) => {
-                log::info!("dYdX WebSocket connected");
+                log::debug!("dYdX WebSocket connected");
                 Ok(vec![])
             }
             DydxWsMessage::Subscribed(sub) => {
@@ -764,7 +765,8 @@ impl FeedHandler {
                 if let Err(e) = self.replay_subscriptions().await {
                     log::error!("Failed to replay subscriptions after reconnect message: {e}");
                 }
-                Ok(vec![DydxWsOutputMessage::Reconnected])
+                let topics = self.subscriptions.all_topics();
+                Ok(vec![DydxWsOutputMessage::Reconnected { topics }])
             }
             DydxWsMessage::Pong => Ok(vec![]),
             DydxWsMessage::Raw(_) => Ok(vec![]),

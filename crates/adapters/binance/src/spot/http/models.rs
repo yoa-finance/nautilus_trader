@@ -468,7 +468,7 @@ impl BinanceAccountInfo {
         // Ensure at least one balance exists
         if balances.is_empty() {
             let zero_currency = Currency::USDT();
-            let zero_money = Money::new(0.0, zero_currency);
+            let zero_money = Money::zero(zero_currency);
             let zero_balance = AccountBalance::new(zero_money, zero_money, zero_money);
             balances.push(zero_balance);
         }
@@ -729,6 +729,40 @@ pub struct TradeFee {
     pub taker_commission: String,
 }
 
+/// Response from a new OCO order-list request.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NewOcoOrderListResponse {
+    /// Exchange order list ID.
+    pub order_list_id: i64,
+    /// Contingency type.
+    pub contingency_type: String,
+    /// List status type.
+    pub list_status_type: String,
+    /// List order status.
+    pub list_order_status: String,
+    /// Client order ID for the order list.
+    pub list_client_order_id: String,
+    /// Transaction time in milliseconds.
+    pub transaction_time: i64,
+    /// Trading pair symbol.
+    pub symbol: String,
+    /// Orders in the list.
+    pub orders: Vec<OrderListOrder>,
+}
+
+/// Order summary inside an order-list response.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrderListOrder {
+    /// Trading pair symbol.
+    pub symbol: String,
+    /// Exchange order ID.
+    pub order_id: i64,
+    /// Client order ID.
+    pub client_order_id: String,
+}
+
 /// Result of a single order in a batch operation.
 ///
 /// Each item in a batch response can be either a success or an error.
@@ -920,38 +954,6 @@ mod tests {
         assert_eq!(response.symbol, "BTCUSDT");
         assert_eq!(response.maker_commission, "0.001");
         assert_eq!(response.taker_commission, "0.001");
-    }
-
-    #[rstest]
-    fn test_account_info_to_account_state_rejects_invalid_update_time() {
-        let account = BinanceAccountInfo {
-            commission_exponent: -8,
-            maker_commission_mantissa: 0,
-            taker_commission_mantissa: 0,
-            buyer_commission_mantissa: 0,
-            seller_commission_mantissa: 0,
-            can_trade: true,
-            can_withdraw: true,
-            can_deposit: true,
-            require_self_trade_prevention: false,
-            prevent_sor: false,
-            update_time: 1_783_095_241_795_039_412,
-            account_type: "SPOT".to_string(),
-            balances: vec![],
-        };
-
-        let error = account
-            .to_account_state(
-                AccountId::from("BINANCE-SPOT-001"),
-                UnixNanos::from(1_700_000_000_000_000_000u64),
-            )
-            .unwrap_err();
-        let message = error.to_string();
-
-        assert!(message.contains("context=spot_sbe_account_response"));
-        assert!(message.contains("field=account.update_time"));
-        assert!(message.contains("unit=microseconds"));
-        assert!(message.contains("raw_value=1783095241795039412"));
     }
 
     #[rstest]

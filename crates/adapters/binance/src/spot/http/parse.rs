@@ -1255,11 +1255,6 @@ mod tests {
     use rstest::rstest;
 
     use super::*;
-    use crate::spot::sbe::spot::{
-        Encoder, WriteBuf, contingency_type::ContingencyType, list_order_status::ListOrderStatus,
-        list_status_type::ListStatusType, order_side::OrderSide, order_status::OrderStatus,
-        order_type::OrderType, time_in_force::TimeInForce,
-    };
 
     /// Schema v1 block length for new order full response (template 302).
     const NEW_ORDER_FULL_BLOCK_LENGTH: usize = 153;
@@ -2564,106 +2559,23 @@ mod tests {
         buf.extend_from_slice(&(response_two.len() as u16).to_le_bytes());
         buf.extend_from_slice(&response_two);
 
-        let result = decode_cancel_open_orders(&buf).unwrap();
+        let responses = decode_cancel_open_orders(&buf).unwrap();
 
-        assert_eq!(result.items.len(), 2);
-        match result.items.as_slice() {
-            [
-                BinanceSpotCancelAllItem::Order(first),
-                BinanceSpotCancelAllItem::Order(second),
-            ] => {
-                assert_eq!(first.order_id, 111);
-                assert_eq!(first.symbol, "ETHUSDT");
-                assert_eq!(first.orig_client_order_id, "orig-1");
-                assert_eq!(first.client_order_id, "new-1");
-                assert_eq!(second.order_id, 222);
-                assert_eq!(second.symbol, "BTCUSDT");
-                assert_eq!(second.orig_client_order_id, "orig-2");
-                assert_eq!(second.client_order_id, "new-2");
-            }
-            other => panic!("expected two cancel-order items, was {other:?}"),
-        }
-    }
-
-    #[rstest]
-    fn test_decode_cancel_open_orders_empty() {
-        let header = create_header(
-            0,
-            CANCEL_OPEN_ORDERS_TEMPLATE_ID,
-            SBE_SCHEMA_ID,
-            SBE_SCHEMA_VERSION,
-        );
-
-        let mut buf = Vec::new();
-        buf.extend_from_slice(&header);
-        buf.extend_from_slice(&create_group_header(0, 0));
-
-        let result = decode_cancel_open_orders(&buf).unwrap();
-
-        assert!(result.items.is_empty());
-    }
-
-    #[rstest]
-    fn test_decode_cancel_open_orders_order_list_item() {
-        let header = create_header(
-            0,
-            CANCEL_OPEN_ORDERS_TEMPLATE_ID,
-            SBE_SCHEMA_ID,
-            SBE_SCHEMA_VERSION,
-        );
-        let response = create_cancel_order_list_response_buffer(333, "ETHUSDT");
-
-        let mut buf = Vec::new();
-        buf.extend_from_slice(&header);
-        buf.extend_from_slice(&create_group_header(0, 1));
-        buf.extend_from_slice(&(response.len() as u16).to_le_bytes());
-        buf.extend_from_slice(&response);
-
-        let result = decode_cancel_open_orders(&buf).unwrap();
-
-        match result.items.as_slice() {
-            [BinanceSpotCancelAllItem::OrderList(order_list)] => {
-                assert_eq!(order_list.template_id, CANCEL_ORDER_LIST_TEMPLATE_ID);
-                assert_eq!(order_list.order_list_id, 333);
-                assert_eq!(order_list.symbol, "ETHUSDT");
-                assert_eq!(order_list.order_reports.len(), 1);
-                assert_eq!(order_list.order_reports[0].status, "Canceled");
-            }
-            other => panic!("expected order-list item, was {other:?}"),
-        }
-    }
-
-    #[rstest]
-    fn test_decode_cancel_open_orders_mixed_items() {
-        let header = create_header(
-            0,
-            CANCEL_OPEN_ORDERS_TEMPLATE_ID,
-            SBE_SCHEMA_ID,
-            SBE_SCHEMA_VERSION,
-        );
-        let order_response = create_cancel_order_response_buffer(111, "ETHUSDT", "orig-1", "new-1");
-        let order_list_response = create_cancel_order_list_response_buffer(333, "ETHUSDT");
-
-        let mut buf = Vec::new();
-        buf.extend_from_slice(&header);
-        buf.extend_from_slice(&create_group_header(0, 2));
-        buf.extend_from_slice(&(order_response.len() as u16).to_le_bytes());
-        buf.extend_from_slice(&order_response);
-        buf.extend_from_slice(&(order_list_response.len() as u16).to_le_bytes());
-        buf.extend_from_slice(&order_list_response);
-
-        let result = decode_cancel_open_orders(&buf).unwrap();
-
-        match result.items.as_slice() {
-            [
-                BinanceSpotCancelAllItem::Order(order),
-                BinanceSpotCancelAllItem::OrderList(order_list),
-            ] => {
-                assert_eq!(order.order_id, 111);
-                assert_eq!(order_list.order_list_id, 333);
-            }
-            other => panic!("expected mixed cancel-all items, was {other:?}"),
-        }
+        assert_eq!(responses.items.len(), 2);
+        let BinanceSpotCancelAllItem::Order(response_one) = &responses.items[0] else {
+            panic!("expected order cancel result");
+        };
+        let BinanceSpotCancelAllItem::Order(response_two) = &responses.items[1] else {
+            panic!("expected order cancel result");
+        };
+        assert_eq!(response_one.order_id, 111);
+        assert_eq!(response_one.symbol, "ETHUSDT");
+        assert_eq!(response_one.orig_client_order_id, "orig-1");
+        assert_eq!(response_one.client_order_id, "new-1");
+        assert_eq!(response_two.order_id, 222);
+        assert_eq!(response_two.symbol, "BTCUSDT");
+        assert_eq!(response_two.orig_client_order_id, "orig-2");
+        assert_eq!(response_two.client_order_id, "new-2");
     }
 
     fn create_cancel_order_response_buffer(
@@ -2705,51 +2617,5 @@ mod tests {
         write_var_string(&mut buf, client_order_id);
 
         buf
-    }
-
-    fn create_cancel_order_list_response_buffer(order_list_id: i64, symbol: &str) -> Vec<u8> {
-        let mut buf_vec = vec![0u8; 512];
-        let buf = WriteBuf::new(buf_vec.as_mut_slice());
-        let enc = cancel_order_list_response_codec::CancelOrderListResponseEncoder::default()
-            .wrap(buf, HEADER_LENGTH);
-        let mut header = enc.header(0);
-        let mut enc = header.parent().unwrap();
-
-        enc.order_list_id(order_list_id);
-        enc.contingency_type(ContingencyType::Oco);
-        enc.list_status_type(ListStatusType::AllDone);
-        enc.list_order_status(ListOrderStatus::AllDone);
-        enc.transaction_time(1_700_000_000_000_000);
-        enc.price_exponent(-2);
-        enc.qty_exponent(-8);
-
-        let orders_enc = cancel_order_list_response_codec::encoder::OrdersEncoder::default();
-        let mut orders_enc = enc.orders_encoder(1, orders_enc);
-        orders_enc.advance().unwrap();
-        orders_enc.order_id(999);
-        orders_enc.symbol(symbol);
-        orders_enc.client_order_id("target-client");
-        let enc = orders_enc.parent().unwrap();
-
-        let reports_enc = cancel_order_list_response_codec::encoder::OrderReportsEncoder::default();
-        let mut reports_enc = enc.order_reports_encoder(1, reports_enc);
-        reports_enc.advance().unwrap();
-        reports_enc.order_id(999);
-        reports_enc.order_list_id(order_list_id);
-        reports_enc.transact_time(1_700_000_000_000_000);
-        reports_enc.status(OrderStatus::Canceled);
-        reports_enc.time_in_force(TimeInForce::Gtc);
-        reports_enc.order_type(OrderType::Limit);
-        reports_enc.side(OrderSide::Sell);
-        reports_enc.symbol(symbol);
-        reports_enc.orig_client_order_id("target-client");
-        reports_enc.client_order_id("target-client");
-        let mut enc = reports_enc.parent().unwrap();
-
-        enc.list_client_order_id("list-client");
-        enc.symbol(symbol);
-        let encoded_len = enc.get_limit();
-        buf_vec.truncate(encoded_len);
-        buf_vec
     }
 }

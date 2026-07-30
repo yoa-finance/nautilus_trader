@@ -1,7 +1,7 @@
 [package]
 name = "stratneo-nautilus-backtest"
 readme = "README.md"
-version = "0.58.4"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
@@ -25,7 +25,7 @@ default = []
 examples = ["nautilus-trading/examples"]
 high-precision = ["nautilus-model/high-precision"]
 defi = ["nautilus-common/defi", "nautilus-data/defi", "nautilus-model/defi"]
-plugin = ["dep:nautilus-plugin"]
+plugin = []
 streaming = ["nautilus-persistence", "nautilus-system/streaming"]
 extension-module = [
   "nautilus-common/extension-module",
@@ -62,11 +62,11 @@ python = [
 [package.metadata.cargo-machete]
 ignored = [
   "cbindgen", # Used by build.rs when the `ffi` feature is enabled
-  "nautilus-plugin", # Optional dep behind the `plugin` feature; enables backtest engines to load plug-in cdylibs via `nautilus_plugin::bridge` once backtest-side callers land
 ]
 
 [package.metadata.docs.rs]
-all-features = true
+# Python docs depend on the local pyo3-stub-gen patch for now, which published crates do not carry
+features = ["defi", "examples", "ffi", "high-precision", "plugin", "streaming"]
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
@@ -77,10 +77,9 @@ nautilus-data = { workspace = true }
 nautilus-execution = { workspace = true }
 nautilus-model = { workspace = true, features = ["stubs"] }
 nautilus-persistence = { workspace = true, optional = true }
-nautilus-plugin = { workspace = true, features = ["host"], optional = true }
 nautilus-portfolio = { workspace = true }
-nautilus-risk = { package = "stratneo-nautilus-risk", path = "../risk", version = "0.58.2" }
-nautilus-system = { package = "stratneo-nautilus-system", path = "../system", version = "0.58.3" }
+nautilus-risk = { workspace = true }
+nautilus-system = { workspace = true }
 nautilus-trading = { workspace = true }
 
 ahash = { workspace = true }
@@ -105,11 +104,18 @@ nautilus-persistence = { workspace = true }
 nautilus-testkit = { workspace = true }
 nautilus-trading = { workspace = true, features = ["examples"] }
 
+criterion = { workspace = true }
 rstest = { workspace = true }
 tempfile = { workspace = true }
 
 [build-dependencies]
 cbindgen = { workspace = true, optional = true }
+
+# Run with `cargo bench -p nautilus-backtest --bench engine`
+[[bench]]
+name = "engine"
+path = "benches/engine.rs"
+harness = false
 
 # Run with `cargo run -p nautilus-backtest --features examples --example engine-ema-cross`
 [[example]]

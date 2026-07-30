@@ -22,7 +22,7 @@ use chrono::{DateTime, Utc};
 use ibapi::{
     client::Client,
     contracts::Contract,
-    market_data::{TradingHours, historical},
+    market_data::{IgnoreSize, TradingHours, historical},
 };
 use nautilus_core::UnixNanos;
 use nautilus_model::{
@@ -360,7 +360,7 @@ impl HistoricalInteractiveBrokersClient {
                     self.calculate_duration_segments(start_date_time, end_date_time, duration);
 
                 for (segment_end, segment_duration) in segments {
-                    tracing::info!(
+                    tracing::debug!(
                         "Requesting historical bars ending on {} with duration {}",
                         segment_end,
                         segment_duration
@@ -368,14 +368,13 @@ impl HistoricalInteractiveBrokersClient {
 
                     let historical_data = tokio::time::timeout(
                         std::time::Duration::from_secs(timeout),
-                        self.ib_client.historical_data(
-                            &contract,
-                            Some(chrono_to_ib_datetime(&segment_end)),
-                            segment_duration,
-                            ib_bar_size,
-                            Some(ib_what_to_show),
-                            trading_hours,
-                        ),
+                        self.ib_client
+                            .historical_data(&contract, ib_bar_size)
+                            .ending(chrono_to_ib_datetime(&segment_end))
+                            .duration(segment_duration)
+                            .what_to_show(ib_what_to_show)
+                            .trading_hours(trading_hours)
+                            .fetch(),
                     )
                     .await
                     .context(format!(
@@ -405,7 +404,7 @@ impl HistoricalInteractiveBrokersClient {
                         all_bars.push(nautilus_bar);
                     }
 
-                    tracing::info!("Retrieved {} bars in batch", historical_data.bars.len());
+                    tracing::debug!("Retrieved {} bars in batch", historical_data.bars.len());
                 }
             }
         }
@@ -561,13 +560,12 @@ impl HistoricalInteractiveBrokersClient {
                         // Make request for this batch
                         let mut subscription = tokio::time::timeout(
                             std::time::Duration::from_secs(timeout),
-                            self.ib_client.historical_ticks_trade(
-                                &contract,
-                                Some(chrono_to_ib_datetime(&current_start_date)),
-                                Some(chrono_to_ib_datetime(&current_end_date)),
-                                1000,
-                                trading_hours,
-                            ),
+                            self.ib_client
+                                .historical_ticks(&contract, 1000)
+                                .starting(chrono_to_ib_datetime(&current_start_date))
+                                .ending(chrono_to_ib_datetime(&current_end_date))
+                                .trading_hours(trading_hours)
+                                .trade(),
                         )
                         .await
                         .context(format!(
@@ -663,14 +661,12 @@ impl HistoricalInteractiveBrokersClient {
                         // Make request for this batch
                         let mut subscription = tokio::time::timeout(
                             std::time::Duration::from_secs(timeout),
-                            self.ib_client.historical_ticks_bid_ask(
-                                &contract,
-                                Some(chrono_to_ib_datetime(&current_start_date)),
-                                Some(chrono_to_ib_datetime(&current_end_date)),
-                                1000,
-                                trading_hours,
-                                false, // ignore_size
-                            ),
+                            self.ib_client
+                                .historical_ticks(&contract, 1000)
+                                .starting(chrono_to_ib_datetime(&current_start_date))
+                                .ending(chrono_to_ib_datetime(&current_end_date))
+                                .trading_hours(trading_hours)
+                                .bid_ask(IgnoreSize::No),
                         )
                         .await
                         .context(format!(
@@ -882,7 +878,7 @@ impl HistoricalInteractiveBrokersClient {
 
                 // Fetch if not cached (matching Python: if not self._client._cache.instrument(instrument_id))
                 if self.instrument_provider.find(&instrument_id).is_none() {
-                    tracing::info!("Fetching Instrument for: {}", instrument_id);
+                    tracing::debug!("Fetching Instrument for: {}", instrument_id);
 
                     if let Err(e) = self
                         .instrument_provider
@@ -915,7 +911,7 @@ impl HistoricalInteractiveBrokersClient {
             }
         }
 
-        tracing::info!("Loaded {} instruments", loaded_instruments.len());
+        tracing::debug!("Loaded {} instruments", loaded_instruments.len());
 
         Ok(loaded_instruments)
     }

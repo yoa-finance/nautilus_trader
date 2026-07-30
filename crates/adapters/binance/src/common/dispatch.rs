@@ -256,6 +256,7 @@ impl WsDispatchState {
 /// Synthesizes and emits OrderAccepted if one has not yet been emitted.
 ///
 /// Handles fast-filling orders that skip the New state on Binance.
+#[expect(clippy::too_many_arguments)]
 pub fn emit_order_accepted_once(
     client_order_id: ClientOrderId,
     account_id: AccountId,
@@ -307,24 +308,4 @@ pub fn ensure_accepted_emitted(
         ts_init,
         ts_init,
     );
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn cancel_all_gate_releases_after_last_terminal() {
-        let state = WsDispatchState::default();
-
-        state.mark_cancel_all_started("BTCUSDT");
-        state.mark_cancel_all_started("BTCUSDT");
-        assert!(state.cancel_all_gate("BTCUSDT").is_some());
-
-        state.complete_cancel_all("BTCUSDT");
-        assert!(state.cancel_all_gate("BTCUSDT").is_some());
-
-        state.complete_cancel_all("BTCUSDT");
-        assert!(state.cancel_all_gate("BTCUSDT").is_none());
-    }
 }

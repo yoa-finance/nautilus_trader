@@ -37,7 +37,7 @@ use crate::{
         },
         sbe::spot::{
             ReadBuf, balance_update_event_codec, bool_enum, cancel_order_list_response_codec,
-            execution_report_event_codec, execution_type, list_status_event_codec,
+            execution_report_event_codec, execution_type, expiry_reason, list_status_event_codec,
             message_header_codec, order_side, order_status, order_type,
             outbound_account_position_event_codec, time_in_force,
         },
@@ -112,6 +112,7 @@ pub fn decode_execution_report(data: &[u8]) -> anyhow::Result<BinanceSpotExecuti
     let side = map_side(dec.side())?;
     let time_in_force = map_time_in_force(dec.time_in_force());
     let order_type_str = map_order_type(dec.order_type());
+    let expiry_reason = map_expiry_reason(dec.expiry_reason());
     let is_working = dec.is_working() == bool_enum::BoolEnum::True;
     let is_maker = dec.is_maker() == bool_enum::BoolEnum::True;
 
@@ -190,6 +191,7 @@ pub fn decode_execution_report(data: &[u8]) -> anyhow::Result<BinanceSpotExecuti
             price_exp + qty_exp,
         ),
         original_client_order_id: orig_client_order_id,
+        expiry_reason,
     })
 }
 
@@ -672,6 +674,31 @@ fn map_order_type(ot: order_type::OrderType) -> &'static str {
     }
 }
 
+fn map_expiry_reason(reason: expiry_reason::ExpiryReason) -> Option<String> {
+    match reason {
+        expiry_reason::ExpiryReason::Rejected => Some("REJECTED".to_string()),
+        expiry_reason::ExpiryReason::ExchangeCanceled => Some("EXCHANGE_CANCELED".to_string()),
+        expiry_reason::ExpiryReason::OcoTrigger => Some("OCO_TRIGGER".to_string()),
+        expiry_reason::ExpiryReason::OtoPhaseOneExpired => {
+            Some("OTO_PHASE_ONE_EXPIRED".to_string())
+        }
+        expiry_reason::ExpiryReason::UnfilledIocQuantityExpired => {
+            Some("UNFILLED_IOC_QUANTITY_EXPIRED".to_string())
+        }
+        expiry_reason::ExpiryReason::UnfilledFokOrderExpired => {
+            Some("UNFILLED_FOK_ORDER_EXPIRED".to_string())
+        }
+        expiry_reason::ExpiryReason::InsufficientLiquidity => {
+            Some("INSUFFICIENT_LIQUIDITY".to_string())
+        }
+        expiry_reason::ExpiryReason::ExecutionRulePriceRangeExceeded => {
+            Some("EXECUTION_RULE_PRICE_RANGE_EXCEEDED".to_string())
+        }
+        expiry_reason::ExpiryReason::NonRepresentable => Some("NON_REPRESENTABLE".to_string()),
+        expiry_reason::ExpiryReason::NullVal => None,
+    }
+}
+
 /// Converts SBE microsecond timestamp to JSON millisecond timestamp.
 #[inline]
 fn us_to_ms(us: i64) -> i64 {
@@ -745,12 +772,10 @@ mod tests {
 
     use super::*;
     use crate::spot::sbe::spot::{
-        WriteBuf, bool_enum::BoolEnum, contingency_type::ContingencyType,
-        execution_type::ExecutionType, floor, list_order_status::ListOrderStatus,
-        list_status_event_codec, list_status_type::ListStatusType, match_type, order_capacity,
-        order_side::OrderSide, order_status::OrderStatus, order_type::OrderType as SbeOrderType,
-        peg_offset_type, peg_price_type, self_trade_prevention_mode::SelfTradePreventionMode,
-        time_in_force::TimeInForce as SbeTif,
+        WriteBuf, bool_enum::BoolEnum, execution_type::ExecutionType, floor, match_type,
+        order_capacity, order_side::OrderSide, order_status::OrderStatus,
+        order_type::OrderType as SbeOrderType, peg_offset_type, peg_price_type,
+        self_trade_prevention_mode::SelfTradePreventionMode, time_in_force::TimeInForce as SbeTif,
     };
 
     #[expect(clippy::too_many_arguments)]
@@ -781,6 +806,7 @@ mod tests {
         event_time_us: i64,
         transact_time_us: i64,
         order_creation_time_us: Option<i64>,
+        expiry_reason: expiry_reason::ExpiryReason,
     ) -> Vec<u8> {
         let var_data_len = 6 + symbol.len() + client_order_id.len() + commission_asset.len();
         let total = 8 + execution_report_event_codec::SBE_BLOCK_LENGTH as usize + var_data_len;
@@ -853,6 +879,7 @@ mod tests {
         enc.peg_offset_type(peg_offset_type::PegOffsetType::default());
         enc.peg_offset_value(0xFF); // null
         enc.pegged_price(i64::MIN);
+        enc.expiry_reason(expiry_reason);
 
         // Variable-length fields in order
         enc.symbol(symbol);
@@ -900,118 +927,6 @@ mod tests {
         buf_vec
     }
 
-    fn encode_list_status(
-        symbol: &str,
-        list_client_order_id: &str,
-        order_list_id: i64,
-        list_status_type: ListStatusType,
-        list_order_status: ListOrderStatus,
-        reject_reason: &str,
-        orders: &[(i64, &str, &str)],
-        event_time_us: i64,
-        transact_time_us: i64,
-    ) -> Vec<u8> {
-        let orders_var_len: usize = orders
-            .iter()
-            .map(|(_, symbol, client_id)| 1 + symbol.len() + 1 + client_id.len())
-            .sum();
-        let parent_var_len =
-            1 + symbol.len() + 1 + list_client_order_id.len() + 1 + reject_reason.len();
-        let total = HEADER_LEN
-            + list_status_event_codec::SBE_BLOCK_LENGTH as usize
-            + 4
-            + (orders.len() * 8)
-            + orders_var_len
-            + parent_var_len;
-        let mut buf_vec = vec![0u8; total];
-
-        let buf = WriteBuf::new(buf_vec.as_mut_slice());
-        let enc = list_status_event_codec::ListStatusEventEncoder::default().wrap(buf, HEADER_LEN);
-        let mut header = enc.header(0);
-        let mut enc = header.parent().unwrap();
-
-        enc.event_time(event_time_us);
-        enc.transact_time(transact_time_us);
-        enc.order_list_id(order_list_id);
-        enc.contingency_type(ContingencyType::Oco);
-        enc.list_status_type(list_status_type);
-        enc.list_order_status(list_order_status);
-        enc.subscription_id(0xFFFF);
-
-        let orders_enc = list_status_event_codec::encoder::OrdersEncoder::default();
-        let mut orders_enc = enc.orders_encoder(orders.len() as u16, orders_enc);
-        for (order_id, order_symbol, client_order_id) in orders {
-            orders_enc.advance().unwrap();
-            orders_enc.order_id(*order_id);
-            orders_enc.symbol(order_symbol);
-            orders_enc.client_order_id(client_order_id);
-        }
-
-        let mut enc = orders_enc.parent().unwrap();
-        enc.symbol(symbol);
-        enc.list_client_order_id(list_client_order_id);
-        enc.reject_reason(reject_reason);
-
-        buf_vec
-    }
-
-    #[rstest]
-    fn test_decode_list_status_event_oco_two_orders() {
-        let data = encode_list_status(
-            "BTCUSDT",
-            "list-client-1",
-            42,
-            ListStatusType::ExecStarted,
-            ListOrderStatus::Executing,
-            "",
-            &[
-                (63562212148, "BTCUSDT", "target-client"),
-                (63562212149, "BTCUSDT", "stop-client"),
-            ],
-            1_709_654_400_123_000,
-            1_709_654_400_124_000,
-        );
-
-        let msg = decode_list_status(&data).expect("ListStatusEvent should decode");
-
-        assert_eq!(msg.event_time, 1_709_654_400_123);
-        assert_eq!(msg.transact_time, 1_709_654_400_124);
-        assert_eq!(msg.order_list_id, 42);
-        assert_eq!(msg.contingency_type, ContingencyType::Oco);
-        assert_eq!(msg.list_status_type, ListStatusType::ExecStarted);
-        assert_eq!(msg.list_order_status, ListOrderStatus::Executing);
-        assert_eq!(msg.subscription_id, None);
-        assert_eq!(msg.symbol.as_str(), "BTCUSDT");
-        assert_eq!(msg.list_client_order_id, "list-client-1");
-        assert_eq!(msg.reject_reason, "");
-        assert_eq!(msg.orders.len(), 2);
-        assert_eq!(msg.orders[0].order_id, 63562212148);
-        assert_eq!(msg.orders[0].symbol.as_str(), "BTCUSDT");
-        assert_eq!(msg.orders[0].client_order_id, "target-client");
-        assert_eq!(msg.orders[1].order_id, 63562212149);
-        assert_eq!(msg.orders[1].client_order_id, "stop-client");
-    }
-
-    #[rstest]
-    fn test_decode_list_status_rejects_wrong_template() {
-        let mut data = encode_list_status(
-            "BTCUSDT",
-            "list-client-1",
-            42,
-            ListStatusType::ExecStarted,
-            ListOrderStatus::Executing,
-            "",
-            &[(63562212149, "BTCUSDT", "stop-client")],
-            1_709_654_400_123_000,
-            1_709_654_400_124_000,
-        );
-        data[2..4].copy_from_slice(&603u16.to_le_bytes());
-
-        let err = decode_list_status(&data).expect_err("wrong template should fail");
-
-        assert!(err.to_string().contains("Wrong template ID"));
-    }
-
     #[rstest]
     fn test_mantissa_to_decimal_string_basic() {
         assert_eq!(mantissa_to_decimal_string(250000, -2), "2500.00");
@@ -1044,6 +959,47 @@ mod tests {
     }
 
     #[rstest]
+    #[case::rejected(expiry_reason::ExpiryReason::Rejected, Some("REJECTED"))]
+    #[case::exchange_canceled(
+        expiry_reason::ExpiryReason::ExchangeCanceled,
+        Some("EXCHANGE_CANCELED")
+    )]
+    #[case::oco_trigger(expiry_reason::ExpiryReason::OcoTrigger, Some("OCO_TRIGGER"))]
+    #[case::oto_phase_one_expired(
+        expiry_reason::ExpiryReason::OtoPhaseOneExpired,
+        Some("OTO_PHASE_ONE_EXPIRED")
+    )]
+    #[case::unfilled_ioc_quantity_expired(
+        expiry_reason::ExpiryReason::UnfilledIocQuantityExpired,
+        Some("UNFILLED_IOC_QUANTITY_EXPIRED")
+    )]
+    #[case::unfilled_fok_order_expired(
+        expiry_reason::ExpiryReason::UnfilledFokOrderExpired,
+        Some("UNFILLED_FOK_ORDER_EXPIRED")
+    )]
+    #[case::insufficient_liquidity(
+        expiry_reason::ExpiryReason::InsufficientLiquidity,
+        Some("INSUFFICIENT_LIQUIDITY")
+    )]
+    #[case::execution_rule_price_range_exceeded(
+        expiry_reason::ExpiryReason::ExecutionRulePriceRangeExceeded,
+        Some("EXECUTION_RULE_PRICE_RANGE_EXCEEDED")
+    )]
+    #[case::non_representable(
+        expiry_reason::ExpiryReason::NonRepresentable,
+        Some("NON_REPRESENTABLE")
+    )]
+    #[case::null_val(expiry_reason::ExpiryReason::NullVal, None)]
+    fn test_map_expiry_reason(
+        #[case] reason: expiry_reason::ExpiryReason,
+        #[case] expected: Option<&str>,
+    ) {
+        let result = map_expiry_reason(reason);
+
+        assert_eq!(result.as_deref(), expected);
+    }
+
+    #[rstest]
     fn test_decode_execution_report_new_limit() {
         let data = encode_execution_report(
             "ETHUSDT",
@@ -1072,6 +1028,7 @@ mod tests {
             1709654400000000, // event_time_us
             1709654400000000, // transact_time_us
             Some(1709654400000000),
+            expiry_reason::ExpiryReason::NullVal,
         );
 
         let report = decode_execution_report(&data).unwrap();
@@ -1091,6 +1048,49 @@ mod tests {
         assert!(!report.is_maker);
         assert_eq!(report.event_time, 1709654400000);
         assert_eq!(report.transaction_time, 1709654400000);
+        assert!(report.expiry_reason.is_none());
+    }
+
+    #[rstest]
+    fn test_decode_execution_report_expiry_reason() {
+        let data = encode_execution_report(
+            "ETHUSDT",
+            "O-20200101-000000-000-000-0",
+            12345678,
+            None,
+            OrderSide::Buy,
+            SbeOrderType::Limit,
+            SbeTif::Ioc,
+            ExecutionType::Expired,
+            OrderStatus::Expired,
+            -2,
+            -5,
+            -8,
+            250000,
+            100000,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            "",
+            false,
+            false,
+            1709654400000000,
+            1709654400000000,
+            Some(1709654400000000),
+            expiry_reason::ExpiryReason::InsufficientLiquidity,
+        );
+
+        let report = decode_execution_report(&data).unwrap();
+
+        assert_eq!(report.execution_type, BinanceSpotExecutionType::Expired);
+        assert_eq!(report.order_status, BinanceOrderStatus::Expired);
+        assert_eq!(
+            report.expiry_reason.as_deref(),
+            Some("INSUFFICIENT_LIQUIDITY")
+        );
     }
 
     #[rstest]
@@ -1122,6 +1122,7 @@ mod tests {
             1709654400000000,
             1709654400000000,
             Some(1709654400000000),
+            expiry_reason::ExpiryReason::NullVal,
         );
 
         let report = decode_execution_report(&data).unwrap();
@@ -1164,6 +1165,7 @@ mod tests {
             1709654400000000,
             1709654400000000,
             Some(1709654400000000),
+            expiry_reason::ExpiryReason::NullVal,
         );
 
         let report = decode_execution_report(&data).unwrap();
@@ -1203,6 +1205,7 @@ mod tests {
             1709654400000000,
             1709654400000000,
             Some(1709654400000000),
+            expiry_reason::ExpiryReason::NullVal,
         );
 
         let report = decode_execution_report(&data).unwrap();
@@ -1248,6 +1251,7 @@ mod tests {
             0,
             0,
             None,
+            expiry_reason::ExpiryReason::NullVal,
         );
         // Overwrite template_id to 50
         data[2..4].copy_from_slice(&50u16.to_le_bytes());

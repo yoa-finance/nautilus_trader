@@ -19,29 +19,31 @@
 //! It handles transaction signing, broadcasting, and querying account state.
 
 use cosmrs::Tx;
-use prost::Message as ProstMessage;
 use tonic::transport::Channel;
 
 use crate::{
     error::DydxError,
     proto::{
         AccountAuthenticator, AccountPlusClient, GetAuthenticatorsRequest,
-        cosmos_sdk_proto::cosmos::{
-            auth::v1beta1::{
-                BaseAccount, QueryAccountRequest, query_client::QueryClient as AuthClient,
-            },
-            bank::v1beta1::{QueryAllBalancesRequest, query_client::QueryClient as BankClient},
-            base::{
-                tendermint::v1beta1::{
-                    Block, GetLatestBlockRequest, GetNodeInfoRequest, GetNodeInfoResponse,
-                    service_client::ServiceClient as BaseClient,
+        cosmos_sdk_proto::{
+            cosmos::{
+                auth::v1beta1::{
+                    BaseAccount, QueryAccountRequest, query_client::QueryClient as AuthClient,
                 },
-                v1beta1::Coin,
+                bank::v1beta1::{QueryAllBalancesRequest, query_client::QueryClient as BankClient},
+                base::{
+                    tendermint::v1beta1::{
+                        Block, GetLatestBlockRequest, GetNodeInfoRequest, GetNodeInfoResponse,
+                        service_client::ServiceClient as BaseClient,
+                    },
+                    v1beta1::Coin,
+                },
+                tx::v1beta1::{
+                    BroadcastMode, BroadcastTxRequest, GetTxRequest, SimulateRequest,
+                    service_client::ServiceClient as TxClient,
+                },
             },
-            tx::v1beta1::{
-                BroadcastMode, BroadcastTxRequest, GetTxRequest, SimulateRequest,
-                service_client::ServiceClient as TxClient,
-            },
+            traits::Message as ProstMessage,
         },
         dydxprotocol::{
             clob::{ClobPair, QueryAllClobPairRequest, query_client::QueryClient as ClobClient},
@@ -150,7 +152,7 @@ impl DydxGrpcClient {
 
             match Self::new(url_str.to_string()).await {
                 Ok(client) => {
-                    log::info!("Successfully connected to gRPC node: {url_str}");
+                    log::debug!("Successfully connected to gRPC node: {url_str}");
                     return Ok(client);
                 }
                 Err(e) => {
@@ -227,7 +229,7 @@ impl DydxGrpcClient {
 
             match endpoint.connect().await {
                 Ok(connected_channel) => {
-                    log::info!("Successfully reconnected to gRPC node: {url_str}");
+                    log::debug!("Successfully reconnected to gRPC node: {url_str}");
 
                     // Update all service clients with the new channel
                     self.channel = connected_channel.clone();
@@ -453,9 +455,11 @@ impl DydxGrpcClient {
     /// # Errors
     ///
     /// Returns an error if simulation fails.
-    #[allow(deprecated)]
     pub async fn simulate_tx(&mut self, tx_bytes: Vec<u8>) -> Result<u64, anyhow::Error> {
-        let req = SimulateRequest { tx_bytes, tx: None };
+        let req = SimulateRequest {
+            tx_bytes,
+            ..Default::default()
+        };
         let gas_used = self
             .tx
             .simulate(req)

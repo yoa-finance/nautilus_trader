@@ -26,6 +26,7 @@ use std::sync::{
 use ahash::AHashSet;
 use anyhow::Context;
 use nautilus_common::{
+    cache::InstrumentLookupError,
     clients::DataClient,
     live::{runner::get_data_event_sender, runtime::get_runtime},
     messages::{
@@ -189,7 +190,7 @@ impl CoinbaseDataClient {
             self.ws_client.update_instrument(instrument.clone()).await;
         }
 
-        log::info!("Bootstrapped {} instruments", instruments.len());
+        log::debug!("Bootstrapped {} instruments", instruments.len());
         Ok(instruments)
     }
 
@@ -209,12 +210,12 @@ impl CoinbaseDataClient {
         let status_subs = Arc::clone(&self.instrument_status_subs);
 
         let task = get_runtime().spawn(async move {
-            log::info!("Coinbase WebSocket consumption loop started");
+            log::debug!("Coinbase WebSocket consumption loop started");
 
             loop {
                 tokio::select! {
                     () = cancellation_token.cancelled() => {
-                        log::info!("WebSocket consumption loop cancelled");
+                        log::debug!("WebSocket consumption loop cancelled");
                         break;
                     }
                     msg_opt = out_rx.recv() => {
@@ -229,11 +230,11 @@ impl CoinbaseDataClient {
                 }
             }
 
-            log::info!("Coinbase WebSocket consumption loop finished");
+            log::debug!("Coinbase WebSocket consumption loop finished");
         });
 
         self.tasks.push(task);
-        log::info!("WebSocket consumption task spawned");
+        log::debug!("WebSocket consumption task spawned");
         Ok(())
     }
 
@@ -299,7 +300,7 @@ fn dispatch_ws_message(
             log::info!("WebSocket reconnected");
         }
         NautilusWsMessage::Error(e) => {
-            log::error!("WebSocket error: {e}");
+            log::warn!("WebSocket error: {e}");
         }
         NautilusWsMessage::UserOrder(_) => {
             // User-channel execution reports are consumed by the execution client
@@ -441,8 +442,6 @@ impl DataClient for CoinbaseDataClient {
     }
 
     fn subscribe_book_deltas(&mut self, subscription: SubscribeBookDeltas) -> anyhow::Result<()> {
-        log::debug!("Subscribing to book deltas: {}", subscription.instrument_id);
-
         if subscription.book_type != BookType::L2_MBP {
             anyhow::bail!("Coinbase only supports L2_MBP order book deltas");
         }
@@ -464,8 +463,6 @@ impl DataClient for CoinbaseDataClient {
     }
 
     fn subscribe_quotes(&mut self, subscription: SubscribeQuotes) -> anyhow::Result<()> {
-        log::debug!("Subscribing to quotes: {}", subscription.instrument_id);
-
         let ws = self.ws_client.clone();
         let subscribed_id = Self::product_id(subscription.instrument_id);
         let wire_id = self.resolve_wire_product_id(subscribed_id);
@@ -483,8 +480,6 @@ impl DataClient for CoinbaseDataClient {
     }
 
     fn subscribe_trades(&mut self, subscription: SubscribeTrades) -> anyhow::Result<()> {
-        log::debug!("Subscribing to trades: {}", subscription.instrument_id);
-
         let ws = self.ws_client.clone();
         let subscribed_id = Self::product_id(subscription.instrument_id);
         let wire_id = self.resolve_wire_product_id(subscribed_id);
@@ -518,13 +513,11 @@ impl DataClient for CoinbaseDataClient {
     }
 
     fn subscribe_index_prices(&mut self, cmd: SubscribeIndexPrices) -> anyhow::Result<()> {
-        log::debug!("Subscribing to index prices: {}", cmd.instrument_id);
         self.deriv_polls.subscribe_index(cmd.instrument_id);
         Ok(())
     }
 
     fn subscribe_funding_rates(&mut self, cmd: SubscribeFundingRates) -> anyhow::Result<()> {
-        log::debug!("Subscribing to funding rates: {}", cmd.instrument_id);
         self.deriv_polls.subscribe_funding(cmd.instrument_id);
         Ok(())
     }
@@ -533,8 +526,6 @@ impl DataClient for CoinbaseDataClient {
         &mut self,
         cmd: SubscribeInstrumentStatus,
     ) -> anyhow::Result<()> {
-        log::debug!("Subscribing to instrument status: {}", cmd.instrument_id);
-
         // Register the canonical-to-subscribed alias so the handler re-keys
         // inbound status events for aliased products (e.g. caller subscribed
         // to `BTC-USDC` but the venue reports the canonical `BTC-USD`).
@@ -567,12 +558,10 @@ impl DataClient for CoinbaseDataClient {
     }
 
     fn subscribe_bars(&mut self, subscription: SubscribeBars) -> anyhow::Result<()> {
-        log::debug!("Subscribing to bars: {}", subscription.bar_type);
-
         let instrument_id = subscription.bar_type.instrument_id();
 
         if !self.instruments.contains_key(&instrument_id) {
-            anyhow::bail!("Instrument {instrument_id} not found");
+            anyhow::bail!(InstrumentLookupError::not_found(instrument_id));
         }
 
         let bar_type = subscription.bar_type;
@@ -685,13 +674,11 @@ impl DataClient for CoinbaseDataClient {
     }
 
     fn unsubscribe_index_prices(&mut self, cmd: &UnsubscribeIndexPrices) -> anyhow::Result<()> {
-        log::debug!("Unsubscribing from index prices: {}", cmd.instrument_id);
         self.deriv_polls.unsubscribe_index(cmd.instrument_id);
         Ok(())
     }
 
     fn unsubscribe_funding_rates(&mut self, cmd: &UnsubscribeFundingRates) -> anyhow::Result<()> {
-        log::debug!("Unsubscribing from funding rates: {}", cmd.instrument_id);
         self.deriv_polls.unsubscribe_funding(cmd.instrument_id);
         Ok(())
     }
@@ -723,8 +710,6 @@ impl DataClient for CoinbaseDataClient {
     }
 
     fn unsubscribe_bars(&mut self, unsubscription: &UnsubscribeBars) -> anyhow::Result<()> {
-        log::debug!("Unsubscribing from bars: {}", unsubscription.bar_type);
-
         let instrument_id = unsubscription.bar_type.instrument_id();
         let subscribed_id = Self::product_id(instrument_id);
         let wire_id = self.resolve_wire_product_id(subscribed_id);
@@ -846,7 +831,7 @@ impl DataClient for CoinbaseDataClient {
         let instruments = self.instruments.load();
         let instrument = instruments
             .get(&instrument_id)
-            .ok_or_else(|| anyhow::anyhow!("Instrument {instrument_id} not found"))?;
+            .ok_or_else(|| InstrumentLookupError::not_found(instrument_id))?;
         let price_precision = instrument.price_precision();
         let size_precision = instrument.size_precision();
         let depth = request.depth.map(|d| d.get() as u32);
@@ -932,7 +917,7 @@ impl DataClient for CoinbaseDataClient {
         let instruments = self.instruments.load();
         let instrument = instruments
             .get(&instrument_id)
-            .ok_or_else(|| anyhow::anyhow!("Instrument {instrument_id} not found"))?;
+            .ok_or_else(|| InstrumentLookupError::not_found(instrument_id))?;
         let price_precision = instrument.price_precision();
         let size_precision = instrument.size_precision();
 
@@ -1010,7 +995,7 @@ impl DataClient for CoinbaseDataClient {
         let instruments = self.instruments.load();
         let instrument = instruments
             .get(&instrument_id)
-            .ok_or_else(|| anyhow::anyhow!("Instrument {instrument_id} not found"))?;
+            .ok_or_else(|| InstrumentLookupError::not_found(instrument_id))?;
         let price_precision = instrument.price_precision();
         let size_precision = instrument.size_precision();
 

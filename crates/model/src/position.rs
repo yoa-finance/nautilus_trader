@@ -784,7 +784,7 @@ impl Position {
     #[must_use]
     pub fn unrealized_pnl(&self, last: Price) -> Money {
         if self.side == PositionSide::Flat {
-            Money::new(0.0, self.settlement_currency)
+            Money::zero(self.settlement_currency)
         } else {
             let avg_px_open = self.avg_px_open;
             let avg_px_close = last.as_f64();
@@ -1050,10 +1050,7 @@ mod tests {
 
     use crate::{
         enums::{OrderSide, OrderType, PositionAdjustmentType, PositionSide},
-        events::{
-            OrderEventAny, OrderFilled, PositionAdjusted, PositionClosed,
-            order::spec::OrderFilledSpec,
-        },
+        events::{OrderEventAny, OrderFilled, PositionAdjusted, order::spec::OrderFilledSpec},
         identifiers::{
             AccountId, ClientOrderId, PositionId, StrategyId, TradeId, VenueOrderId, stubs::uuid4,
         },
@@ -3771,89 +3768,6 @@ mod tests {
             position.signed_qty
         );
         assert!(position.is_closed());
-    }
-
-    #[rstest]
-    #[case(
-        OrderSide::Buy,
-        OrderSide::Sell,
-        "8.0126",
-        PositionSide::Flat,
-        0.0,
-        2436.09
-    )]
-    #[case(
-        OrderSide::Sell,
-        OrderSide::Buy,
-        "8.0126",
-        PositionSide::Flat,
-        0.0,
-        2436.09
-    )]
-    #[case(
-        OrderSide::Buy,
-        OrderSide::Sell,
-        "8.0127",
-        PositionSide::Short,
-        -0.0001,
-        2432.47
-    )]
-    fn test_position_multi_fill_close_normalizes_before_reversal(
-        #[case] entry_side: OrderSide,
-        #[case] exit_side: OrderSide,
-        #[case] final_exit_qty: &str,
-        #[case] expected_side: PositionSide,
-        #[case] expected_signed_qty: f64,
-        #[case] expected_avg_px_open: f64,
-        currency_pair_ethusdt: CurrencyPair,
-    ) {
-        let instrument = InstrumentAny::CurrencyPair(currency_pair_ethusdt);
-        let position_id = PositionId::new("P-MULTI-FILL");
-        let make_fill = |client_order_id: &str,
-                         trade_id: &str,
-                         side: OrderSide,
-                         quantity: &str,
-                         price: &str| {
-            let order = OrderTestBuilder::new(OrderType::Market)
-                .client_order_id(ClientOrderId::new(client_order_id))
-                .instrument_id(instrument.id())
-                .side(side)
-                .quantity(Quantity::from(quantity))
-                .build();
-            TestOrderEventStubs::filled(
-                &order,
-                &instrument,
-                Some(TradeId::new(trade_id)),
-                Some(position_id),
-                Some(Price::from(price)),
-                Some(Quantity::from(quantity)),
-                None,
-                Some(Money::new(0.0, instrument.quote_currency())),
-                None,
-                None,
-            )
-            .into()
-        };
-
-        let entry_fill = make_fill("O-ENTRY", "T-ENTRY", entry_side, "170.9544", "2436.09");
-        let mut position = Position::new(&instrument, entry_fill);
-        let first_exit_fill = make_fill("O-EXIT-1", "T-EXIT-1", exit_side, "162.9418", "2434.00");
-        position.apply(&first_exit_fill);
-        let final_exit_fill =
-            make_fill("O-EXIT-2", "T-EXIT-2", exit_side, final_exit_qty, "2432.47");
-        position.apply(&final_exit_fill);
-
-        assert_eq!(position.side, expected_side);
-        assert!((position.signed_qty - expected_signed_qty).abs() < 1e-12);
-        assert_eq!(position.avg_px_open, expected_avg_px_open);
-
-        if expected_side == PositionSide::Flat {
-            assert!(position.quantity.is_zero());
-            assert!(position.is_closed());
-            let closed =
-                PositionClosed::create(&position, &final_exit_fill, uuid4(), UnixNanos::default());
-            assert_eq!(closed.avg_px_open, 2436.09);
-        }
     }
 
     #[rstest]

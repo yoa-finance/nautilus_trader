@@ -24,8 +24,8 @@ use nautilus_serialization::{
 };
 
 use crate::messages::execution::{
-    BatchCancelOrders, CancelAllOrders, CancelOrder, ModifyOrder, QueryAccount, QueryOrder,
-    SubmitOrder, SubmitOrderList, TradingCommand,
+    BatchCancelOrders, BatchModifyOrders, CancelAllOrders, CancelOrder, ModifyOrder, QueryAccount,
+    QueryOrder, SubmitOrder, SubmitOrderList, TradingCommand,
 };
 
 /// Helper function to populate a `StringMap` builder from Params (`IndexMap<String, Value>`).
@@ -40,7 +40,10 @@ fn populate_string_map(builder: base_capnp::string_map::Builder<'_>, params: &Pa
 }
 
 /// Helper function to populate a `TradingCommandHeader` builder
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Cap'n Proto header builder needs each command header field"
+)]
 fn populate_trading_command_header(
     mut builder: trading_capnp::trading_command_header::Builder<'_>,
     trader_id: &TraderId,
@@ -220,6 +223,38 @@ impl<'a> ToCapnp<'a> for ModifyOrder {
     }
 }
 
+impl<'a> ToCapnp<'a> for BatchModifyOrders {
+    type Builder = trading_capnp::batch_modify_orders::Builder<'a>;
+
+    fn to_capnp(&self, mut builder: Self::Builder) {
+        let header_builder = builder.reborrow().init_header();
+        populate_trading_command_header(
+            header_builder,
+            &self.trader_id,
+            self.client_id.as_ref(),
+            &self.strategy_id,
+            &self.instrument_id,
+            &self.command_id,
+            self.ts_init,
+            self.correlation_id.as_ref(),
+            self.causation_id.as_ref(),
+        );
+
+        let mut modifications_builder = builder
+            .reborrow()
+            .init_modifications(self.modifies.len() as u32);
+        for (i, modify) in self.modifies.iter().enumerate() {
+            let modify_builder = modifications_builder.reborrow().get(i as u32);
+            modify.to_capnp(modify_builder);
+        }
+
+        if let Some(ref params) = self.params {
+            let params_builder = builder.reborrow().init_params();
+            populate_string_map(params_builder, params);
+        }
+    }
+}
+
 impl<'a> ToCapnp<'a> for QueryOrder {
     type Builder = trading_capnp::query_order::Builder<'a>;
 
@@ -362,17 +397,21 @@ impl<'a> ToCapnp<'a> for TradingCommand {
                 let modify_builder = builder.init_modify_order();
                 command.to_capnp(modify_builder);
             }
+            Self::ModifyOrders(command) => {
+                let batch_modify_builder = builder.init_batch_modify_orders();
+                command.to_capnp(batch_modify_builder);
+            }
             Self::CancelOrder(command) => {
                 let cancel_builder = builder.init_cancel_order();
                 command.to_capnp(cancel_builder);
             }
+            Self::CancelOrders(command) => {
+                let batch_cancel_builder = builder.init_batch_cancel_orders();
+                command.to_capnp(batch_cancel_builder);
+            }
             Self::CancelAllOrders(command) => {
                 let cancel_all_builder = builder.init_cancel_all_orders();
                 command.to_capnp(cancel_all_builder);
-            }
-            Self::BatchCancelOrders(command) => {
-                let batch_cancel_builder = builder.init_batch_cancel_orders();
-                command.to_capnp(batch_cancel_builder);
             }
             Self::QueryOrder(command) => {
                 let query_builder = builder.init_query_order();
@@ -391,7 +430,7 @@ mod tests {
     use capnp::message::Builder;
     use nautilus_core::UnixNanos;
     use nautilus_model::{
-        enums::{OrderListType, OrderSide, OrderType},
+        enums::{OrderSide, OrderType},
         identifiers::{
             AccountId, ClientId, ClientOrderId, InstrumentId, OrderListId, StrategyId, TraderId,
         },
@@ -405,7 +444,7 @@ mod tests {
     use super::*;
     use crate::messages::execution::{
         cancel::{BatchCancelOrdersBuilder, CancelAllOrdersBuilder, CancelOrderBuilder},
-        modify::ModifyOrderBuilder,
+        modify::{BatchModifyOrdersBuilder, ModifyOrderBuilder},
         query::{QueryAccountBuilder, QueryOrderBuilder},
     };
 
@@ -598,9 +637,9 @@ mod tests {
             .instrument_id(instrument_id)
             .client_order_id(client_order_id)
             .venue_order_id(None)
-            .quantity(Some(Quantity::new(100.0, 0)))
-            .price(Some(Price::new(50_000.0, 2)))
-            .trigger_price(Some(Price::new(49_000.0, 2)))
+            .quantity(Some(Quantity::from(100)))
+            .price(Some(Price::from("50000.00")))
+            .trigger_price(Some(Price::from("49000.00")))
             .command_id(command_id)
             .ts_init(ts_init)
             .params(None)
@@ -621,6 +660,73 @@ mod tests {
         assert!(reader.has_quantity());
         assert!(reader.has_price());
         assert!(reader.has_trigger_price());
+    }
+
+    #[rstest]
+    fn test_batch_modify_orders_serialization(
+        trader_id: TraderId,
+        strategy_id: StrategyId,
+        instrument_id: InstrumentId,
+        command_id: UUID4,
+        ts_init: UnixNanos,
+    ) {
+        let modify1 = ModifyOrderBuilder::default()
+            .trader_id(trader_id)
+            .client_id(None)
+            .strategy_id(strategy_id)
+            .instrument_id(instrument_id)
+            .client_order_id(ClientOrderId::new("O-001"))
+            .venue_order_id(None)
+            .quantity(Some(Quantity::from(100)))
+            .price(Some(Price::from("50000.00")))
+            .trigger_price(None)
+            .command_id(UUID4::new())
+            .ts_init(ts_init)
+            .params(None)
+            .build()
+            .unwrap();
+
+        let modify2 = ModifyOrderBuilder::default()
+            .trader_id(trader_id)
+            .client_id(None)
+            .strategy_id(strategy_id)
+            .instrument_id(instrument_id)
+            .client_order_id(ClientOrderId::new("O-002"))
+            .venue_order_id(None)
+            .quantity(Some(Quantity::from(200)))
+            .price(Some(Price::from("51000.00")))
+            .trigger_price(None)
+            .command_id(UUID4::new())
+            .ts_init(ts_init)
+            .params(None)
+            .build()
+            .unwrap();
+
+        let command = BatchModifyOrdersBuilder::default()
+            .trader_id(trader_id)
+            .client_id(None)
+            .strategy_id(strategy_id)
+            .instrument_id(instrument_id)
+            .modifies(vec![modify1, modify2])
+            .command_id(command_id)
+            .ts_init(ts_init)
+            .params(None)
+            .build()
+            .unwrap();
+
+        let mut message = Builder::new_default();
+        {
+            let builder = message.init_root::<trading_capnp::batch_modify_orders::Builder>();
+            command.to_capnp(builder);
+        }
+
+        let reader = message
+            .get_root_as_reader::<trading_capnp::batch_modify_orders::Reader>()
+            .expect("Valid capnp message");
+
+        assert!(reader.has_header());
+        assert!(reader.has_modifications());
+        assert_eq!(reader.get_modifications().unwrap().len(), 2);
     }
 
     #[rstest]
@@ -860,8 +966,8 @@ mod tests {
         let order = OrderTestBuilder::new(OrderType::Limit)
             .instrument_id(InstrumentId::from("BTCUSDT.BINANCE"))
             .side(OrderSide::Buy)
-            .quantity(Quantity::new(1.0, 8))
-            .price(Price::new(50_000.0, 2))
+            .quantity(Quantity::from("1.00000000"))
+            .price(Price::from("50000.00"))
             .build();
 
         let command = SubmitOrder::new(
@@ -903,23 +1009,22 @@ mod tests {
             .instrument_id(InstrumentId::from("BTCUSDT.BINANCE"))
             .client_order_id(ClientOrderId::from("O-001"))
             .side(OrderSide::Buy)
-            .quantity(Quantity::new(1.0, 8))
-            .price(Price::new(50_000.0, 2))
+            .quantity(Quantity::from("1.00000000"))
+            .price(Price::from("50000.00"))
             .build();
 
         let order2 = OrderTestBuilder::new(OrderType::Limit)
             .instrument_id(InstrumentId::from("BTCUSDT.BINANCE"))
             .client_order_id(ClientOrderId::from("O-002"))
             .side(OrderSide::Sell)
-            .quantity(Quantity::new(1.0, 8))
-            .price(Price::new(51_000.0, 2))
+            .quantity(Quantity::from("1.00000000"))
+            .price(Price::from("51000.00"))
             .build();
 
         let orders = [order1.clone(), order2];
         let order_inits: Vec<_> = orders.iter().map(|o| o.init_event().clone()).collect();
         let order_list = OrderList::new(
             OrderListId::new("OL-001"),
-            OrderListType::Oco,
             InstrumentId::from("BTCUSDT.BINANCE"),
             order1.strategy_id(),
             vec![order1.client_order_id(), orders[1].client_order_id()],
@@ -953,10 +1058,6 @@ mod tests {
         assert!(reader.has_header());
         assert!(reader.has_order_inits());
         assert_eq!(reader.get_order_inits().unwrap().len(), 2);
-        assert_eq!(
-            reader.get_order_list_type().unwrap(),
-            nautilus_serialization::enums_capnp::OrderListType::Oco
-        );
     }
 
     #[rstest]

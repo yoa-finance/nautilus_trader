@@ -19,11 +19,13 @@ use std::{collections::HashMap, time::Duration};
 
 use nautilus_common::{
     cache::CacheConfig, enums::Environment, logging::logger::LoggerConfig,
-    msgbus::database::MessageBusConfig,
+    msgbus::MessageBusConfig, python::config_error_to_pyvalue_err,
 };
-use nautilus_core::{UUID4, UnixNanos};
+use nautilus_core::{UUID4, UnixNanos, python::to_pyvalue_err};
 use nautilus_data::engine::config::DataEngineConfig;
-use nautilus_execution::engine::config::ExecutionEngineConfig;
+use nautilus_execution::{
+    engine::config::ExecutionEngineConfig, python::fee::pyobject_to_fee_model_any,
+};
 use nautilus_model::{
     data::BarSpecification,
     enums::{AccountType, BookType, OmsType, OtoTriggerMode},
@@ -37,8 +39,8 @@ use rust_decimal::Decimal;
 use ustr::Ustr;
 
 use super::engine::{
-    pyobject_to_fee_model_any, pyobject_to_fill_model_any, pyobject_to_latency_model_any,
-    pyobject_to_margin_model_any, pyobject_to_simulation_module_any,
+    pyobject_to_fill_model_any, pyobject_to_latency_model_any, pyobject_to_margin_model_any,
+    pyobject_to_simulation_module_any,
 };
 use crate::config::{
     BacktestDataConfig, BacktestEngineConfig, BacktestRunConfig, BacktestVenueConfig,
@@ -333,10 +335,10 @@ impl BacktestVenueConfig {
             .map(|obj| Python::attach(|py| pyobject_to_latency_model_any(py, obj.bind(py))))
             .transpose()?;
         let fee_model = fee_model
-            .map(|obj| Python::attach(|py| pyobject_to_fee_model_any(py, obj.bind(py))))
+            .map(|obj| Python::attach(|py| pyobject_to_fee_model_any(obj.bind(py))))
             .transpose()?;
 
-        Ok(Self::builder()
+        Self::builder()
             .name(Ustr::from(name))
             .oms_type(oms_type)
             .account_type(account_type)
@@ -371,7 +373,8 @@ impl BacktestVenueConfig {
             .maybe_liquidation_enabled(liquidation_enabled)
             .maybe_liquidation_trigger_ratio(liquidation_trigger_ratio)
             .maybe_liquidation_cancel_open_orders(liquidation_cancel_open_orders)
-            .build())
+            .build()
+            .map_err(config_error_to_pyvalue_err)
     }
 
     #[getter]
@@ -460,8 +463,6 @@ impl BacktestDataConfig {
         bar_spec = None,
         bar_types = None,
         optimize_file_loading = None,
-        catalog_files = None,
-        catalog_instrument_files = None,
     ))]
     #[expect(clippy::too_many_arguments)]
     fn py_new(
@@ -480,13 +481,11 @@ impl BacktestDataConfig {
         bar_spec: Option<BarSpecification>,
         bar_types: Option<Vec<String>>,
         optimize_file_loading: Option<bool>,
-        catalog_files: Option<Vec<String>>,
-        catalog_instrument_files: Option<Vec<String>>,
     ) -> pyo3::PyResult<Self> {
         let data_type = data_type
             .parse::<NautilusDataType>()
-            .map_err(nautilus_core::python::to_pyvalue_err)?;
-        Ok(Self::builder()
+            .map_err(to_pyvalue_err)?;
+        Self::builder()
             .data_type(data_type)
             .catalog_path(catalog_path)
             .maybe_catalog_fs_protocol(catalog_fs_protocol)
@@ -506,9 +505,8 @@ impl BacktestDataConfig {
             .maybe_bar_spec(bar_spec)
             .maybe_bar_types(bar_types)
             .maybe_optimize_file_loading(optimize_file_loading)
-            .maybe_catalog_files(catalog_files)
-            .maybe_catalog_instrument_files(catalog_instrument_files)
-            .build())
+            .build()
+            .map_err(config_error_to_pyvalue_err)
     }
 
     #[getter]
@@ -527,18 +525,6 @@ impl BacktestDataConfig {
     #[pyo3(name = "instrument_id")]
     fn py_instrument_id(&self) -> Option<InstrumentId> {
         self.instrument_id()
-    }
-
-    #[getter]
-    #[pyo3(name = "catalog_files")]
-    fn py_catalog_files(&self) -> Option<Vec<String>> {
-        self.catalog_files().map(<[String]>::to_vec)
-    }
-
-    #[getter]
-    #[pyo3(name = "catalog_instrument_files")]
-    fn py_catalog_instrument_files(&self) -> Option<Vec<String>> {
-        self.catalog_instrument_files().map(<[String]>::to_vec)
     }
 
     fn __repr__(&self) -> String {
@@ -574,7 +560,7 @@ impl BacktestRunConfig {
         dispose_on_completion: Option<bool>,
         start: Option<u64>,
         end: Option<u64>,
-    ) -> Self {
+    ) -> pyo3::PyResult<Self> {
         Self::builder()
             .venues(venues)
             .data(data)
@@ -586,6 +572,7 @@ impl BacktestRunConfig {
             .maybe_start(start.map(UnixNanos::from))
             .maybe_end(end.map(UnixNanos::from))
             .build()
+            .map_err(config_error_to_pyvalue_err)
     }
 
     #[getter]

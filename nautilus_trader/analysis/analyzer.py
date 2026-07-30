@@ -16,6 +16,8 @@
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
+from uuid import RFC_4122
+from uuid import UUID
 
 import pandas as pd
 from numpy import float64
@@ -47,6 +49,9 @@ class PortfolioAnalyzer:
         self._account_balances: dict[Currency, Money] = {}
         self._positions: list[Position] = []
         self._realized_pnls: dict[Currency, pd.Series] = {}
+        self._realized_pnl_timestamps: dict[Currency, pd.Series] = {}
+        self._recorded_realized_pnls: dict[Currency, pd.Series] = {}
+        self._recorded_realized_pnl_timestamps: dict[Currency, pd.Series] = {}
         self._position_returns: pd.Series = self._empty_returns()
         self._portfolio_returns: pd.Series = self._empty_returns()
         self._returns: pd.Series = self._empty_returns()
@@ -88,6 +93,9 @@ class PortfolioAnalyzer:
         self._account_balances = {}
         self._positions = []
         self._realized_pnls = {}
+        self._realized_pnl_timestamps = {}
+        self._recorded_realized_pnls = {}
+        self._recorded_realized_pnl_timestamps = {}
         self._position_returns = self._empty_returns()
         self._portfolio_returns = self._empty_returns()
         self._returns = self._empty_returns()
@@ -174,6 +182,7 @@ class PortfolioAnalyzer:
         self._account_balances = account.balances_total()
         self._positions = []
         self._realized_pnls = {}
+        self._realized_pnl_timestamps = {}
         self._position_returns = self._empty_returns()
         self._portfolio_returns = self._empty_returns()
         self._returns = self._empty_returns()
@@ -199,7 +208,7 @@ class PortfolioAnalyzer:
             if position.realized_pnl is None:
                 continue  # Skip empty shell positions
 
-            self.add_trade(position.id, position.realized_pnl)
+            self.add_trade(position.id, position.realized_pnl, position.ts_last)
 
             if position.ts_closed > 0:
                 self.add_position_return(
@@ -207,7 +216,12 @@ class PortfolioAnalyzer:
                     position.realized_return,
                 )
 
-    def add_trade(self, position_id: PositionId, realized_pnl: Money) -> None:
+    def add_trade(
+        self,
+        position_id: PositionId,
+        realized_pnl: Money,
+        ts_event: int | None = None,
+    ) -> None:
         """
         Add trade data to the analyzer.
 
@@ -217,12 +231,75 @@ class PortfolioAnalyzer:
             The position ID for the trade.
         realized_pnl : Money
             The realized PnL for the trade.
+        ts_event : int, optional
+            The event timestamp for the realized PnL.
 
         """
+        self._append_pnl_record(
+            pnls=self._realized_pnls,
+            timestamps=self._realized_pnl_timestamps,
+            position_id=position_id,
+            realized_pnl=realized_pnl,
+            ts_event=ts_event,
+        )
+
+    def record_trade(
+        self,
+        position_id: PositionId,
+        realized_pnl: Money,
+        ts_event: int | None = None,
+    ) -> None:
+        """
+        Record realized PnL observed during portfolio processing.
+
+        Parameters
+        ----------
+        position_id : PositionId
+            The position ID for the trade.
+        realized_pnl : Money
+            The realized PnL for the trade.
+        ts_event : int, optional
+            The event timestamp for the realized PnL.
+
+        """
+        self._append_pnl_record(
+            pnls=self._recorded_realized_pnls,
+            timestamps=self._recorded_realized_pnl_timestamps,
+            position_id=position_id,
+            realized_pnl=realized_pnl,
+            ts_event=ts_event,
+        )
+
+    def _append_pnl_record(
+        self,
+        pnls: dict[Currency, pd.Series],
+        timestamps: dict[Currency, pd.Series],
+        position_id: PositionId,
+        realized_pnl: Money,
+        ts_event: int | None,
+    ) -> None:
         currency = realized_pnl.currency
-        realized_pnls = self._realized_pnls.get(currency, pd.Series(dtype=float64))
-        realized_pnls.loc[position_id.value] = realized_pnl.as_double()
-        self._realized_pnls[currency] = realized_pnls
+        trade_pnl = pd.Series(
+            [realized_pnl.as_double()],
+            index=[position_id.value],
+            dtype=float64,
+        )
+        existing_pnls = pnls.get(currency)
+        pnls[currency] = (
+            trade_pnl if existing_pnls is None else pd.concat([existing_pnls, trade_pnl])
+        )
+
+        trade_timestamp = pd.Series(
+            [int(ts_event) if ts_event is not None else None],
+            index=[position_id.value],
+            dtype=object,
+        )
+        existing_timestamps = timestamps.get(currency)
+        timestamps[currency] = (
+            trade_timestamp
+            if existing_timestamps is None
+            else pd.concat([existing_timestamps, trade_timestamp])
+        )
 
     def add_position_return(self, timestamp: datetime, value: float) -> None:
         """
@@ -273,20 +350,102 @@ class PortfolioAnalyzer:
         -------
         pd.Series or ``None``
 
-        Raises
-        ------
-        ValueError
-            If `currency` is ``None`` when analyzing multi-currency portfolios.
+        Returns ``None`` when no unambiguous currency can be selected.
 
         """
-        if not self._realized_pnls:
+        if not self._realized_pnls and not self._recorded_realized_pnls:
             return None
         if currency is None:
-            if len(self._account_balances) > 1:
-                raise ValueError("`currency` was `None` for multi-currency portfolio")
-            currency = next(iter(self._account_balances.keys()))
+            if len(self._account_balances) == 1:
+                currency = next(iter(self._account_balances.keys()))
+            else:
+                currencies = set(self._realized_pnls) | set(self._recorded_realized_pnls)
+                if len(currencies) != 1:
+                    return None
 
-        return self._realized_pnls.get(currency)
+                currency = next(iter(currencies))
+
+        realized_pnls = self._realized_pnls.get(currency)
+        recorded_realized_pnls = self._recorded_realized_pnls.get(currency)
+        realized_timestamps = self._realized_pnl_timestamps.get(currency)
+        recorded_timestamps = self._recorded_realized_pnl_timestamps.get(currency)
+
+        if realized_pnls is None:
+            return recorded_realized_pnls
+
+        if recorded_realized_pnls is None:
+            return realized_pnls
+
+        recorded_keys = self._pnl_record_keys(recorded_realized_pnls, recorded_timestamps)
+        timestamps = self._timestamp_values(realized_pnls, realized_timestamps)
+        unrecorded = []
+
+        for position_id, ts_event in zip(realized_pnls.index, timestamps, strict=True):
+            unrecorded.append(
+                not self._pnl_recorded(
+                    position_id=position_id,
+                    ts_event=ts_event,
+                    recorded_keys=recorded_keys,
+                ),
+            )
+
+        output = realized_pnls.loc[unrecorded]
+        return pd.concat([output, recorded_realized_pnls])
+
+    @classmethod
+    def _pnl_record_keys(
+        cls,
+        records: pd.Series,
+        timestamps: pd.Series | None,
+    ) -> set[tuple[str, int | None]]:
+        return {
+            (cls._canonical_position_id_value(position_id), ts_event)
+            for position_id, ts_event in zip(
+                records.index,
+                cls._timestamp_values(records, timestamps),
+                strict=True,
+            )
+        }
+
+    @classmethod
+    def _pnl_recorded(
+        cls,
+        position_id: str,
+        ts_event: int | None,
+        recorded_keys: set[tuple[str, int | None]],
+    ) -> bool:
+        canonical_position_id = cls._canonical_position_id_value(position_id)
+        if ts_event is None:
+            return any(recorded_id == canonical_position_id for recorded_id, _ in recorded_keys)
+
+        return (canonical_position_id, ts_event) in recorded_keys or (
+            canonical_position_id,
+            None,
+        ) in recorded_keys
+
+    @staticmethod
+    def _timestamp_values(records: pd.Series, timestamps: pd.Series | None) -> list[int | None]:
+        if timestamps is None or len(timestamps) != len(records):
+            return [None] * len(records)
+
+        return [int(timestamp) if timestamp is not None else None for timestamp in timestamps]
+
+    @staticmethod
+    def _canonical_position_id_value(position_id: str) -> str:
+        uuid4_string_len = 36
+        separator_index = len(position_id) - uuid4_string_len - 1
+        if separator_index < 1 or position_id[separator_index] != "-":
+            return position_id
+
+        try:
+            parsed_uuid = UUID(position_id[separator_index + 1 :])
+        except ValueError:
+            return position_id
+
+        if parsed_uuid.version == 4 and parsed_uuid.variant == RFC_4122:
+            return position_id[:separator_index]
+
+        return position_id
 
     def total_pnl(
         self,
@@ -483,6 +642,64 @@ class PortfolioAnalyzer:
         """
         return self._calculate_returns_stats(self._portfolio_returns)
 
+    def get_performance_stats_returns_vs_benchmark(
+        self,
+        benchmark_returns: pd.Series,
+        returns: pd.Series | None = None,
+    ) -> dict[str, Any]:
+        """
+        Return the benchmark-relative performance statistics.
+
+        Only registered benchmark-relative statistics (those exposing
+        ``calculate_from_returns_with_benchmark``) contribute values; all other
+        statistics are skipped.
+
+        Parameters
+        ----------
+        benchmark_returns : pd.Series
+            The benchmark returns series for comparison. Must be indexed by
+            ``pd.Timestamp``.
+        returns : pd.Series, optional
+            The strategy returns series to evaluate against the benchmark. If
+            ``None``, the primary `returns` series is used (portfolio returns
+            when available, otherwise position returns). Callers that resolve a
+            specific series (e.g., the tearsheet's equity-curve series) should
+            pass it explicitly so the metrics match that series.
+
+        Returns
+        -------
+        dict[str, Any]
+
+        """
+        output: dict[str, Any] = {}
+
+        returns_dict: dict[int, float] | None = None
+        benchmark_dict: dict[int, float] | None = None
+
+        for name, stat in self._statistics.items():
+            if not _is_pyo3_statistic(stat):
+                continue  # Benchmark-relative statistics are pyo3-only
+
+            calculate = getattr(stat, "calculate_from_returns_with_benchmark", None)
+            if calculate is None:
+                continue  # Not a benchmark-relative statistic
+
+            if returns_dict is None or benchmark_dict is None:
+                strategy_returns = self._returns if returns is None else returns
+                returns_dict = self._returns_to_dict(strategy_returns)
+                benchmark_dict = self._returns_to_dict(benchmark_returns)
+
+            value = calculate(returns_dict, benchmark_dict)
+            if value is None:
+                continue
+
+            if not isinstance(value, int | float | str | bool):
+                value = str(value)
+
+            output[name] = value
+
+        return output
+
     def get_performance_stats_general(self) -> dict[str, Any]:
         """
         Return the `general` performance statistics.
@@ -656,13 +873,7 @@ class PortfolioAnalyzer:
 
         for name, stat in self._statistics.items():
             if _is_pyo3_statistic(stat):
-                returns_dict: dict[int, float] = {}
-
-                if not returns.empty:
-                    for timestamp, value in returns.items():
-                        returns_dict[timestamp.value] = float(value)
-
-                value = stat.calculate_from_returns(returns_dict)
+                value = stat.calculate_from_returns(self._returns_to_dict(returns))
             else:
                 value = stat.calculate_from_returns(returns)
 
@@ -675,6 +886,15 @@ class PortfolioAnalyzer:
             output[name] = value
 
         return output
+
+    def _returns_to_dict(self, returns: pd.Series) -> dict[int, float]:
+        returns_dict: dict[int, float] = {}
+
+        if not returns.empty:
+            for timestamp, value in returns.items():
+                returns_dict[timestamp.value] = float(value)
+
+        return returns_dict
 
     def _format_stats(self, stats: dict[str, Any]) -> list[str]:
         max_length: int = self._get_max_length_name()

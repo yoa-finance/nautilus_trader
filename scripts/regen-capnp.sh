@@ -28,8 +28,10 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 REQUIRED_VERSION="$(bash "$SCRIPT_DIR/tool-version.sh" capnp)"
 CHECK_ONLY="${CAPNP_CHECK:-0}"
 TARGET_DIR="${CARGO_TARGET_DIR:-target}"
+RUST_TOOLCHAIN="${RUSTUP_TOOLCHAIN:-1.96.0}"
 OUT_DIR_FILE="$(mktemp "${TMPDIR:-/tmp}/nautilus_out_dir.XXXXXX")"
-trap 'rm -f "$OUT_DIR_FILE"' EXIT
+BUILD_MESSAGES_FILE="$(mktemp "${TMPDIR:-/tmp}/nautilus_build_messages.XXXXXX")"
+trap 'rm -f "$OUT_DIR_FILE" "$BUILD_MESSAGES_FILE"' EXIT
 
 echo -e "${YELLOW}Regenerating Cap'n Proto schemas...${NC}"
 
@@ -60,35 +62,45 @@ echo "Version: $(capnp --version)"
 # Navigate to project root
 cd "${PROJECT_ROOT}"
 
-# Clean existing generated files
-echo -e "${YELLOW}Cleaning existing generated files...${NC}"
-rm -rf crates/serialization/generated/capnp/*
-
 # Force a clean rebuild of the serialization crate with capnp feature
 echo -e "${YELLOW}Rebuilding serialization crate to regenerate schemas...${NC}"
-cargo clean -p nautilus-serialization
-cargo build -p nautilus-serialization --features capnp --message-format=json 2>&1 |
-  grep -o '"out_dir":"[^"]*"' |
-  cut -d'"' -f4 |
-  grep nautilus-serialization > "$OUT_DIR_FILE" || true
+RUSTUP_TOOLCHAIN="$RUST_TOOLCHAIN" cargo clean -p stratneo-nautilus-serialization
+if ! RUSTUP_TOOLCHAIN="$RUST_TOOLCHAIN" cargo build \
+  -p stratneo-nautilus-serialization \
+  --features capnp \
+  --message-format=json-render-diagnostics \
+  > "$BUILD_MESSAGES_FILE"; then
+  echo -e "${RED}Error: stratneo-nautilus-serialization build failed${NC}"
+  exit 1
+fi
+
+jq -r '
+  select(
+    .reason == "build-script-executed"
+    and (.package_id | contains("stratneo-nautilus-serialization"))
+  )
+  | .out_dir
+' "$BUILD_MESSAGES_FILE" > "$OUT_DIR_FILE"
 
 OUT_DIR=$(head -n 1 "$OUT_DIR_FILE")
 
 # Fallback: search target/debug/build if json parsing failed
 if [ -z "$OUT_DIR" ] || [ ! -d "$OUT_DIR" ]; then
   echo -e "${YELLOW}JSON parse failed, searching ${TARGET_DIR}/debug/build...${NC}"
-  OUT_DIR=$(find "${TARGET_DIR}/debug/build" -type d -name "nautilus-serialization-*" -path "*/out" | head -1)
+  OUT_DIR=$(find "${TARGET_DIR}/debug/build" -type d -name "stratneo-nautilus-serialization-*" -path "*/out" | head -1)
 fi
 
 if [ -z "$OUT_DIR" ] || [ ! -d "$OUT_DIR" ]; then
-  echo -e "${RED}Error: Could not find OUT_DIR for nautilus-serialization${NC}"
-  echo "Searched for: ${TARGET_DIR}/debug/build/nautilus-serialization-*/out"
+  echo -e "${RED}Error: Could not find OUT_DIR for stratneo-nautilus-serialization${NC}"
+  echo "Searched for: ${TARGET_DIR}/debug/build/stratneo-nautilus-serialization-*/out"
   exit 1
 fi
 
 echo "Found OUT_DIR: $OUT_DIR"
 
 # Copy generated files to the repo
+echo -e "${YELLOW}Cleaning existing generated files...${NC}"
+rm -rf crates/serialization/generated/capnp/*
 echo -e "${YELLOW}Copying generated files to repository...${NC}"
 mkdir -p crates/serialization/generated/capnp
 cp -r "${OUT_DIR}/"* crates/serialization/generated/capnp/

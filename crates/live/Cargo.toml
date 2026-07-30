@@ -1,7 +1,7 @@
 [package]
 name = "stratneo-nautilus-live"
 readme = "README.md"
-version = "0.58.2"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
@@ -29,7 +29,7 @@ node = [
   "dep:nautilus-system",
   "dep:nautilus-trading",
 ]
-plugin = ["node", "dep:aws-lc-rs", "dep:nautilus-plugin"]
+plugin = ["node"]
 examples = ["node", "dep:nautilus-testkit", "nautilus-trading/examples"]
 streaming = ["node", "nautilus-persistence", "nautilus-system/streaming"]
 extension-module = [
@@ -57,7 +57,12 @@ python = [
   "pyo3-stub-gen",
   "streaming",
 ]
-defi = ["dep:nautilus-data", "nautilus-common/defi", "nautilus-data/defi"]
+defi = [
+  "dep:nautilus-data",
+  "nautilus-common/defi",
+  "nautilus-data/defi",
+  "nautilus-persistence?/defi",
+]
 simulation = [
   "node",
   "nautilus-common/simulation",
@@ -70,7 +75,16 @@ ignored = [
 ] # Optional dep activated only via the streaming feature
 
 [package.metadata.docs.rs]
-all-features = true
+# Python docs depend on the local pyo3-stub-gen patch for now, which published crates do not carry
+features = [
+  "defi",
+  "examples",
+  "ffi",
+  "node",
+  "plugin",
+  "simulation",
+  "streaming",
+]
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
@@ -81,17 +95,15 @@ nautilus-model = { workspace = true, features = ["stubs"] }
 
 nautilus-data = { workspace = true, optional = true }
 nautilus-persistence = { workspace = true, optional = true }
-nautilus-plugin = { workspace = true, features = ["host"], optional = true }
 nautilus-portfolio = { workspace = true, optional = true }
-nautilus-risk = { package = "stratneo-nautilus-risk", path = "../risk", version = "0.58.2", optional = true }
-nautilus-system = { package = "stratneo-nautilus-system", path = "../system", version = "0.58.2", features = ["live"], optional = true }
+nautilus-risk = { workspace = true, optional = true }
+nautilus-system = { workspace = true, features = ["live"], optional = true }
 nautilus-testkit = { workspace = true, optional = true }
 nautilus-trading = { workspace = true, optional = true }
 
 ahash = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
-aws-lc-rs = { workspace = true, optional = true }
 bon = { workspace = true }
 indexmap = { workspace = true }
 log = { workspace = true }
@@ -106,6 +118,7 @@ pyo3 = { workspace = true, optional = true }
 pyo3-stub-gen = { workspace = true, optional = true }
 
 [dev-dependencies]
+bytes = { workspace = true }
 criterion = { workspace = true }
 madsim = { workspace = true }
 rstest = { workspace = true }
@@ -122,16 +135,6 @@ harness = false
 name = "manager"
 path = "tests/manager.rs"
 required-features = ["node"]
-
-[[test]]
-name = "plugin"
-path = "tests/plugin.rs"
-required-features = ["plugin"]
-
-[[test]]
-name = "plugin_dispatch"
-path = "tests/plugin_dispatch.rs"
-required-features = ["plugin"]
 
 [[test]]
 name = "node"

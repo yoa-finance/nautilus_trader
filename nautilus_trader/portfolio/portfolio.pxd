@@ -57,10 +57,10 @@ cdef class Portfolio(PortfolioFacade):
 
     cdef dict[InstrumentId, dict[AccountId, Money]] _unrealized_pnls
     cdef dict[InstrumentId, dict[AccountId, Money]] _realized_pnls
-    cdef dict[InstrumentId, dict] _snapshot_sum_per_position_by_instrument
-    cdef dict[InstrumentId, dict] _snapshot_last_per_position_by_instrument
-    cdef dict[InstrumentId, dict] _snapshot_processed_counts_by_instrument
-    cdef dict[InstrumentId, dict] _snapshot_account_ids_by_instrument
+    cdef dict[PositionId, Money] _snapshot_sum_per_position
+    cdef dict[PositionId, Money] _snapshot_last_per_position
+    cdef dict[PositionId, int] _snapshot_processed_counts
+    cdef dict[PositionId, AccountId] _snapshot_account_ids
     cdef dict[InstrumentId, dict[AccountId, Decimal]] _net_positions
     cdef dict[PositionId, object] _bet_positions
     cdef object _index_bet_positions
@@ -111,7 +111,7 @@ cdef class Portfolio(PortfolioFacade):
     cdef Currency _determine_pnl_currency(self, Account account, Instrument instrument)
     cdef dict _aggregate_pnls_by_instrument(self, list positions, bint is_realized, AccountId account_id, Currency target_currency)
     cdef tuple _process_snapshot_pnl_contributions(self, InstrumentId instrument_id, AccountId account_id, list positions, Currency currency, Account account)
-    cdef object _calculate_snapshot_contribution(self, PositionId position_id, set active_position_ids, list positions, Money sum_pnl, dict snapshot_last_per_position, set processed_ids)
+    cdef object _calculate_snapshot_contribution(self, PositionId position_id, set active_position_ids, list positions, Money sum_pnl, set processed_ids)
     cdef object _process_active_position_realized_pnl(self, list positions, InstrumentId instrument_id, Instrument instrument, Account account, Currency currency, set processed_ids)
     cdef Money _calculate_unrealized_pnl(self, InstrumentId instrument_id, Price price=*, AccountId account_id=*)
     cdef object _calculate_total_unrealized_pnl(self, list positions_open, InstrumentId instrument_id, Instrument instrument, Account account, Currency currency, Price price)

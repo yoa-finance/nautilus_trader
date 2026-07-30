@@ -106,7 +106,7 @@ use nautilus_common::{
         DataEvent,
         execution::{CancelOrder, TradingCommand},
     },
-    msgbus::{self, MessagingSwitchboard},
+    msgbus,
     runner::get_trading_cmd_sender,
 };
 use nautilus_core::{UUID4, UnixNanos};
@@ -386,7 +386,7 @@ async fn stress_cancel_starvation() {
             let pre_cmd = driver_exec_engine.borrow().command_count();
             let ts_init = driver_clock.borrow().timestamp_ns();
             get_trading_cmd_sender().execute(
-                MessagingSwitchboard::exec_engine_execute(),
+                nautilus_common::msgbus::MessagingSwitchboard::exec_engine_execute(),
                 TradingCommand::CancelOrder(sample_cancel(seq as u64, ts_init)),
             );
 

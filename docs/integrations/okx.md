@@ -17,15 +17,15 @@ Live example scripts are available in
 
 ### Product support
 
-| Product         | Instrument source            | Data | Exec | Notes                                      |
-|-----------------|------------------------------|------|------|--------------------------------------------|
-| Spot            | `public/instruments`         | Yes  | Yes  | Spot trading pairs.                        |
-| Margin          | `public/instruments`         | Yes  | Yes  | Spot instruments with margin or leverage.  |
-| Perpetual swaps | `public/instruments`         | Yes  | Yes  | Linear and inverse contracts.              |
-| Futures         | `public/instruments`         | Yes  | Yes  | Dated futures contracts.                   |
-| Options         | `public/instruments`         | Yes  | Yes  | Limit‑style order execution.               |
-| Spreads         | `sprd/spreads`               | Yes  | Yes  | Snapshots, quotes, trades on business WS.   |
-| Event contracts | `event-contract/*` endpoints | Yes  | Yes  | Parsed as Nautilus `BinaryOption`.         |
+| Product         | Instrument source            | Data | Exec | Notes                                     |
+|-----------------|------------------------------|------|------|-------------------------------------------|
+| Spot            | `public/instruments`         | Yes  | Yes  | Spot trading pairs.                       |
+| Margin          | `public/instruments`         | Yes  | Yes  | Spot instruments with margin or leverage. |
+| Perpetual swaps | `public/instruments`         | Yes  | Yes  | Linear and inverse contracts.             |
+| Futures         | `public/instruments`         | Yes  | Yes  | Dated futures contracts.                  |
+| Options         | `public/instruments`         | Yes  | Yes  | Limit‑style order execution.              |
+| Spreads         | `sprd/spreads`               | Yes  | Yes  | Snapshots, quotes, trades on business WS. |
+| Event contracts | `event-contract/*` endpoints | Yes  | Yes  | Parsed as Nautilus `BinaryOption`.        |
 
 Relevant OKX docs:
 
@@ -882,6 +882,43 @@ Demo API keys are separate from production keys. Create API keys for demo tradin
 through the Demo Trading interface. Production API keys do not work in demo mode.
 :::
 
+## Regional endpoints
+
+OKX serves distinct endpoints per region, and an API key is only valid against the region
+where it was registered (using a key against another region's endpoints returns
+`API key doesn't exist`). Set `region` to select the correct endpoint set:
+
+| Region   | Registered on | REST            | WebSocket host       |
+|----------|---------------|-----------------|----------------------|
+| `GLOBAL` | `www.okx.com` | `www.okx.com`   | `ws.okx.com`         |
+| `EEA`    | `my.okx.com`  | `eea.okx.com`   | `wseea.okx.com`      |
+| `US`     | `app.okx.com` | `us.okx.com`    | `wsus.okx.com`       |
+
+`region` defaults to `GLOBAL`. For example, an EEA account:
+
+```python
+from nautilus_trader.core.nautilus_pyo3 import OKXRegion
+
+config = TradingNodeConfig(
+    data_clients={
+        OKX: OKXDataClientConfig(
+            region=OKXRegion.EEA,
+            # ... other config
+        ),
+    },
+    exec_clients={
+        OKX: OKXExecClientConfig(
+            region=OKXRegion.EEA,
+            # ... other config
+        ),
+    },
+)
+```
+
+`region` selects the regional defaults, and combines with `environment` to pick the demo
+hosts (for example `wseeapap.okx.com` for EEA demo). Explicit `base_url_http` and
+`base_url_ws` overrides always take precedence over the region defaults.
+
 ## Funding rates
 
 The adapter receives funding rate data from the
@@ -1004,6 +1041,7 @@ The OKX data client provides the following configuration options:
 | `api_secret`                       | `None`                      | Falls back to `OKX_API_SECRET` when unset.   |
 | `api_passphrase`                   | `None`                      | Falls back to `OKX_API_PASSPHRASE`.          |
 | `environment`                      | `None`                      | Environment enum (`LIVE` or `DEMO`).         |
+| `region`                           | `None`                      | Region enum (`GLOBAL`, `EEA`, or `US`).      |
 | `http_timeout_secs`                | `60`                        | REST market data request timeout.            |
 | `max_retries`                      | `3`                         | Retry attempts for recoverable REST errors.  |
 | `retry_delay_initial_ms`           | `1,000`                     | Initial delay before retrying.               |
@@ -1038,6 +1076,7 @@ The OKX execution client provides the following configuration options:
 | `api_secret`                      | `None`                      | Falls back to `OKX_API_SECRET` when unset.  |
 | `api_passphrase`                  | `None`                      | Falls back to `OKX_API_PASSPHRASE`.         |
 | `environment`                     | `None`                      | Environment enum (`LIVE` or `DEMO`).        |
+| `region`                          | `None`                      | Region enum (`GLOBAL`, `EEA`, or `US`).     |
 | `margin_mode`                     | `None`                      | Margin mode (`ISOLATED` or `CROSS`).        |
 | `use_spot_margin`                 | `False`                     | Enables spot‑style margin or leverage.      |
 | `http_timeout_secs`               | `60`                        | REST trading request timeout.               |
@@ -1057,6 +1096,35 @@ Supported execution client `instrument_types` values are `SPOT`, `MARGIN`, `SWAP
 clients. Spread instruments use OKX spread IDs instead of `instrument_types`; load them
 with `load_spreads=True` on the data client and, for Python v1 execution-only nodes, on
 the execution client before trading them.
+
+### Manual endpoint overrides
+
+Setting `region` (see [Regional endpoints](#regional-endpoints)) selects the correct EEA or
+US endpoints automatically, which is the recommended approach. The explicit `base_url_*`
+overrides below remain available for proxies, custom routing, or endpoints not covered by a
+region; they take precedence over the `region` default. The EEA bases are shown as an example.
+
+| Config field           | Live base                  | Demo base                     | WebSocket path    |
+|------------------------|----------------------------|-------------------------------|-------------------|
+| `base_url_http`        | `https://eea.okx.com`      | `https://eea.okx.com`         |                   |
+| `base_url_ws_public`   | `wss://wseea.okx.com:8443` | `wss://wseeapap.okx.com:8443` | `/ws/v5/public`   |
+| `base_url_ws_private`  | `wss://wseea.okx.com:8443` | `wss://wseeapap.okx.com:8443` | `/ws/v5/private`  |
+| `base_url_ws_business` | `wss://wseea.okx.com:8443` | `wss://wseeapap.okx.com:8443` | `/ws/v5/business` |
+
+For WebSocket fields, join the base and path in the same row.
+
+Use `base_url_ws_public` with data client configs and `base_url_ws_private` with
+execution client configs. EEA accounts must also set `base_url_ws_business` on both v2
+configs because v2 does not derive the business WebSocket URL from the public or private
+override.
+
+Python v1 live configs expose `base_url_ws` instead of the split WebSocket fields. For
+those configs, set `base_url_ws` to the public EEA WebSocket URL on `OKXDataClientConfig`
+and to the private EEA WebSocket URL on `OKXExecClientConfig`; each client derives its
+business WebSocket URL from that value.
+
+See the [OKX EEA API documentation](https://my.okx.com/docs-v5/en/) for the current
+official endpoint list.
 
 Below is an example configuration for a live trading node using OKX data and execution clients:
 
@@ -1079,6 +1147,7 @@ config = TradingNodeConfig(
             api_secret=None,        # Will use OKX_API_SECRET env var
             api_passphrase=None,    # Will use OKX_API_PASSPHRASE env var
             base_url_http=None,
+            base_url_ws=None,
             environment=OKXEnvironment.LIVE,
             instrument_provider=InstrumentProviderConfig(load_all=True),
             instrument_types=(OKXInstrumentType.SWAP,),

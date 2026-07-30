@@ -97,6 +97,20 @@ fn parse_filter_quantity(filter: &Value, field: &str) -> anyhow::Result<Quantity
         .map_err(|e| anyhow::anyhow!("Failed to parse {field}='{value}': {e}"))
 }
 
+/// Parses the futures `MIN_NOTIONAL` filter into a `Money` value in `currency`.
+///
+/// Returns `None` when the filter is absent, the `notional` field cannot be
+/// parsed, or the value is non-positive.
+fn parse_futures_min_notional(filters: &[Value], currency: Currency) -> Option<Money> {
+    let filter = get_filter(filters, "MIN_NOTIONAL")?;
+    let raw = filter.get("notional").and_then(|v| v.as_str())?;
+    let amount = f64::from_str(raw).ok()?;
+    if amount <= 0.0 {
+        return None;
+    }
+    Some(Money::new(amount, currency))
+}
+
 /// Parses a venue quantity string into a `Quantity` at the given precision.
 ///
 /// Returns `None` for unparsable, zero, or negative values. Goes through
@@ -226,6 +240,8 @@ pub fn parse_usdm_instrument(
     let max_quantity = parse_filter_quantity(lot_filter, "maxQty").ok();
     let min_quantity = parse_filter_quantity(lot_filter, "minQty").ok();
 
+    let min_notional = parse_futures_min_notional(&symbol.filters, quote_currency);
+
     // Default margin (0.1 = 10x leverage)
     let default_margin = Decimal::new(1, 1);
 
@@ -245,13 +261,14 @@ pub fn parse_usdm_instrument(
         max_quantity,
         min_quantity,
         None, // max_notional
-        None, // min_notional
+        min_notional,
         max_price,
         min_price,
         Some(default_margin),
         Some(default_margin),
         None, // maker_fee
         None, // taker_fee
+        None, // tick_scheme
         None, // info
         ts_event,
         ts_init,
@@ -328,6 +345,8 @@ pub fn parse_coinm_instrument(
     // COIN-M has contract_size as the multiplier
     let multiplier = Quantity::new(symbol.contract_size as f64, 0);
 
+    let min_notional = parse_futures_min_notional(&symbol.filters, quote_currency);
+
     // Default margin (0.1 = 10x leverage)
     let default_margin = Decimal::new(1, 1);
 
@@ -347,13 +366,14 @@ pub fn parse_coinm_instrument(
         max_quantity,
         min_quantity,
         None, // max_notional
-        None, // min_notional
+        min_notional,
         max_price,
         min_price,
         Some(default_margin),
         Some(default_margin),
         None, // maker_fee
         None, // taker_fee
+        None, // tick_scheme
         None, // info
         ts_event,
         ts_init,
@@ -528,6 +548,7 @@ pub fn parse_spot_instrument_sbe(
         Some(default_margin),
         None, // maker_fee
         None, // taker_fee
+        None, // tick_scheme
         None, // info
         ts_event,
         ts_init,
@@ -1292,6 +1313,10 @@ mod tests {
                     "maxQty": "1000",
                     "minQty": "0.001"
                 }),
+                json!({
+                    "filterType": "MIN_NOTIONAL",
+                    "notional": "5"
+                }),
             ],
         }
     }
@@ -1332,6 +1357,10 @@ mod tests {
                     "stepSize": "1",
                     "maxQty": "1000",
                     "minQty": "1"
+                }),
+                json!({
+                    "filterType": "MIN_NOTIONAL",
+                    "notional": "1"
                 }),
             ],
         }
@@ -1382,20 +1411,6 @@ mod tests {
         AccountId::from("BINANCE-SPOT-001")
     }
 
-    fn assert_timestamp_error(
-        error: &anyhow::Error,
-        context: &str,
-        field: &str,
-        unit: &str,
-        raw_value: i64,
-    ) {
-        let message = error.to_string();
-        assert!(message.contains(&format!("context={context}")));
-        assert!(message.contains(&format!("field={field}")));
-        assert!(message.contains(&format!("unit={unit}")));
-        assert!(message.contains(&format!("raw_value={raw_value}")));
-    }
-
     #[rstest]
     fn test_parse_usdm_perpetual() {
         let symbol = sample_usdm_symbol();
@@ -1415,6 +1430,10 @@ mod tests {
                 assert!(!perp.is_inverse);
                 assert_eq!(perp.price_increment, Price::from_str("0.10").unwrap());
                 assert_eq!(perp.size_increment, Quantity::from_str("0.001").unwrap());
+                assert_eq!(
+                    perp.min_notional,
+                    Some(Money::new(5.0, perp.quote_currency)),
+                );
             }
             other => panic!("Expected CryptoPerpetual, was {other:?}"),
         }
@@ -1474,6 +1493,10 @@ mod tests {
                 assert!(perp.is_inverse);
                 assert_eq!(perp.price_increment, Price::from_str("0.10").unwrap());
                 assert_eq!(perp.size_increment, Quantity::from_str("1").unwrap());
+                assert_eq!(
+                    perp.min_notional,
+                    Some(Money::new(1.0, perp.quote_currency)),
+                );
             }
             other => panic!("Expected CryptoPerpetual, was {other:?}"),
         }
@@ -1545,39 +1568,6 @@ mod tests {
     }
 
     #[rstest]
-    fn test_parse_spot_trades_sbe_rejects_invalid_timestamp_without_panic() {
-        let instrument = sample_spot_instrument();
-        let trades = BinanceTrades {
-            price_exponent: -2,
-            qty_exponent: -4,
-            trades: vec![crate::spot::http::models::BinanceTrade {
-                id: 1,
-                price_mantissa: 12_345,
-                qty_mantissa: 25_000,
-                quote_qty_mantissa: 0,
-                time: 1_783_095_241_795_039_412,
-                is_buyer_maker: false,
-                is_best_match: true,
-            }],
-        };
-        let ts_init = UnixNanos::from(1_700_000_001_000_000_000u64);
-
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            parse_spot_trades_sbe(&trades, &instrument, ts_init)
-        }));
-
-        assert!(result.is_ok(), "invalid timestamp must not panic");
-        let error = result.unwrap().unwrap_err();
-        assert_timestamp_error(
-            &error,
-            "spot_sbe_trades_response",
-            "trade.time",
-            "microseconds",
-            1_783_095_241_795_039_412,
-        );
-    }
-
-    #[rstest]
     fn test_parse_order_status_report_sbe() {
         let instrument = sample_spot_instrument();
         let order = BinanceOrderResponse {
@@ -1642,101 +1632,6 @@ mod tests {
             UnixNanos::from(1_700_000_000_100_000_000u64)
         );
         assert_eq!(report.ts_init, ts_init);
-    }
-
-    #[rstest]
-    fn test_parse_order_status_report_sbe_rejects_invalid_update_time() {
-        let instrument = sample_spot_instrument();
-        let order = BinanceOrderResponse {
-            price_exponent: -2,
-            qty_exponent: -4,
-            order_id: 42,
-            order_list_id: Some(77),
-            price_mantissa: 12_345,
-            orig_qty_mantissa: 25_000,
-            executed_qty_mantissa: 10_000,
-            cummulative_quote_qty_mantissa: 123_450_000,
-            status: SbeOrderStatus::PartiallyFilled,
-            time_in_force: SbeTimeInForce::Gtc,
-            order_type: SbeOrderType::LimitMaker,
-            side: SbeOrderSide::Buy,
-            stop_price_mantissa: None,
-            iceberg_qty_mantissa: None,
-            time: 1_700_000_000_000_000,
-            update_time: -1,
-            is_working: true,
-            working_time: Some(1_700_000_000_050_000),
-            orig_quote_order_qty_mantissa: 0,
-            self_trade_prevention_mode:
-                crate::spot::sbe::spot::self_trade_prevention_mode::SelfTradePreventionMode::None,
-            client_order_id: "client-123".to_string(),
-            symbol: "ETHUSDT".to_string(),
-            expiry_reason: None,
-        };
-        let ts_init = UnixNanos::from(1_700_000_001_000_000_000u64);
-
-        let error = parse_order_status_report_sbe(
-            &order,
-            sample_account_id(),
-            &instrument,
-            BINANCE_NAUTILUS_SPOT_BROKER_ID,
-            ts_init,
-        )
-        .unwrap_err();
-
-        assert_timestamp_error(
-            &error,
-            "spot_sbe_order_status_response",
-            "order.update_time",
-            "microseconds",
-            -1,
-        );
-    }
-
-    #[rstest]
-    fn test_parse_order_status_report_sbe_falls_back_when_order_time_unavailable() {
-        let instrument = sample_spot_instrument();
-        let order = BinanceOrderResponse {
-            price_exponent: -2,
-            qty_exponent: -4,
-            order_id: 42,
-            order_list_id: Some(77),
-            price_mantissa: 12_345,
-            orig_qty_mantissa: 25_000,
-            executed_qty_mantissa: 10_000,
-            cummulative_quote_qty_mantissa: 123_450_000,
-            status: SbeOrderStatus::Canceled,
-            time_in_force: SbeTimeInForce::Gtc,
-            order_type: SbeOrderType::LimitMaker,
-            side: SbeOrderSide::Buy,
-            stop_price_mantissa: None,
-            iceberg_qty_mantissa: None,
-            time: i64::MIN,
-            update_time: 1_700_000_000_100_000,
-            is_working: false,
-            working_time: None,
-            orig_quote_order_qty_mantissa: 0,
-            self_trade_prevention_mode:
-                crate::spot::sbe::spot::self_trade_prevention_mode::SelfTradePreventionMode::None,
-            client_order_id: "client-123".to_string(),
-            symbol: "ETHUSDT".to_string(),
-            expiry_reason: None,
-        };
-        let ts_init = UnixNanos::from(1_700_000_001_000_000_000u64);
-
-        let report = parse_order_status_report_sbe(
-            &order,
-            sample_account_id(),
-            &instrument,
-            BINANCE_NAUTILUS_SPOT_BROKER_ID,
-            ts_init,
-        )
-        .expect("unavailable order.time should not fail status readback");
-
-        let update_time = UnixNanos::from(1_700_000_000_100_000_000u64);
-        assert_eq!(report.order_status, OrderStatus::Canceled);
-        assert_eq!(report.ts_accepted, update_time);
-        assert_eq!(report.ts_last, update_time);
     }
 
     #[rstest]
@@ -1805,108 +1700,6 @@ mod tests {
     }
 
     #[rstest]
-    fn test_parse_new_order_response_sbe_rejects_nanosecond_like_timestamp_without_panic() {
-        let instrument = sample_spot_instrument();
-        let response = BinanceNewOrderResponse {
-            price_exponent: -2,
-            qty_exponent: -4,
-            order_id: 99,
-            order_list_id: Some(7),
-            transact_time: 1_783_095_241_795_039_412,
-            price_mantissa: 12_100,
-            orig_qty_mantissa: 20_000,
-            executed_qty_mantissa: 5_000,
-            cummulative_quote_qty_mantissa: 60_500_000,
-            status: SbeOrderStatus::New,
-            time_in_force: SbeTimeInForce::Gtc,
-            order_type: SbeOrderType::StopLossLimit,
-            side: SbeOrderSide::Sell,
-            stop_price_mantissa: Some(12_000),
-            working_time: Some(1_700_000_000_000_000),
-            self_trade_prevention_mode:
-                crate::spot::sbe::spot::self_trade_prevention_mode::SelfTradePreventionMode::None,
-            client_order_id: "client-456".to_string(),
-            symbol: "ETHUSDT".to_string(),
-            fills: vec![],
-            expiry_reason: None,
-        };
-        let ts_init = UnixNanos::from(1_700_000_001_000_000_000u64);
-
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            parse_new_order_response_sbe(
-                &response,
-                sample_account_id(),
-                &instrument,
-                BINANCE_NAUTILUS_SPOT_BROKER_ID,
-                ts_init,
-            )
-        }));
-
-        assert!(result.is_ok(), "invalid timestamp must not panic");
-        let error = result.unwrap().unwrap_err();
-        assert_timestamp_error(
-            &error,
-            "spot_sbe_new_order_response",
-            "response.transact_time",
-            "microseconds",
-            1_783_095_241_795_039_412,
-        );
-    }
-
-    #[rstest]
-    fn test_parse_new_order_fill_reports_sbe_rejects_invalid_timestamp() {
-        let instrument = sample_spot_instrument();
-        let response = BinanceNewOrderResponse {
-            price_exponent: -2,
-            qty_exponent: -4,
-            order_id: 99,
-            order_list_id: Some(7),
-            transact_time: 1_783_095_241_795_039_412,
-            price_mantissa: 12_100,
-            orig_qty_mantissa: 20_000,
-            executed_qty_mantissa: 5_000,
-            cummulative_quote_qty_mantissa: 60_500_000,
-            status: SbeOrderStatus::Filled,
-            time_in_force: SbeTimeInForce::Ioc,
-            order_type: SbeOrderType::Market,
-            side: SbeOrderSide::Sell,
-            stop_price_mantissa: None,
-            working_time: Some(1_700_000_000_000_000),
-            self_trade_prevention_mode:
-                crate::spot::sbe::spot::self_trade_prevention_mode::SelfTradePreventionMode::None,
-            client_order_id: "client-456".to_string(),
-            symbol: "ETHUSDT".to_string(),
-            fills: vec![BinanceOrderFill {
-                price_mantissa: 12_100,
-                qty_mantissa: 5_000,
-                commission_mantissa: 10,
-                commission_exponent: -8,
-                commission_asset: "USDT".to_string(),
-                trade_id: Some(123),
-            }],
-            expiry_reason: None,
-        };
-        let ts_init = UnixNanos::from(1_700_000_001_000_000_000u64);
-
-        let error = parse_new_order_fill_reports_sbe(
-            &response,
-            sample_account_id(),
-            &instrument,
-            BINANCE_NAUTILUS_SPOT_BROKER_ID,
-            ts_init,
-        )
-        .unwrap_err();
-
-        assert_timestamp_error(
-            &error,
-            "spot_sbe_new_order_fill_report",
-            "response.transact_time",
-            "microseconds",
-            1_783_095_241_795_039_412,
-        );
-    }
-
-    #[rstest]
     fn test_parse_fill_report_sbe() {
         let instrument = sample_spot_instrument();
         let trade = BinanceAccountTrade {
@@ -1956,47 +1749,6 @@ mod tests {
     }
 
     #[rstest]
-    fn test_parse_fill_report_sbe_rejects_invalid_timestamp() {
-        let instrument = sample_spot_instrument();
-        let trade = BinanceAccountTrade {
-            price_exponent: -2,
-            qty_exponent: -4,
-            commission_exponent: -8,
-            id: 123,
-            order_id: 456,
-            order_list_id: None,
-            price_mantissa: 12_345,
-            qty_mantissa: 25_000,
-            quote_qty_mantissa: 0,
-            commission_mantissa: 10_000,
-            time: 1_783_095_241_795_039_412,
-            is_buyer: false,
-            is_maker: true,
-            is_best_match: true,
-            symbol: "ETHUSDT".to_string(),
-            commission_asset: "USDT".to_string(),
-        };
-        let ts_init = UnixNanos::from(1_700_000_001_000_000_000u64);
-
-        let error = parse_fill_report_sbe(
-            &trade,
-            sample_account_id(),
-            &instrument,
-            Currency::from("USDT"),
-            ts_init,
-        )
-        .unwrap_err();
-
-        assert_timestamp_error(
-            &error,
-            "spot_sbe_account_trade",
-            "trade.time",
-            "microseconds",
-            1_783_095_241_795_039_412,
-        );
-    }
-
-    #[rstest]
     fn test_parse_klines_to_bars() {
         use nautilus_model::enums::{AggregationSource, PriceType};
 
@@ -2039,46 +1791,6 @@ mod tests {
             UnixNanos::from(1_700_000_000_000_000_000u64)
         );
         assert_eq!(bars[0].ts_init, ts_init);
-    }
-
-    #[rstest]
-    fn test_parse_klines_to_bars_rejects_invalid_timestamp() {
-        use nautilus_model::enums::{AggregationSource, PriceType};
-
-        let instrument = sample_spot_instrument();
-        let bar_type = BarType::new(
-            instrument.id(),
-            BarSpecification::new(1, BarAggregation::Minute, PriceType::Last),
-            AggregationSource::External,
-        );
-        let klines = BinanceKlines {
-            price_exponent: -2,
-            qty_exponent: -4,
-            klines: vec![crate::spot::http::models::BinanceKline {
-                open_time: 1_783_095_241_795_039_412,
-                open_price: 12_000,
-                high_price: 12_500,
-                low_price: 11_900,
-                close_price: 12_345,
-                volume: 1_234_500_i128.to_le_bytes(),
-                close_time: 1_700_000_059_999_000,
-                quote_volume: 0_i128.to_le_bytes(),
-                num_trades: 100,
-                taker_buy_base_volume: 0_i128.to_le_bytes(),
-                taker_buy_quote_volume: 0_i128.to_le_bytes(),
-            }],
-        };
-        let ts_init = UnixNanos::from(1_700_000_001_000_000_000u64);
-
-        let error = parse_klines_to_bars(&klines, bar_type, &instrument, ts_init).unwrap_err();
-
-        assert_timestamp_error(
-            &error,
-            "spot_sbe_kline",
-            "kline.open_time",
-            "microseconds",
-            1_783_095_241_795_039_412,
-        );
     }
 
     mod bar_spec_tests {

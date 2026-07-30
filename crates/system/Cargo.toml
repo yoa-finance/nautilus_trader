@@ -1,7 +1,7 @@
 [package]
 name = "stratneo-nautilus-system"
 readme = "README.md"
-version = "0.58.3"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
@@ -40,7 +40,8 @@ ignored = [
 ] # Optional dep activated only via the streaming feature
 
 [package.metadata.docs.rs]
-all-features = true
+# Python docs depend on the local pyo3-stub-gen patch for now, which published crates do not carry
+features = ["defi", "live", "streaming", "tracing-bridge"]
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
@@ -50,7 +51,7 @@ nautilus-data = { workspace = true }
 nautilus-execution = { workspace = true }
 nautilus-model = { workspace = true, features = ["stubs"] }
 nautilus-portfolio = { workspace = true }
-nautilus-risk = { package = "stratneo-nautilus-risk", path = "../risk", version = "0.58.2" }
+nautilus-risk = { workspace = true }
 nautilus-trading = { workspace = true }
 
 nautilus-persistence = { workspace = true, optional = true }

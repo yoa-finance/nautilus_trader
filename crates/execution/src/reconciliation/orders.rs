@@ -39,7 +39,8 @@ use rust_decimal::Decimal;
 use ustr::Ustr;
 
 use super::{
-    ids::create_inferred_reconciliation_trade_id, positions::is_within_single_unit_tolerance,
+    ids::create_inferred_reconciliation_trade_id,
+    positions::{cap_price_at_instrument_max, is_within_single_unit_tolerance},
 };
 
 /// Generates reconciliation events for a live order status report.
@@ -116,6 +117,10 @@ pub fn generate_reconciliation_order_events(
 /// Returns `None` for pending venue states (`PendingUpdate`, `PendingCancel`)
 /// regardless of local state, since an unconfirmed amend or cancel must not
 /// drive any local mutation until the venue surfaces a confirmed status.
+///
+/// Returns `None` for a `Canceled` report that references a previously-promoted
+/// `venue_order_id` whose successor is still live in the cache (the cancel-half
+/// of a cancel-replace modify).
 #[must_use]
 pub fn reconcile_order_report(
     order: &OrderAny,
@@ -174,7 +179,31 @@ pub fn reconcile_order_report(
                 None
             }
         }
-        OrderStatus::Canceled => Some(create_reconciliation_canceled(order, report, ts_now)),
+        OrderStatus::Canceled => {
+            // TODO: Venue cancel-replace handling that belongs in the adapters, not generic
+            // reconciliation. Remove once each cancel-replace adapter suppresses its stale leg
+            // on the query/reconcile path; until then this is the engine's only cover for a
+            // superseded-leg Canceled arriving via inflight query or reconnect snapshot.
+            let report_venue_order_id = report.venue_order_id;
+            if let Some(cached_venue_order_id) = order.venue_order_id()
+                && cached_venue_order_id != report_venue_order_id
+                && order
+                    .venue_order_ids()
+                    .iter()
+                    .any(|v| **v == report_venue_order_id)
+            {
+                log::info!(
+                    "Suppressing Canceled for {} on previously-promoted venue_order_id {}: \
+                     current venue_order_id is {}",
+                    order.client_order_id(),
+                    report_venue_order_id,
+                    cached_venue_order_id,
+                );
+                return None;
+            }
+
+            Some(create_reconciliation_canceled(order, report, ts_now))
+        }
         OrderStatus::Expired => Some(create_reconciliation_expired(order, report, ts_now)),
 
         OrderStatus::PartiallyFilled | OrderStatus::Filled => {
@@ -611,6 +640,7 @@ pub(super) fn create_inferred_fill(
         );
         return None;
     };
+    let last_px = clamp_inferred_fill_price(last_px, instrument);
 
     let position_id = reconciliation_position_id(report, instrument);
     let trade_id = create_inferred_reconciliation_trade_id(
@@ -691,6 +721,7 @@ pub fn create_incremental_inferred_fill(
     };
 
     let last_px = calculate_incremental_fill_price(order, report, instrument)?;
+    let last_px = clamp_inferred_fill_price(last_px, instrument);
 
     let venue_order_id = order.venue_order_id().unwrap_or(report.venue_order_id);
     let position_id = reconciliation_position_id(report, instrument);
@@ -779,6 +810,7 @@ pub fn create_inferred_fill_for_qty(
         );
         return None;
     };
+    let last_px = clamp_inferred_fill_price(last_px, instrument);
 
     let venue_order_id = order.venue_order_id().unwrap_or(report.venue_order_id);
     let position_id = reconciliation_position_id(report, instrument);
@@ -861,12 +893,24 @@ fn reconcile_fill_quantity_mismatch(
     let report_filled_qty = report.filled_qty;
 
     if report_filled_qty < order_filled_qty {
-        // Venue reports less filled than we have - potential state corruption
-        log::error!(
-            "Fill qty mismatch for {}: cached={}, venue={} (venue < cached)",
+        // Venue cumulative below cached: apply no event so cached state is
+        // preserved. Suppress sub-unit gaps as precision noise.
+        let precision = order_filled_qty.precision.max(report_filled_qty.precision);
+        if is_within_single_unit_tolerance(
+            report_filled_qty.as_decimal(),
+            order_filled_qty.as_decimal(),
+            precision,
+        ) {
+            return None;
+        }
+
+        log::warn!(
+            "Fill qty mismatch for {} ({}): cached={}, venue={}, order_qty={} (venue < cached)",
             order.client_order_id(),
+            report.venue_order_id,
             order_filled_qty,
-            report_filled_qty
+            report_filled_qty,
+            order.quantity(),
         );
         return None;
     }
@@ -1006,6 +1050,15 @@ fn calculate_incremental_fill_price(
     }
 
     order.price()
+}
+
+/// Caps an inferred fill price at the instrument's maximum price.
+///
+/// Thin `Price` wrapper over [`cap_price_at_instrument_max`]; see that
+/// function for why reconciliation needs to bound synthetic fill prices.
+fn clamp_inferred_fill_price(price: Price, instrument: &InstrumentAny) -> Price {
+    let px = cap_price_at_instrument_max(price.as_decimal(), instrument);
+    Price::from_decimal_dp(px, instrument.price_precision()).unwrap_or(price)
 }
 
 fn reconciliation_position_id(

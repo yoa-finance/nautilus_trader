@@ -37,6 +37,13 @@ const DEFAULT_POOL_IDLE_TIMEOUT_SECS: u64 = 60;
 /// Default HTTP/2 keep-alive interval in seconds.
 const DEFAULT_HTTP2_KEEP_ALIVE_SECS: u64 = 30;
 
+/// Default maximum HTTP response body size in bytes (100 MiB).
+///
+/// Bounds peak memory per response so a hostile or malfunctioning endpoint
+/// cannot exhaust memory by streaming an arbitrarily large body. Mirrors the
+/// caps already enforced on the WebSocket and raw-socket paths.
+const DEFAULT_MAX_RESPONSE_BYTES: usize = 100 * 1024 * 1024;
+
 /// An HTTP client that supports rate limiting and timeouts.
 ///
 /// Built on `reqwest` for async I/O. Allows per-endpoint and default quotas
@@ -77,6 +84,35 @@ impl HttpClient {
         timeout_secs: Option<u64>,
         proxy_url: Option<String>,
     ) -> Result<Self, HttpClientError> {
+        let keyed_quotas = keyed_quotas
+            .into_iter()
+            .map(|(key, quota)| (Ustr::from(&key), quota))
+            .collect();
+
+        let rate_limiter = Arc::new(RateLimiter::new_with_quota(default_quota, keyed_quotas));
+
+        Self::new_with_rate_limiter(headers, header_keys, timeout_secs, proxy_url, rate_limiter)
+    }
+
+    /// Creates a new [`HttpClient`] instance sharing an externally-owned rate limiter.
+    ///
+    /// Use this constructor to share a single [`RateLimiter`] across multiple
+    /// [`HttpClient`] instances (for example, the HTTP clients owned by an
+    /// exchange adapter's data and execution clients). All quota state lives
+    /// inside the limiter, so passing the same `Arc` produces a single shared
+    /// bucket.
+    ///
+    /// # Errors
+    ///
+    /// - Returns `InvalidProxy` if the proxy URL is malformed.
+    /// - Returns `ClientBuildError` if building the underlying `reqwest::Client` fails.
+    pub fn new_with_rate_limiter(
+        headers: HashMap<String, String>,
+        header_keys: Vec<String>,
+        timeout_secs: Option<u64>,
+        proxy_url: Option<String>,
+        rate_limiter: Arc<RateLimiter<Ustr, MonotonicClock>>,
+    ) -> Result<Self, HttpClientError> {
         install_cryptographic_provider();
 
         // Build default headers
@@ -115,24 +151,25 @@ impl HttpClient {
             .build()
             .map_err(|e| HttpClientError::ClientBuildError(e.to_string()))?;
 
-        // Pre-intern header keys as HeaderName, keeping both vectors aligned
+        // Pre-intern header keys as HeaderName, keeping both vectors aligned,
+        // an invalid key is an error: a silent drop would make response extraction read nothing.
         let (valid_keys, header_names): (Vec<String>, Vec<HeaderName>) = header_keys
             .into_iter()
-            .filter_map(|k| HeaderName::from_str(&k).ok().map(|name| (k, name)))
+            .map(|k| {
+                HeaderName::from_str(&k)
+                    .map(|name| (k.clone(), name))
+                    .map_err(|e| HttpClientError::Error(format!("Invalid header key '{k}': {e}")))
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
             .unzip();
 
         let client = InnerHttpClient {
             client,
-            header_keys: Arc::new(valid_keys),
-            header_names: Arc::new(header_names),
+            header_keys: Arc::from(valid_keys),
+            header_names: Arc::from(header_names),
+            max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
         };
-
-        let keyed_quotas = keyed_quotas
-            .into_iter()
-            .map(|(key, quota)| (Ustr::from(&key), quota))
-            .collect();
-
-        let rate_limiter = Arc::new(RateLimiter::new_with_quota(default_quota, keyed_quotas));
 
         Ok(Self {
             client,
@@ -317,8 +354,10 @@ impl HttpClient {
 #[derive(Clone, Debug)]
 pub struct InnerHttpClient {
     pub(crate) client: reqwest::Client,
-    pub(crate) header_keys: Arc<Vec<String>>,
-    pub(crate) header_names: Arc<Vec<HeaderName>>,
+    pub(crate) header_keys: Arc<[String]>,
+    pub(crate) header_names: Arc<[HeaderName]>,
+    /// Maximum response body size in bytes; bodies exceeding this are rejected.
+    pub(crate) max_response_bytes: usize,
 }
 
 impl InnerHttpClient {
@@ -456,13 +495,52 @@ impl InnerHttpClient {
         }
 
         let status = HttpStatus::new(response.status());
-        let body = response.bytes().await.map_err(HttpClientError::from)?;
+        let body = self.read_body_capped(response).await?;
 
         Ok(HttpResponse {
             status,
             headers,
             body,
         })
+    }
+
+    /// Reads the response body, rejecting any body that exceeds `max_response_bytes`.
+    ///
+    /// A `Content-Length` larger than the cap is rejected up front; otherwise the
+    /// body is streamed chunk-by-chunk and aborted as soon as the accumulated size
+    /// would exceed the cap, so an oversized or unbounded (chunked) body is never
+    /// fully buffered into memory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the body exceeds the configured maximum size, or if
+    /// reading a chunk fails.
+    async fn read_body_capped(
+        &self,
+        mut response: Response,
+    ) -> Result<bytes::Bytes, HttpClientError> {
+        let max = self.max_response_bytes;
+
+        // Fast path: reject up front when the advertised length already exceeds the cap.
+        if let Some(len) = response.content_length()
+            && len > max as u64
+        {
+            return Err(HttpClientError::Error(format!(
+                "HTTP response body of {len} bytes exceeds maximum of {max} bytes",
+            )));
+        }
+
+        let mut buf = bytes::BytesMut::new();
+        while let Some(chunk) = response.chunk().await.map_err(HttpClientError::from)? {
+            if buf.len() + chunk.len() > max {
+                return Err(HttpClientError::Error(format!(
+                    "HTTP response body exceeds maximum of {max} bytes",
+                )));
+            }
+            buf.extend_from_slice(&chunk);
+        }
+
+        Ok(buf.freeze())
     }
 }
 
@@ -477,6 +555,7 @@ impl Default for InnerHttpClient {
             client,
             header_keys: Arc::default(),
             header_names: Arc::default(),
+            max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
         }
     }
 }
@@ -543,6 +622,11 @@ mod tests {
                     "Eventually responded"
                 }),
             )
+            .route(
+                "/large",
+                // Returns a 1 MiB body to exercise the response size cap.
+                get(|| async { "x".repeat(1024 * 1024) }),
+            )
     }
 
     async fn start_test_server() -> Result<SocketAddr, Box<dyn std::error::Error + Send + Sync>> {
@@ -576,6 +660,62 @@ mod tests {
 
         assert!(response.status.is_success());
         assert_eq!(String::from_utf8_lossy(&response.body), "hello-world!");
+    }
+
+    #[tokio::test]
+    async fn test_response_body_within_cap_is_returned() {
+        let addr = start_test_server().await.unwrap();
+        let url = format!("http://{addr}");
+
+        // Cap above the 1 MiB payload: body should be returned intact.
+        let client = InnerHttpClient {
+            max_response_bytes: 4 * 1024 * 1024,
+            ..Default::default()
+        };
+
+        let response = client
+            .send_request(
+                reqwest::Method::GET,
+                format!("{url}/large"),
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert!(response.status.is_success());
+        assert_eq!(response.body.len(), 1024 * 1024);
+    }
+
+    #[tokio::test]
+    async fn test_response_body_exceeding_cap_is_rejected() {
+        let addr = start_test_server().await.unwrap();
+        let url = format!("http://{addr}");
+
+        // Cap below the 1 MiB payload: the request must fail rather than buffer it.
+        let client = InnerHttpClient {
+            max_response_bytes: 16 * 1024,
+            ..Default::default()
+        };
+
+        let result = client
+            .send_request(
+                reqwest::Method::GET,
+                format!("{url}/large"),
+                None,
+                None,
+                None,
+                None,
+            )
+            .await;
+
+        let err = result.expect_err("oversized response body should be rejected");
+        assert!(
+            err.to_string().contains("exceeds maximum"),
+            "unexpected error: {err}",
+        );
     }
 
     #[tokio::test]

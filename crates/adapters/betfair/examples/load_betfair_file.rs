@@ -15,12 +15,14 @@
 
 //! Loads a Betfair historical data file and prints summary statistics.
 //!
+//! Edit the constant below to change the default data file.
+//!
 //! Run with: `cargo run -p nautilus-betfair --example betfair-load-file -- <path>`
 //!
 //! The path should point to a `.gz` file containing Betfair Exchange Streaming
 //! API data (newline-delimited JSON MCM messages).
 //!
-//! Default path: `tests/test_data/local/betfair/1.253378068.gz`
+//! No credentials are required.
 
 use std::{collections::BTreeMap, path::PathBuf};
 
@@ -30,6 +32,8 @@ use nautilus_model::{
     types::Currency,
 };
 
+const DATA_FILE: &str = "tests/test_data/local/betfair/1.253378068.gz";
+
 fn main() -> anyhow::Result<()> {
     let filepath = std::env::args().nth(1).map_or_else(
         || {
@@ -37,7 +41,7 @@ fn main() -> anyhow::Result<()> {
                 .ancestors()
                 .nth(3)
                 .unwrap()
-                .join("tests/test_data/local/betfair/1.253378068.gz")
+                .join(DATA_FILE)
         },
         PathBuf::from,
     );
@@ -65,6 +69,7 @@ fn main() -> anyhow::Result<()> {
     let mut sequences = 0u64;
     let mut race_runners = 0u64;
     let mut race_progress = 0u64;
+    let mut cricket_matches = 0u64;
 
     for item in &items {
         match item {
@@ -79,6 +84,7 @@ fn main() -> anyhow::Result<()> {
             BetfairDataItem::SequenceCompleted(_) => sequences += 1,
             BetfairDataItem::RaceRunnerData(_) => race_runners += 1,
             BetfairDataItem::RaceProgress(_) => race_progress += 1,
+            BetfairDataItem::CricketMatch(_) => cricket_matches += 1,
         }
     }
 
@@ -100,6 +106,10 @@ fn main() -> anyhow::Result<()> {
 
     if race_progress > 0 {
         println!("Race progress:     {race_progress}");
+    }
+
+    if cricket_matches > 0 {
+        println!("Cricket matches:   {cricket_matches}");
     }
 
     println!("\n--- Instruments ---");

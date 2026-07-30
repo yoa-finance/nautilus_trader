@@ -1,7 +1,7 @@
 [package]
 name = "stratneo-nautilus-model"
 readme = "README.md"
-version = "0.58.3"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
@@ -31,7 +31,7 @@ extension-module = [
 ffi = ["cbindgen", "nautilus-core/ffi"]
 python = ["nautilus-core/python", "pyo3", "pyo3-stub-gen"]
 python-arrow = ["python", "arrow"]
-stubs = ["bon", "rstest"]
+stubs = ["rstest"]
 high-precision = []
 # DeFi domain model requires 18-decimal wei precision, implying `high-precision`
 defi = ["alloy-primitives", "high-precision"]
@@ -43,7 +43,8 @@ ignored = [
 ]
 
 [package.metadata.docs.rs]
-all-features = true
+# Python docs depend on the local pyo3-stub-gen patch for now, which published crates do not carry
+features = ["arrow", "cython-compat", "defi", "ffi", "high-precision", "stubs"]
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
@@ -68,14 +69,13 @@ thiserror = { workspace = true }
 ustr = { workspace = true }
 
 alloy-primitives = { workspace = true, optional = true }
-bon = { workspace = true, optional = true }
+bon = { workspace = true }
 dashmap.workspace = true
 pyo3 = { workspace = true, optional = true }
 pyo3-stub-gen = { workspace = true, optional = true }
 rstest = { workspace = true, optional = true }
 
 [dev-dependencies]
-bon = { workspace = true }
 criterion = { workspace = true }
 iai = { workspace = true }
 proptest = { workspace = true }

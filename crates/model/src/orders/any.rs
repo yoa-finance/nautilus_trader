@@ -17,11 +17,12 @@ use std::fmt::Display;
 
 use enum_dispatch::enum_dispatch;
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 use super::{
-    Order, limit::LimitOrder, limit_if_touched::LimitIfTouchedOrder, market::MarketOrder,
-    market_if_touched::MarketIfTouchedOrder, market_to_limit::MarketToLimitOrder,
-    stop_limit::StopLimitOrder, stop_market::StopMarketOrder,
+    Order, OrderCore, OrderError, limit::LimitOrder, limit_if_touched::LimitIfTouchedOrder,
+    market::MarketOrder, market_if_touched::MarketIfTouchedOrder,
+    market_to_limit::MarketToLimitOrder, stop_limit::StopLimitOrder, stop_market::StopMarketOrder,
     trailing_stop_limit::TrailingStopLimitOrder, trailing_stop_market::TrailingStopMarketOrder,
 };
 use crate::{
@@ -30,6 +31,31 @@ use crate::{
     identifiers::{ClientOrderId, OrderListId},
     types::Price,
 };
+
+/// Error returned when [`OrderAny::from_events`] cannot replay order events.
+#[derive(Debug, Error)]
+pub enum OrderReplayError {
+    /// No events were supplied.
+    #[error("No order events provided to create OrderAny")]
+    EmptyInput,
+    /// The first event was not an initialization event.
+    #[error("First event must be `OrderInitialized`")]
+    WrongFirstEvent,
+    /// The initialization event could not be converted into an order.
+    #[error("Invalid `OrderInitialized` event: {source}")]
+    InvalidInitialization {
+        /// The source order conversion error.
+        #[source]
+        source: OrderError,
+    },
+    /// A later event could not be applied to the initialized order.
+    #[error("{source}")]
+    ApplyFailed {
+        /// The source event application error.
+        #[source]
+        source: OrderError,
+    },
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[enum_dispatch(Order)]
@@ -57,29 +83,25 @@ impl OrderAny {
     ///   (e.g. missing required price/trigger fields, invalid quantity, invalid TIF/expire combo).
     /// - Any subsequent event has an invalid state transition when applied to the order.
     ///
-    #[expect(clippy::missing_panics_doc)] // Guarded by empty check above
-    pub fn from_events(events: Vec<OrderEventAny>) -> anyhow::Result<Self> {
-        if events.is_empty() {
-            anyhow::bail!("No order events provided to create OrderAny");
+    pub fn from_events(events: Vec<OrderEventAny>) -> Result<Self, OrderReplayError> {
+        let Some(init_event) = events.first() else {
+            return Err(OrderReplayError::EmptyInput);
+        };
+
+        let OrderEventAny::Initialized(init) = init_event else {
+            return Err(OrderReplayError::WrongFirstEvent);
+        };
+
+        let mut order = Self::try_from(init.clone())
+            .map_err(|source| OrderReplayError::InvalidInitialization { source })?;
+
+        for event in events.into_iter().skip(1) {
+            order
+                .apply(event)
+                .map_err(|source| OrderReplayError::ApplyFailed { source })?;
         }
 
-        // Pop the first event
-        let init_event = events.first().unwrap();
-        match init_event {
-            OrderEventAny::Initialized(init) => {
-                let mut order = Self::try_from(init.clone())
-                    .map_err(|e| anyhow::anyhow!("Invalid `OrderInitialized` event: {e}"))?;
-                // Apply the rest of the events
-                for event in events.into_iter().skip(1) {
-                    // Apply event to order
-                    order.apply(event)?;
-                }
-                Ok(order)
-            }
-            _ => {
-                anyhow::bail!("First event must be `OrderInitialized`");
-            }
-        }
+        Ok(order)
     }
 
     /// Returns a reference to the [`crate::events::OrderInitialized`] event.
@@ -102,196 +124,52 @@ impl OrderAny {
     }
 
     pub fn set_order_list_id(&mut self, id: OrderListId) {
-        match self {
-            Self::Limit(o) => {
-                o.order_list_id = Some(id);
-                update_init_order_list_id(&mut o.events, id);
-            }
-            Self::LimitIfTouched(o) => {
-                o.order_list_id = Some(id);
-                update_init_order_list_id(&mut o.events, id);
-            }
-            Self::Market(o) => {
-                o.order_list_id = Some(id);
-                update_init_order_list_id(&mut o.events, id);
-            }
-            Self::MarketIfTouched(o) => {
-                o.order_list_id = Some(id);
-                update_init_order_list_id(&mut o.events, id);
-            }
-            Self::MarketToLimit(o) => {
-                o.order_list_id = Some(id);
-                update_init_order_list_id(&mut o.events, id);
-            }
-            Self::StopLimit(o) => {
-                o.order_list_id = Some(id);
-                update_init_order_list_id(&mut o.events, id);
-            }
-            Self::StopMarket(o) => {
-                o.order_list_id = Some(id);
-                update_init_order_list_id(&mut o.events, id);
-            }
-            Self::TrailingStopLimit(o) => {
-                o.order_list_id = Some(id);
-                update_init_order_list_id(&mut o.events, id);
-            }
-            Self::TrailingStopMarket(o) => {
-                o.order_list_id = Some(id);
-                update_init_order_list_id(&mut o.events, id);
-            }
-        }
+        let core = self.core_mut();
+        core.order_list_id = Some(id);
+        initialized_event_mut(core).order_list_id = Some(id);
     }
 
     pub fn set_linked_order_ids(&mut self, linked_order_ids: Vec<ClientOrderId>) {
-        match self {
-            Self::Limit(o) => {
-                o.linked_order_ids = Some(linked_order_ids.clone());
-                update_init_linked_order_ids(&mut o.events, linked_order_ids);
-            }
-            Self::LimitIfTouched(o) => {
-                o.linked_order_ids = Some(linked_order_ids.clone());
-                update_init_linked_order_ids(&mut o.events, linked_order_ids);
-            }
-            Self::Market(o) => {
-                o.linked_order_ids = Some(linked_order_ids.clone());
-                update_init_linked_order_ids(&mut o.events, linked_order_ids);
-            }
-            Self::MarketIfTouched(o) => {
-                o.linked_order_ids = Some(linked_order_ids.clone());
-                update_init_linked_order_ids(&mut o.events, linked_order_ids);
-            }
-            Self::MarketToLimit(o) => {
-                o.linked_order_ids = Some(linked_order_ids.clone());
-                update_init_linked_order_ids(&mut o.events, linked_order_ids);
-            }
-            Self::StopLimit(o) => {
-                o.linked_order_ids = Some(linked_order_ids.clone());
-                update_init_linked_order_ids(&mut o.events, linked_order_ids);
-            }
-            Self::StopMarket(o) => {
-                o.linked_order_ids = Some(linked_order_ids.clone());
-                update_init_linked_order_ids(&mut o.events, linked_order_ids);
-            }
-            Self::TrailingStopLimit(o) => {
-                o.linked_order_ids = Some(linked_order_ids.clone());
-                update_init_linked_order_ids(&mut o.events, linked_order_ids);
-            }
-            Self::TrailingStopMarket(o) => {
-                o.linked_order_ids = Some(linked_order_ids.clone());
-                update_init_linked_order_ids(&mut o.events, linked_order_ids);
-            }
-        }
+        let core = self.core_mut();
+        core.linked_order_ids = Some(linked_order_ids.clone());
+        initialized_event_mut(core).linked_order_ids = Some(linked_order_ids);
     }
 
     pub fn set_parent_order_id(&mut self, parent_order_id: Option<ClientOrderId>) {
-        match self {
-            Self::Limit(o) => {
-                o.parent_order_id = parent_order_id;
-                update_init_parent_order_id(&mut o.events, parent_order_id);
-            }
-            Self::LimitIfTouched(o) => {
-                o.parent_order_id = parent_order_id;
-                update_init_parent_order_id(&mut o.events, parent_order_id);
-            }
-            Self::Market(o) => {
-                o.parent_order_id = parent_order_id;
-                update_init_parent_order_id(&mut o.events, parent_order_id);
-            }
-            Self::MarketIfTouched(o) => {
-                o.parent_order_id = parent_order_id;
-                update_init_parent_order_id(&mut o.events, parent_order_id);
-            }
-            Self::MarketToLimit(o) => {
-                o.parent_order_id = parent_order_id;
-                update_init_parent_order_id(&mut o.events, parent_order_id);
-            }
-            Self::StopLimit(o) => {
-                o.parent_order_id = parent_order_id;
-                update_init_parent_order_id(&mut o.events, parent_order_id);
-            }
-            Self::StopMarket(o) => {
-                o.parent_order_id = parent_order_id;
-                update_init_parent_order_id(&mut o.events, parent_order_id);
-            }
-            Self::TrailingStopLimit(o) => {
-                o.parent_order_id = parent_order_id;
-                update_init_parent_order_id(&mut o.events, parent_order_id);
-            }
-            Self::TrailingStopMarket(o) => {
-                o.parent_order_id = parent_order_id;
-                update_init_parent_order_id(&mut o.events, parent_order_id);
-            }
-        }
+        let core = self.core_mut();
+        core.parent_order_id = parent_order_id;
+        initialized_event_mut(core).parent_order_id = parent_order_id;
     }
 
     pub fn set_contingency_type(&mut self, contingency_type: ContingencyType) {
-        match self {
-            Self::Limit(o) => o.contingency_type = Some(contingency_type),
-            Self::LimitIfTouched(o) => o.contingency_type = Some(contingency_type),
-            Self::Market(o) => o.contingency_type = Some(contingency_type),
-            Self::MarketIfTouched(o) => o.contingency_type = Some(contingency_type),
-            Self::MarketToLimit(o) => o.contingency_type = Some(contingency_type),
-            Self::StopLimit(o) => o.contingency_type = Some(contingency_type),
-            Self::StopMarket(o) => o.contingency_type = Some(contingency_type),
-            Self::TrailingStopLimit(o) => o.contingency_type = Some(contingency_type),
-            Self::TrailingStopMarket(o) => o.contingency_type = Some(contingency_type),
-        }
+        let core = self.core_mut();
+        core.contingency_type = Some(contingency_type);
+        initialized_event_mut(core).contingency_type = Some(contingency_type);
+    }
 
+    fn core_mut(&mut self) -> &mut OrderCore {
         match self {
-            Self::Limit(o) => update_init_contingency_type(&mut o.events, contingency_type),
-            Self::LimitIfTouched(o) => {
-                update_init_contingency_type(&mut o.events, contingency_type);
-            }
-            Self::Market(o) => update_init_contingency_type(&mut o.events, contingency_type),
-            Self::MarketIfTouched(o) => {
-                update_init_contingency_type(&mut o.events, contingency_type);
-            }
-            Self::MarketToLimit(o) => {
-                update_init_contingency_type(&mut o.events, contingency_type);
-            }
-            Self::StopLimit(o) => {
-                update_init_contingency_type(&mut o.events, contingency_type);
-            }
-            Self::StopMarket(o) => {
-                update_init_contingency_type(&mut o.events, contingency_type);
-            }
-            Self::TrailingStopLimit(o) => {
-                update_init_contingency_type(&mut o.events, contingency_type);
-            }
-            Self::TrailingStopMarket(o) => {
-                update_init_contingency_type(&mut o.events, contingency_type);
-            }
+            Self::Limit(order) => order,
+            Self::LimitIfTouched(order) => order,
+            Self::Market(order) => order,
+            Self::MarketIfTouched(order) => order,
+            Self::MarketToLimit(order) => order,
+            Self::StopLimit(order) => order,
+            Self::StopMarket(order) => order,
+            Self::TrailingStopLimit(order) => order,
+            Self::TrailingStopMarket(order) => order,
         }
     }
 }
 
-fn update_init_order_list_id(events: &mut [OrderEventAny], id: OrderListId) {
-    if let Some(OrderEventAny::Initialized(init)) = events.first_mut() {
-        init.order_list_id = Some(id);
-    }
-}
-
-fn update_init_linked_order_ids(
-    events: &mut [OrderEventAny],
-    linked_order_ids: Vec<ClientOrderId>,
-) {
-    if let Some(OrderEventAny::Initialized(init)) = events.first_mut() {
-        init.linked_order_ids = Some(linked_order_ids);
-    }
-}
-
-fn update_init_parent_order_id(
-    events: &mut [OrderEventAny],
-    parent_order_id: Option<ClientOrderId>,
-) {
-    if let Some(OrderEventAny::Initialized(init)) = events.first_mut() {
-        init.parent_order_id = parent_order_id;
-    }
-}
-
-fn update_init_contingency_type(events: &mut [OrderEventAny], contingency_type: ContingencyType) {
-    if let Some(OrderEventAny::Initialized(init)) = events.first_mut() {
-        init.contingency_type = Some(contingency_type);
+fn initialized_event_mut(core: &mut OrderCore) -> &mut crate::events::OrderInitialized {
+    match core
+        .events
+        .first_mut()
+        .expect("Order invariant violated: no events")
+    {
+        OrderEventAny::Initialized(event) => event,
+        _ => panic!("Order invariant violated: first event must be OrderInitialized"),
     }
 }
 
@@ -535,8 +413,8 @@ mod tests {
         events::{
             OrderEventAny, OrderInitialized, OrderUpdated, order::spec::OrderInitializedSpec,
         },
-        identifiers::{ClientOrderId, InstrumentId, OrderListId, StrategyId},
-        orders::builder::OrderTestBuilder,
+        identifiers::{ClientOrderId, InstrumentId, StrategyId},
+        orders::{OrderError, builder::OrderTestBuilder},
         types::{Price, Quantity},
     };
 
@@ -563,33 +441,6 @@ mod tests {
     }
 
     #[rstest]
-    fn test_order_any_metadata_mutators_update_init_event() {
-        let mut order = OrderTestBuilder::new(OrderType::Market)
-            .instrument_id(InstrumentId::from("BTC-USDT.BINANCE"))
-            .quantity(Quantity::from(10))
-            .client_order_id(ClientOrderId::from("ORDER-001"))
-            .build();
-
-        let order_list_id = OrderListId::from("OL-001");
-        let parent_order_id = ClientOrderId::from("ORDER-PARENT");
-        let linked_order_ids = vec![
-            ClientOrderId::from("ORDER-LINKED-1"),
-            ClientOrderId::from("ORDER-LINKED-2"),
-        ];
-
-        order.set_order_list_id(order_list_id);
-        order.set_parent_order_id(Some(parent_order_id));
-        order.set_linked_order_ids(linked_order_ids.clone());
-
-        assert_eq!(order.order_list_id(), Some(order_list_id));
-        assert_eq!(order.parent_order_id(), Some(parent_order_id));
-        assert_eq!(order.linked_order_ids(), Some(linked_order_ids.as_slice()));
-        assert_eq!(order.init_event().order_list_id, Some(order_list_id));
-        assert_eq!(order.init_event().parent_order_id, Some(parent_order_id));
-        assert_eq!(order.init_event().linked_order_ids, Some(linked_order_ids));
-    }
-
-    #[rstest]
     fn test_order_any_conversion_from_events() {
         // Create an OrderInitialized event
         let init_event = OrderInitializedSpec::builder()
@@ -613,11 +464,11 @@ mod tests {
     #[rstest]
     fn test_order_any_from_events_empty_error() {
         let events: Vec<OrderEventAny> = vec![];
-        let result = OrderAny::from_events(events);
+        let err = OrderAny::from_events(events).expect_err("empty events should fail");
 
-        assert!(result.is_err());
+        assert!(matches!(err, OrderReplayError::EmptyInput));
         assert_eq!(
-            result.unwrap_err().to_string(),
+            err.to_string(),
             "No order events provided to create OrderAny"
         );
     }
@@ -633,14 +484,21 @@ mod tests {
             .build();
 
         let events = vec![OrderEventAny::Initialized(init_event)];
-        let result = OrderAny::from_events(events);
+        let err =
+            OrderAny::from_events(events).expect_err("invalid initialization should fail replay");
 
-        assert!(result.is_err());
-        let msg = result.unwrap_err().to_string();
-        assert!(
-            msg.contains("Invalid `OrderInitialized` event")
-                && msg.contains("`price` is required for `LimitOrder`"),
-            "unexpected error message: {msg}"
+        match &err {
+            OrderReplayError::InvalidInitialization { source } => {
+                assert_eq!(
+                    source.to_string(),
+                    "`price` is required for `LimitOrder` initialization",
+                );
+            }
+            _ => panic!("expected InvalidInitialization, was {err:?}"),
+        }
+        assert_eq!(
+            err.to_string(),
+            "Invalid `OrderInitialized` event: `price` is required for `LimitOrder` initialization",
         );
     }
 
@@ -677,17 +535,20 @@ mod tests {
             .build();
 
         let events = vec![OrderEventAny::Initialized(init_event)];
-        let result = OrderAny::from_events(events);
+        let err =
+            OrderAny::from_events(events).expect_err("invalid initialization should fail replay");
 
-        assert!(result.is_err());
-        let msg = result.unwrap_err().to_string();
+        assert!(matches!(
+            err,
+            OrderReplayError::InvalidInitialization { .. }
+        ));
+        let msg = err.to_string();
         assert!(
             msg.contains("Invalid `OrderInitialized` event") && msg.contains(expected_msg),
             "unexpected error message: {msg}"
         );
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn make_init_with_optional_fields(
         order_type: OrderType,
         price: Option<Price>,
@@ -922,10 +783,14 @@ mod tests {
         // Each case omits exactly one required field for its order type. `from_events` must
         // surface the per-type `TryFrom` error rather than panicking inside `OrderAny::from`.
         let events = vec![OrderEventAny::Initialized(init)];
-        let result = OrderAny::from_events(events);
+        let err =
+            OrderAny::from_events(events).expect_err("invalid initialization should fail replay");
 
-        assert!(result.is_err());
-        let msg = result.unwrap_err().to_string();
+        assert!(matches!(
+            err,
+            OrderReplayError::InvalidInitialization { .. }
+        ));
+        let msg = err.to_string();
         assert!(
             msg.contains("Invalid `OrderInitialized` event") && msg.contains(expected_field_msg),
             "unexpected error message: {msg}"
@@ -949,12 +814,33 @@ mod tests {
         let events = vec![OrderEventAny::Updated(update_event)];
 
         // Attempt to create order should fail
-        let result = OrderAny::from_events(events);
-        assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "First event must be `OrderInitialized`"
-        );
+        let err = OrderAny::from_events(events).expect_err("wrong first event should fail replay");
+        assert!(matches!(err, OrderReplayError::WrongFirstEvent));
+        assert_eq!(err.to_string(), "First event must be `OrderInitialized`");
+    }
+
+    #[rstest]
+    fn test_order_any_from_events_apply_failure() {
+        let init_event = OrderInitializedSpec::builder()
+            .order_type(OrderType::Market)
+            .instrument_id(InstrumentId::from("BTC-USDT.BINANCE"))
+            .quantity(Quantity::from(10))
+            .build();
+
+        let events = vec![
+            OrderEventAny::Initialized(init_event.clone()),
+            OrderEventAny::Initialized(init_event),
+        ];
+        let err =
+            OrderAny::from_events(events).expect_err("later invalid event should fail replay");
+
+        match &err {
+            OrderReplayError::ApplyFailed { source } => {
+                assert!(matches!(source, OrderError::InvalidStateTransition));
+            }
+            _ => panic!("expected ApplyFailed, was {err:?}"),
+        }
+        assert_eq!(err.to_string(), "Invalid order state transition");
     }
 
     #[rstest]

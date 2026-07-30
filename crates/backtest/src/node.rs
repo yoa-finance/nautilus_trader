@@ -36,13 +36,12 @@ use nautilus_model::{
 };
 use nautilus_persistence::backend::{catalog::ParquetDataCatalog, session::QueryResult};
 
+pub use crate::engine::BacktestRunObserver as BacktestDataObserver;
 use crate::{
     config::{BacktestDataConfig, BacktestRunConfig, NautilusDataType, SimulatedVenueConfig},
     engine::{BacktestEngine, BacktestRunObserver},
     result::BacktestResult,
 };
-
-pub use crate::engine::BacktestRunObserver as BacktestDataObserver;
 
 /// Orchestrates catalog-driven backtests from run configurations.
 ///
@@ -106,6 +105,11 @@ impl BacktestNode {
     }
 
     /// Builds engines while allowing catalog I/O to be cancelled before a load lease expires.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if engine creation, venue setup, or instrument loading fails.
+    #[expect(clippy::needless_pass_by_value)]
     pub fn build_with_catalog_cancellation(
         &mut self,
         cancellation: Option<Arc<AtomicBool>>,
@@ -172,7 +176,7 @@ impl BacktestNode {
                     .liquidation_enabled(venue_config.liquidation_enabled())
                     .liquidation_trigger_ratio(venue_config.liquidation_trigger_ratio())
                     .liquidation_cancel_open_orders(venue_config.liquidation_cancel_open_orders())
-                    .build();
+                    .build()?;
                 engine.add_venue(sim_config)?;
             }
 
@@ -217,11 +221,7 @@ impl BacktestNode {
                 for (instrument_id, raw_price) in settlement_prices {
                     let price = {
                         let cache = engine.kernel().cache.borrow();
-                        let instrument = cache.instrument(instrument_id).ok_or_else(|| {
-                            anyhow::anyhow!(
-                                "No instrument found for settlement price configuration: {instrument_id}"
-                            )
-                        })?;
+                        let instrument = cache.try_instrument(instrument_id)?;
                         instrument.make_price(*raw_price)
                     };
                     engine.set_settlement_price(venue, *instrument_id, price)?;
@@ -268,10 +268,6 @@ impl BacktestNode {
 
     /// Runs all configured backtests and notifies `observer` during replay.
     ///
-    /// The observer receives borrowed data immediately before each chunk is handed to
-    /// [`BacktestEngine::add_data`], then receives engine-state callbacks after
-    /// each timestamp is fully processed. The engine execution ordering is unchanged.
-    ///
     /// # Errors
     ///
     /// Returns an error if building, data loading, observer processing, or engine execution fails.
@@ -281,7 +277,7 @@ impl BacktestNode {
     ) -> anyhow::Result<Vec<BacktestResult>> {
         // Auto-build if not already done
         if self.engines.is_empty() {
-            self.build()?;
+            self.build_with_catalog_cancellation(observer.catalog_load_cancellation_flag())?;
         }
 
         let mut results = Vec::new();
@@ -314,9 +310,7 @@ impl BacktestNode {
         Ok(results)
     }
 
-    /// Runs all configured backtests and notifies `observer` during replay.
-    ///
-    /// Kept for source compatibility with the original data-observer API.
+    /// Compatibility alias for the original data-observer API.
     ///
     /// # Errors
     ///
@@ -504,7 +498,8 @@ fn run_streaming(
     } else {
         // Multiple configs require loading all data to merge-sort across types
         let load_result = catch_unwind(AssertUnwindSafe(|| {
-            load_and_merge_data(config, observer.catalog_load_cancellation_flag())
+            let cancellation = observer.catalog_load_cancellation_flag();
+            load_and_merge_data(config, cancellation.as_ref())
         }));
         let all_data = finish_catalog_data_loading_after_unwind(observer, load_result)?;
         stream_chunks(
@@ -561,7 +556,6 @@ fn stream_chunks<I: Iterator<Item = Data>>(
     }
 }
 
-#[expect(clippy::too_many_arguments)]
 fn stream_chunks_inner<I: Iterator<Item = Data>>(
     engine: &mut BacktestEngine,
     config: &BacktestRunConfig,
@@ -601,8 +595,6 @@ fn stream_chunks_inner<I: Iterator<Item = Data>>(
         };
 
         if is_last && notify_catalog_data_exhausted {
-            // QueryResult drops its final eager stream while yielding the last item,
-            // so a `None` peek means the remote query source is already released.
             *catalog_data_exhausted_notified = true;
             observer.on_catalog_data_exhausted()?;
         }
@@ -687,7 +679,7 @@ fn take_aligned_chunk<I: Iterator<Item = Data>>(
 
 fn load_and_merge_data(
     config: &BacktestRunConfig,
-    cancellation: Option<Arc<AtomicBool>>,
+    cancellation: Option<&Arc<AtomicBool>>,
 ) -> anyhow::Result<Vec<Data>> {
     let mut all_data = Vec::new();
 
@@ -696,7 +688,7 @@ fn load_and_merge_data(
             data_config,
             config.start(),
             config.end(),
-            cancellation.clone(),
+            cancellation.cloned(),
         )?;
         if data.is_empty() {
             log::warn!("No data found for config: {:?}", data_config.data_type());

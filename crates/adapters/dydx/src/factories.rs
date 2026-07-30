@@ -127,12 +127,14 @@ impl DataClientFactory for DydxDataClientFactory {
             retry_config,
         )?;
 
-        let ws_client = DydxWebSocketClient::new_public_with_cache(
+        let ws_client = DydxWebSocketClient::new_public_with_cache_and_pool(
             ws_url,
             Arc::new(InstrumentCache::new()),
             Some(20),
             dydx_config.transport_backend,
             dydx_config.proxy_url.clone(),
+            dydx_config.max_ws_connections,
+            dydx_config.per_channel_subscription_limit,
         );
 
         let client = DydxDataClient::new(client_id, dydx_config, http_client, ws_client)?;
@@ -232,7 +234,7 @@ impl ExecutionClientFactory for DydxExecutionClientFactory {
             transport_backend: dydx_config.transport_backend,
         };
 
-        log::info!(
+        log::debug!(
             "Resolving wallet address: config={:?}, network={}, env_var={}",
             dydx_config.wallet_address,
             dydx_config.network,
@@ -245,14 +247,14 @@ impl ExecutionClientFactory for DydxExecutionClientFactory {
         let wallet_address = if let Some(addr) =
             resolve_wallet_address(dydx_config.wallet_address.clone(), dydx_config.network)
         {
-            log::info!("Using wallet address from config/env: {addr}");
+            log::debug!("Using wallet address from config/env: {addr}");
             addr
         } else if let Some(credential) = DydxCredential::resolve(
             dydx_config.private_key.as_deref(),
             dydx_config.network,
             dydx_config.authenticator_ids.clone(),
         )? {
-            log::info!(
+            log::debug!(
                 "Derived wallet address from private key: {}",
                 credential.address
             );

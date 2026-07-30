@@ -75,10 +75,6 @@ cdef class Cache(CacheFacade):
     cdef dict _bars
     cdef dict _bars_bid
     cdef dict _bars_ask
-    cdef dict _execution_bid_prices
-    cdef dict _execution_ask_prices
-    cdef dict _execution_last_prices
-    cdef dict _execution_price_timestamps
     cdef dict _accounts
     cdef dict _orders
     cdef dict _order_lists
@@ -161,8 +157,8 @@ cdef class Cache(CacheFacade):
     cdef void _cache_venue_account_id(self, AccountId account_id)
     cdef void _build_indexes_from_orders(self)
     cdef void _build_indexes_from_positions(self)
-    cdef set _build_order_query_filter_set(self, Venue venue, InstrumentId instrument_id, StrategyId strategy_id, AccountId account_id)
-    cdef set _build_position_query_filter_set(self, Venue venue, InstrumentId instrument_id, StrategyId strategy_id, AccountId account_id)
+    cdef set _build_order_query_filter_set(self, set base, Venue venue, InstrumentId instrument_id, StrategyId strategy_id, AccountId account_id)
+    cdef set _build_position_query_filter_set(self, set base, Venue venue, InstrumentId instrument_id, StrategyId strategy_id, AccountId account_id)
     cdef list _get_orders_for_ids(self, set client_order_ids, OrderSide side)
     cdef list _get_positions_for_ids(self, set position_ids, PositionSide side)
     cdef void _assign_position_id_to_contingencies(self, Order order)
@@ -184,19 +180,6 @@ cdef class Cache(CacheFacade):
     cpdef void add_own_order_book(self, own_order_book)
     cpdef void add_quote_tick(self, QuoteTick tick)
     cpdef void add_trade_tick(self, TradeTick tick)
-    cpdef Price execution_bid_price(self, InstrumentId instrument_id)
-    cpdef Price execution_ask_price(self, InstrumentId instrument_id)
-    cpdef Price execution_last_price(self, InstrumentId instrument_id)
-    cpdef void set_execution_prices(
-        self,
-        InstrumentId instrument_id,
-        Price bid_price,
-        Price ask_price,
-        Price last_price,
-        uint64_t ts_event,
-    )
-    cpdef void clear_execution_prices(self)
-    cpdef void clear_execution_prices_for(self, InstrumentId instrument_id)
     cpdef void add_mark_price(self, MarkPriceUpdate mark_price)
     cpdef void add_index_price(self, IndexPriceUpdate index_price)
     cpdef void add_funding_rate(self, FundingRateUpdate funding_rate)

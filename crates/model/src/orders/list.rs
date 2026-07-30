@@ -14,19 +14,37 @@
 // -------------------------------------------------------------------------------------------------
 
 use std::{
-    collections::HashSet,
     fmt::Display,
     hash::{Hash, Hasher},
 };
 
+use ahash::AHashSet;
 use nautilus_core::UnixNanos;
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 use crate::{
     enums::OrderListType,
     identifiers::{ClientOrderId, InstrumentId, OrderListId, StrategyId},
     orders::{Order, OrderAny},
 };
+
+/// Error returned when [`OrderList::validate`] fails.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum OrderListValidationError {
+    /// The order list contains no client order IDs.
+    #[error("OrderList {order_list_id} has no orders")]
+    EmptyClientOrderIds {
+        /// The invalid order list ID.
+        order_list_id: OrderListId,
+    },
+    /// The order list contains duplicate client order IDs.
+    #[error("OrderList {order_list_id} contains duplicate client_order_ids")]
+    DuplicateClientOrderIds {
+        /// The invalid order list ID.
+        order_list_id: OrderListId,
+    },
+}
 
 /// Lightweight identifier container for a group of related orders.
 ///
@@ -66,6 +84,25 @@ impl OrderList {
     #[must_use]
     pub fn new(
         order_list_id: OrderListId,
+        instrument_id: InstrumentId,
+        strategy_id: StrategyId,
+        client_order_ids: Vec<ClientOrderId>,
+        ts_init: UnixNanos,
+    ) -> Self {
+        Self::new_typed(
+            order_list_id,
+            OrderListType::Standard,
+            instrument_id,
+            strategy_id,
+            client_order_ids,
+            ts_init,
+        )
+    }
+
+    /// Creates a new typed [`OrderList`] instance.
+    #[must_use]
+    pub fn new_typed(
+        order_list_id: OrderListId,
         order_list_type: OrderListType,
         instrument_id: InstrumentId,
         strategy_id: StrategyId,
@@ -101,7 +138,18 @@ impl OrderList {
     /// filters out the empty case and bails on mixed venues before
     /// reaching this constructor.
     #[must_use]
-    pub fn from_orders(
+    pub fn from_orders(orders: &[OrderAny], ts_init: UnixNanos) -> Self {
+        Self::from_orders_with_type(OrderListType::Standard, orders, ts_init)
+    }
+
+    /// Creates a typed [`OrderList`] from a slice of orders.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `orders` is empty, if the first order has no
+    /// `order_list_id`, or if orders span more than one venue.
+    #[must_use]
+    pub fn from_orders_with_type(
         order_list_type: OrderListType,
         orders: &[OrderAny],
         ts_init: UnixNanos,
@@ -143,14 +191,18 @@ impl OrderList {
     /// # Errors
     ///
     /// Returns an error if `client_order_ids` is empty or contains duplicates.
-    pub fn validate(&self) -> anyhow::Result<()> {
+    pub fn validate(&self) -> Result<(), OrderListValidationError> {
         if self.client_order_ids.is_empty() {
-            anyhow::bail!("OrderList {} has no orders", self.id);
+            return Err(OrderListValidationError::EmptyClientOrderIds {
+                order_list_id: self.id,
+            });
         }
 
-        let unique: HashSet<&ClientOrderId> = self.client_order_ids.iter().collect();
+        let unique: AHashSet<&ClientOrderId> = self.client_order_ids.iter().collect();
         if unique.len() != self.client_order_ids.len() {
-            anyhow::bail!("OrderList {} contains duplicate client_order_ids", self.id);
+            return Err(OrderListValidationError::DuplicateClientOrderIds {
+                order_list_id: self.id,
+            });
         }
 
         Ok(())
@@ -247,7 +299,6 @@ mod tests {
 
         let order_list = OrderList::new(
             OrderListId::from("OL-001"),
-            OrderListType::Standard,
             InstrumentId::from("AUD/USD.SIM"),
             StrategyId::from("S-001"),
             orders,
@@ -255,7 +306,7 @@ mod tests {
         );
 
         assert!(order_list.to_string().starts_with(
-            "OrderList(id=OL-001, order_list_type=STANDARD, instrument_id=AUD/USD.SIM, strategy_id=S-001, client_order_ids="
+            "OrderList(id=OL-001, instrument_id=AUD/USD.SIM, strategy_id=S-001, client_order_ids="
         ));
     }
 
@@ -282,8 +333,7 @@ mod tests {
         let order_list_id = OrderListId::from("OL-MIXED-001");
         let orders = create_orders_for_instrument(&["AUD/USD.SIM", "EUR/USD.SIM"], order_list_id);
 
-        let order_list =
-            OrderList::from_orders(OrderListType::Standard, &orders, UnixNanos::default());
+        let order_list = OrderList::from_orders(&orders, UnixNanos::default());
 
         assert_eq!(order_list.len(), 2);
         assert_eq!(order_list.instrument_id, InstrumentId::from("AUD/USD.SIM"));
@@ -296,7 +346,7 @@ mod tests {
         let orders =
             create_orders_for_instrument(&["AUD/USD.SIM", "EUR/USD.IDEALPRO"], order_list_id);
 
-        let _ = OrderList::from_orders(OrderListType::Standard, &orders, UnixNanos::default());
+        let _ = OrderList::from_orders(&orders, UnixNanos::default());
     }
 
     #[rstest]
@@ -304,8 +354,7 @@ mod tests {
         let order_list_id = OrderListId::from("OL-002");
         let orders = create_orders(3, order_list_id);
 
-        let order_list =
-            OrderList::from_orders(OrderListType::Standard, &orders, UnixNanos::default());
+        let order_list = OrderList::from_orders(&orders, UnixNanos::default());
 
         assert_eq!(order_list.id, order_list_id);
         assert_eq!(order_list.len(), 3);
@@ -319,7 +368,6 @@ mod tests {
 
         let order_list1 = OrderList::new(
             OrderListId::from("OL-006"),
-            OrderListType::Standard,
             InstrumentId::from("AUD/USD.SIM"),
             StrategyId::from("S-001"),
             orders.clone(),
@@ -328,7 +376,6 @@ mod tests {
 
         let order_list2 = OrderList::new(
             OrderListId::from("OL-006"),
-            OrderListType::Standard,
             InstrumentId::from("AUD/USD.SIM"),
             StrategyId::from("S-001"),
             orders,
@@ -344,7 +391,6 @@ mod tests {
 
         let order_list1 = OrderList::new(
             OrderListId::from("OL-007"),
-            OrderListType::Standard,
             InstrumentId::from("AUD/USD.SIM"),
             StrategyId::from("S-001"),
             orders.clone(),
@@ -353,7 +399,6 @@ mod tests {
 
         let order_list2 = OrderList::new(
             OrderListId::from("OL-008"),
-            OrderListType::Standard,
             InstrumentId::from("AUD/USD.SIM"),
             StrategyId::from("S-001"),
             orders,
@@ -370,7 +415,6 @@ mod tests {
 
         let order_list = OrderList::new(
             OrderListId::from("OL-009"),
-            OrderListType::Standard,
             InstrumentId::from("AUD/USD.SIM"),
             StrategyId::from("S-001"),
             orders,
@@ -388,7 +432,6 @@ mod tests {
 
         let order_list = OrderList::new(
             OrderListId::from("OL-010"),
-            OrderListType::Standard,
             InstrumentId::from("AUD/USD.SIM"),
             StrategyId::from("S-001"),
             orders,
@@ -405,7 +448,6 @@ mod tests {
 
         let order_list1 = OrderList::new(
             OrderListId::from("OL-011"),
-            OrderListType::Standard,
             InstrumentId::from("AUD/USD.SIM"),
             StrategyId::from("S-001"),
             orders.clone(),
@@ -414,7 +456,6 @@ mod tests {
 
         let order_list2 = OrderList::new(
             OrderListId::from("OL-011"),
-            OrderListType::Standard,
             InstrumentId::from("AUD/USD.SIM"),
             StrategyId::from("S-001"),
             orders,
@@ -434,7 +475,6 @@ mod tests {
         let orders = create_client_order_ids(3);
         let order_list = OrderList::new(
             OrderListId::from("OL-VALID-001"),
-            OrderListType::Standard,
             InstrumentId::from("AUD/USD.SIM"),
             StrategyId::from("S-001"),
             orders,
@@ -449,17 +489,19 @@ mod tests {
     fn test_validate_rejects_empty_list() {
         let order_list = OrderList::new(
             OrderListId::from("OL-EMPTY-001"),
-            OrderListType::Standard,
             InstrumentId::from("AUD/USD.SIM"),
             StrategyId::from("S-001"),
             Vec::new(),
             UnixNanos::default(),
         );
         let err = order_list.validate().expect_err("empty list should fail");
-        assert!(
-            err.to_string().contains("OL-EMPTY-001") && err.to_string().contains("no orders"),
-            "unexpected error: {err}",
+        assert_eq!(
+            err,
+            OrderListValidationError::EmptyClientOrderIds {
+                order_list_id: OrderListId::from("OL-EMPTY-001"),
+            },
         );
+        assert_eq!(err.to_string(), "OrderList OL-EMPTY-001 has no orders");
     }
 
     #[rstest]
@@ -467,7 +509,6 @@ mod tests {
         let id = ClientOrderId::from("O-001");
         let order_list = OrderList::new(
             OrderListId::from("OL-DUP-001"),
-            OrderListType::Standard,
             InstrumentId::from("AUD/USD.SIM"),
             StrategyId::from("S-001"),
             vec![id, id],
@@ -476,9 +517,15 @@ mod tests {
         let err = order_list
             .validate()
             .expect_err("duplicate client_order_ids should fail");
-        assert!(
-            err.to_string().contains("duplicate client_order_ids"),
-            "unexpected error: {err}",
+        assert_eq!(
+            err,
+            OrderListValidationError::DuplicateClientOrderIds {
+                order_list_id: OrderListId::from("OL-DUP-001"),
+            },
+        );
+        assert_eq!(
+            err.to_string(),
+            "OrderList OL-DUP-001 contains duplicate client_order_ids",
         );
     }
 }

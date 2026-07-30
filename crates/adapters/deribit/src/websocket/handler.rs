@@ -70,7 +70,7 @@ use crate::{
     common::{
         consts::{DERIBIT_POST_ONLY_ERROR_CODE, DERIBIT_RATE_LIMIT_KEY_ORDER, DERIBIT_VENUE},
         enums::DeribitInstrumentState,
-        parse::parse_portfolio_to_account_state,
+        parse::{parse_portfolio_to_account_state, use_cost_for_bar_volume},
     },
     data_types::DeribitVolatilityIndex,
 };
@@ -821,7 +821,7 @@ impl DeribitWsFeedHandler {
                 }
             }
             HandlerCommand::InitializeInstruments(instruments) => {
-                log::info!("Handler received {} instruments", instruments.len());
+                log::debug!("Handler received {} instruments", instruments.len());
                 self.instruments_cache.clear();
                 for inst in instruments {
                     self.instruments_cache
@@ -1195,7 +1195,7 @@ impl DeribitWsFeedHandler {
                             if let Some(result) = &response.result {
                                 match serde_json::from_value::<u64>(result.clone()) {
                                     Ok(count) => {
-                                        log::info!(
+                                        log::debug!(
                                             "Cancelled {count} orders for instrument {instrument_id}"
                                         );
                                         // Individual order status updates come via user.orders subscription
@@ -1341,7 +1341,7 @@ impl DeribitWsFeedHandler {
                                     Ok(order_response) => {
                                         let venue_order_id =
                                             VenueOrderId::new(&order_response.order.order_id);
-                                        log::info!(
+                                        log::debug!(
                                             "Order updated: venue_order_id={}, client_order_id={}, state={}",
                                             venue_order_id,
                                             client_order_id,
@@ -1430,7 +1430,7 @@ impl DeribitWsFeedHandler {
                             if let Some(result) = &response.result {
                                 match serde_json::from_value::<DeribitOrderMsg>(result.clone()) {
                                     Ok(order_msg) => {
-                                        log::info!(
+                                        log::debug!(
                                             "Order state received: venue_order_id={}, client_order_id={}, state={}",
                                             order_msg.order_id,
                                             client_order_id,
@@ -1867,7 +1867,7 @@ impl DeribitWsFeedHandler {
                             match serde_json::from_value::<DeribitInstrumentStateMsg>(data.clone())
                             {
                                 Ok(state_msg) => {
-                                    log::info!(
+                                    log::debug!(
                                         "Instrument state change: {} -> {} (timestamp: {})",
                                         state_msg.instrument_name,
                                         state_msg.state,
@@ -1935,12 +1935,15 @@ impl DeribitWsFeedHandler {
                                             Ok(bar_type) => {
                                                 let price_precision = instrument.price_precision();
                                                 let size_precision = instrument.size_precision();
+                                                let use_cost_for_volume =
+                                                    use_cost_for_bar_volume(instrument);
 
                                                 match parse_chart_msg(
                                                     &chart_msg,
                                                     bar_type,
                                                     price_precision,
                                                     size_precision,
+                                                    use_cost_for_volume,
                                                     self.bars_timestamp_on_close,
                                                     ts_init,
                                                 ) {
@@ -2472,7 +2475,7 @@ impl DeribitWsFeedHandler {
                             }
                         }
                         Message::Close(_) => {
-                            log::info!("Received close frame");
+                            log::debug!("Received close frame");
                         }
                         _ => {}
                     }

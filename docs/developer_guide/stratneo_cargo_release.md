@@ -1,245 +1,190 @@
-# StratNeo Cargo Crate Release
+# StratNeo Rust Crate Release
 
-This runbook covers the StratNeo single-crate release flow for Nautilus adapter
-crates, especially `stratneo-nautilus-binance`. Use it when a StratNeo consumer
-such as `trade-service` depends on the crate from crates.io.
+This runbook releases the pure-Rust StratNeo fork of NautilusTrader aligned to
+official `v1.230.0`. It publishes one coordinated `0.60.1` bundle to crates.io.
+It does not publish Python wheels, an sdist, PyPI artifacts, R2 artifacts,
+container images, or an upstream-style GitHub release.
 
-## When This Is Needed
+`0.60.1` is a Rust-only hotfix for IOC residual cancellation after a partial
+fill when the matching engine still holds an `INITIALIZED` local snapshot.
 
-Changing source in `nautilus_trader` is not enough for consumers. For example,
-`trade-service` depends on:
+## Release boundary
 
-```toml
-nautilus-binance = { package = "stratneo-nautilus-binance", version = "=0.59.0", ... }
+The release script has an exact allowlist of 20 crates:
+
+```text
+stratneo-nautilus-analysis
+stratneo-nautilus-backtest
+stratneo-nautilus-common
+stratneo-nautilus-core
+stratneo-nautilus-cryptography
+stratneo-nautilus-data
+stratneo-nautilus-execution
+stratneo-nautilus-indicators
+stratneo-nautilus-live
+stratneo-nautilus-model
+stratneo-nautilus-network
+stratneo-nautilus-persistence
+stratneo-nautilus-persistence-macros
+stratneo-nautilus-portfolio
+stratneo-nautilus-risk
+stratneo-nautilus-serialization
+stratneo-nautilus-system
+stratneo-nautilus-trading
+stratneo-nautilus-binance
+stratneo-nautilus-sandbox
 ```
 
-That pin resolves from crates.io. A consumer will not receive a fix until the
-adapter crate is published and the consumer pin and lockfile are updated.
+The script fails if any crate is missing, has a different version, is not
+publishable to crates.io, or if another `stratneo-nautilus-*` workspace package
+exists outside this allowlist. It retains the upstream dependency-source and
+unpublishable-local-dependency checks.
 
 ## Preconditions
 
-- Work from a clean `nautilus_trader` tree.
-- Use the repo publish script, not raw `cargo publish`.
-- Do not print registry tokens.
-- crates.io versions are immutable. Never try to republish the same version.
-- For a breaking public API/type change in a `0.x` crate, prefer a minor bump
-  such as `0.58.8` to `0.59.0`. Use a patch bump only for compatible fixes.
+- Confirm the fork is based on official tag `v1.230.0`.
+- Confirm all 20 packages and their workspace dependency entries are `0.60.1`.
+- Regenerate Cap'n Proto and Binance Spot SBE sources with the repository
+  generators whenever their schemas change.
+- Work from a reviewed, clean release commit. Do not release from an uncommitted
+  worktree.
+- Confirm the required official `nautilus-*` dependencies at `0.60.0` are
+  already available on crates.io.
+- Never print or persist a crates.io token in the repository or shell history.
 
-The crates.io token is stored in Infisical:
+The fork's `build.yml`, `build-v2.yml`, and `docker.yml` workflows explicitly
+restrict upstream publication jobs to `nautechsystems/nautilus_trader`.
+Therefore a push to `yoa-finance/nautilus_trader` cannot publish upstream
+wheels, sdists, PyPI, R2, or GHCR artifacts, create an upstream tag, or run the
+upstream release DAG. StratNeo Cargo publication is intentionally performed
+with the script below.
 
-| Field | Value |
-|-------|-------|
-| Environment | `prod` |
-| Path | `/k8s/infrastructure/workflows` |
-| Key | `CRATES_IO_TOKEN` |
-
-## 1. Bump The Crate Version
-
-Update both the package version and the workspace dependency entry:
-
-- `crates/adapters/binance/Cargo.toml`
-- `Cargo.toml`
-
-Then update the workspace lockfile:
+## 1. Verify the source bundle
 
 ```bash
 cd /home/allen/StratNeo/nautilus_trader
-cargo +1.96.0 update -p stratneo-nautilus-binance --precise 0.59.0
+
+make check-capnp-schemas
+cargo +1.96.0 check -p stratneo-nautilus-backtest --all-targets
+cargo +1.96.0 check -p stratneo-nautilus-live
+cargo +1.96.0 check -p stratneo-nautilus-binance --all-targets
 ```
 
-Run the adapter tests before publishing:
+Verify the Binance adapter exposes the package version expected by
+`trade-service`:
 
-```bash
-cargo +1.96.0 test -p stratneo-nautilus-binance
+```rust
+nautilus_binance::STRATNEO_NAUTILUS_BINANCE_VERSION
 ```
 
-## 2. Check The Publish Plan
-
-Use the official script in check mode:
+## 2. Validate the exact publish plan
 
 ```bash
-cd /home/allen/StratNeo/nautilus_trader
-CARGO_PUBLISH_SUCCESS_DELAY_SECONDS=0 \
 bash scripts/ci/publish-cargo-crates.sh \
   --check \
-  --package stratneo-nautilus-binance \
-  --version 0.59.0
+  --version 0.60.1
 ```
 
-Expected output includes:
+The output must contain exactly 20 entries, all at `0.60.1`, followed by:
 
 ```text
-Publishing crates in dependency order:
-1. stratneo-nautilus-binance  0.59.0
 Cargo crate publish plan is valid.
 ```
 
-Optionally verify the target version is still available:
+Run Cargo packaging for those same 20 packages only:
 
 ```bash
-curl --proto '=https' --tlsv1.2 --silent --show-error --location \
-  --header 'User-Agent: stratneo-local-release-check (https://github.com/yoa-finance/nautilus_trader)' \
-  https://crates.io/api/v1/crates/stratneo-nautilus-binance/0.59.0
-```
-
-A `404` response means the version is not published yet.
-
-## 3. Publish To crates.io
-
-Read the token from Infisical into a shell variable and pass it only through the
-child process environment:
-
-```bash
-cd /home/allen/StratNeo/nautilus_trader
-
-crates_io_token="$(
-  infisical export \
-    --silent \
-    --env=prod \
-    --path=/k8s/infrastructure/workflows \
-    --format=json \
-    --include-imports=false \
-  | jq -r '.[] | select(.key == "CRATES_IO_TOKEN") | .value' \
-  | head -n 1
-)"
-
-test -n "${crates_io_token}"
-
-CARGO_REGISTRY_TOKEN="${crates_io_token}" \
-CARGO_PUBLISH_ATTEMPTS=5 \
-CARGO_PUBLISH_POLL_SECONDS=5 \
-CARGO_PUBLISH_RETRY_DELAY_SECONDS=15 \
-CARGO_PUBLISH_SUCCESS_DELAY_SECONDS=0 \
-CARGO_PUBLISH_WAIT_TIMEOUT_SECONDS=120 \
-CARGO_PUBLISH_USER_AGENT='stratneo-local-release (https://github.com/yoa-finance/nautilus_trader)' \
 bash scripts/ci/publish-cargo-crates.sh \
-  --package stratneo-nautilus-binance \
-  --version 0.59.0
-
-unset crates_io_token
+  --dry-run \
+  --version 0.60.1
 ```
 
-Expected output includes:
+The dry-run iterates the allowlisted dependency plan. It never uses
+`cargo publish --workspace`. The script supplies temporary local
+`[patch.crates-io]` entries only for package verification so the new release
+train can be checked before its dependencies exist in the registry. Published
+manifests still contain normal crates.io version requirements.
 
-```text
-Uploaded stratneo-nautilus-binance v0.59.0 to registry `crates-io`
-Published stratneo-nautilus-binance v0.59.0 at registry `crates-io`
-Finished publishing Cargo crates.
-```
+## 3. Verify consumers against the local fork
 
-Verify crates.io can see the version:
+The known consumers are:
 
-```bash
-curl --proto '=https' --tlsv1.2 --silent --show-error --location \
-  --header 'User-Agent: stratneo-local-release-check (https://github.com/yoa-finance/nautilus_trader)' \
-  https://crates.io/api/v1/crates/stratneo-nautilus-binance/0.59.0 \
-| jq -r '"crate=" + .version.crate + " version=" + .version.num + " yanked=" + (.version.yanked|tostring)'
-```
+| Consumer | Direct StratNeo crates |
+|---|---|
+| `trade-service` | common, Binance, core, cryptography, execution, live, model, persistence, sandbox, system, trading |
+| `backtest-service` | backtest, common, core, execution, model, persistence, portfolio, trading |
+| `yoa-graph-runtime` | common, core, model, trading, portfolio |
 
-Expected:
-
-```text
-crate=stratneo-nautilus-binance version=0.59.0 yanked=false
-```
-
-## 4. Audit And Update Consumers
-
-After crates.io has the new version, audit all StratNeo Cargo consumers before
-updating any one repo:
-
-```bash
-cd /home/allen/StratNeo
-rg -n "stratneo-nautilus-binance|nautilus-binance" \
-  --glob 'Cargo.toml' \
-  --glob 'Cargo.lock' \
-  --glob '!target'
-```
-
-Known consumer actions:
-
-| Repo | Action |
-|------|--------|
-| `trade-service` | Update the direct `nautilus-binance` pin and lockfile. |
-| `backtest-service` | No update unless the audit finds `stratneo-nautilus-binance`; it currently has no direct or resolved Binance adapter dependency. |
-
-Confirm the resolved dependency graph in any suspected consumer:
-
-```bash
-cd /home/allen/StratNeo/backtest-service
-INFISICAL_ENV=prod ./scripts/with_infisical.sh \
-  cargo +1.96.0 tree -i stratneo-nautilus-binance
-```
-
-If Cargo reports `did not match any packages`, do not add a new dependency just
-for the release. That repo is not consuming the published adapter crate.
-
-For `trade-service`, update the consumer pin:
-
-```toml
-nautilus-binance = { package = "stratneo-nautilus-binance", version = "=0.59.0", default-features = false, features = ["high-precision"] }
-```
-
-Then update `trade-service/Cargo.lock` using the service wrapper so the private
-registry credentials are present:
+Before publication, use each consumer's existing local `[patch.crates-io]`
+entries to compile against this exact worktree:
 
 ```bash
 cd /home/allen/StratNeo/trade-service
-
-INFISICAL_ENV=prod \
-INFISICAL_LOAD_APP_PATH=false \
-INFISICAL_LOAD_SHARED_PATH=true \
-./scripts/with_infisical.sh \
-  cargo +1.96.0 update -p stratneo-nautilus-binance --precise 0.59.0
-```
-
-Review `Cargo.lock`. If Cargo only changed unrelated transitive dependency edge
-selection, reduce the diff back to the adapter version and checksum. The desired
-consumer diff should normally be:
-
-- `Cargo.toml`: `=old` to `=new`
-- `Cargo.lock`: `stratneo-nautilus-binance` version and checksum
-
-## 5. Verify Consumers
-
-For `trade-service`, run the live runner target first, then the workspace:
-
-```bash
-cd /home/allen/StratNeo/trade-service
-
 INFISICAL_ENV=prod \
 INFISICAL_LOAD_APP_PATH=false \
 INFISICAL_LOAD_SHARED_PATH=true \
 ./scripts/with_infisical.sh cargo +1.96.0 check -p trade-runner
 
+cd /home/allen/StratNeo/backtest-service
 INFISICAL_ENV=prod \
-INFISICAL_LOAD_APP_PATH=false \
-INFISICAL_LOAD_SHARED_PATH=true \
-./scripts/with_infisical.sh cargo +1.96.0 check --workspace
+./scripts/with_infisical.sh cargo +1.96.0 check -p backtest-runner
+
+cd /home/allen/StratNeo/yoa-graph-runtime
+cargo +1.96.0 check --all-features
 ```
 
-For any additional consumer found by the audit, run that repo's equivalent
-package-level check plus workspace check. For `backtest-service`, no Binance
-adapter verification is required when the dependency graph audit shows the crate
-is absent.
+Treat compile failures as release blockers. In particular, validate the native
+order-list API, backtest observer/termination API, endpoint-routed trading
+commands, and the Binance version constant.
 
-## 6. Commit Order
+## 4. Publish
 
-Use separate commits when possible:
+Retrieve the token from the approved secret store into a shell variable. The
+script accepts `CARGO_REGISTRY_TOKEN` first and falls back to
+`STRATNEO_CARGO_REGISTRY_TOKEN`, then the legacy `CRATES_IO_TOKEN`.
 
-1. `nautilus_trader`: adapter fix.
-2. `nautilus_trader`: crate version bump.
-3. Consumer repos such as `trade-service`: pin and lockfile update.
+```bash
+cd /home/allen/StratNeo/nautilus_trader
 
-This keeps the source fix, publish metadata, and consumer rollout auditable.
+STRATNEO_CARGO_REGISTRY_TOKEN="${stratneo_crates_io_token}" \
+CARGO_PUBLISH_ATTEMPTS=5 \
+CARGO_PUBLISH_POLL_SECONDS=5 \
+CARGO_PUBLISH_RETRY_DELAY_SECONDS=15 \
+CARGO_PUBLISH_SUCCESS_DELAY_SECONDS=0 \
+CARGO_PUBLISH_WAIT_TIMEOUT_SECONDS=300 \
+CARGO_PUBLISH_USER_AGENT='stratneo-rust-release (https://github.com/yoa-finance/nautilus_trader)' \
+bash scripts/ci/publish-cargo-crates.sh \
+  --version 0.60.1
+```
 
-## Common Failures
+The script publishes in dependency order, skips an already-visible immutable
+version, retries transient failures, and waits for both the crates.io API and
+sparse index before moving to the next crate.
 
-- `CARGO_REGISTRY_TOKEN or CRATES_IO_TOKEN not set`: read `CRATES_IO_TOKEN`
-  from Infisical and pass it as `CARGO_REGISTRY_TOKEN`.
-- `Cannot index array with string "CRATES_IO_TOKEN"`: Infisical JSON export is
-  an array of objects. Use `.[] | select(.key == "CRATES_IO_TOKEN") | .value`.
-- `registry index was not found in any configuration: stratneo_rust_crates` in
-  `trade-service`: run Cargo through `scripts/with_infisical.sh` with shared
-  secrets enabled.
-- Consumer still uses the old code: confirm the consumer pin and lockfile point
-  to the published version, not only to a local source commit.
+## 5. Verify registry consumers
+
+After all 20 versions are visible, validate from clean consumer checkouts with
+the local `[patch.crates-io]` overrides absent or disabled. Keep every direct
+dependency pinned to `=0.60.1`, update lockfiles through the consumer's normal
+credential wrapper, then rerun the commands from step 3 plus each workspace's
+normal check.
+
+Review lockfile changes carefully. The resolved `stratneo-nautilus-*` packages
+must all be `0.60.1` from crates.io; no Git or local-path source should remain
+in the registry verification checkout.
+
+## Rollout order
+
+1. Publish and verify all 20 crates.
+2. Deploy `backtest-service` canary and exercise exact catalog loading,
+   observer callbacks, and termination reporting.
+3. Deploy `trade-service` canary and exercise Binance connect, submit,
+   OCO/OPOCO, modify, cancel-all, reconnect, and reconciliation.
+4. Deploy `yoa-graph-runtime` after its Nautilus feature build and graph
+   execution smoke test pass.
+5. Expand each deployment only after logs show no protocol anomalies, adapter
+   fatal signals, duplicate accepted events, or valuation divergence.
+
+Because crates.io versions are immutable, rollback means restoring consumer
+pins and lockfiles to the previous published `0.60.0` bundle. Never overwrite
+or republish `0.60.1`.

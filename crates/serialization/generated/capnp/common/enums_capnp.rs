@@ -2,7 +2,7 @@
 // DO NOT EDIT.
 // source: common/enums.capnp
 // capnp binary version: 1.4.0
-// capnpc crate version: 0.25.3
+// capnpc crate version: 0.26.0
 
 
 #[repr(u16)]
@@ -15,10 +15,10 @@ pub enum AccountType {
 }
 
 impl ::capnp::introspect::Introspect for AccountType {
-    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema { encoded_node: &account_type::ENCODED_NODE, annotation_types: account_type::get_annotation_types }).into() }
+    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema::new(&account_type::ARENA, account_type::get_annotation_types)).into() }
 }
 impl ::core::convert::From<AccountType> for ::capnp::dynamic_value::Reader<'_> {
-    fn from(e: AccountType) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema { encoded_node: &account_type::ENCODED_NODE, annotation_types: account_type::get_annotation_types }.into()).into() }
+    fn from(e: AccountType) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema::new(&account_type::ARENA, account_type::get_annotation_types).into()).into() }
 }
 impl ::core::convert::TryFrom<u16> for AccountType {
     type Error = ::capnp::NotInSchema;
@@ -80,6 +80,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 35] = [
 pub(crate) fn get_annotation_types(child_index: Option<u16>, index: u32) -> ::capnp::introspect::Type {
     ::capnp::introspect::panic_invalid_annotation_indices(child_index, index)
 }
+pub(crate) static ARENA: ::capnp::private::arena::GeneratedCodeArena = ::capnp::private::arena::GeneratedCodeArena::new(&ENCODED_NODE);
 }
 
 #[repr(u16)]
@@ -91,10 +92,10 @@ pub enum AggressorSide {
 }
 
 impl ::capnp::introspect::Introspect for AggressorSide {
-    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema { encoded_node: &aggressor_side::ENCODED_NODE, annotation_types: aggressor_side::get_annotation_types }).into() }
+    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema::new(&aggressor_side::ARENA, aggressor_side::get_annotation_types)).into() }
 }
 impl ::core::convert::From<AggressorSide> for ::capnp::dynamic_value::Reader<'_> {
-    fn from(e: AggressorSide) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema { encoded_node: &aggressor_side::ENCODED_NODE, annotation_types: aggressor_side::get_annotation_types }.into()).into() }
+    fn from(e: AggressorSide) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema::new(&aggressor_side::ARENA, aggressor_side::get_annotation_types).into()).into() }
 }
 impl ::core::convert::TryFrom<u16> for AggressorSide {
     type Error = ::capnp::NotInSchema;
@@ -153,6 +154,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 33] = [
 pub(crate) fn get_annotation_types(child_index: Option<u16>, index: u32) -> ::capnp::introspect::Type {
     ::capnp::introspect::panic_invalid_annotation_indices(child_index, index)
 }
+pub(crate) static ARENA: ::capnp::private::arena::GeneratedCodeArena = ::capnp::private::arena::GeneratedCodeArena::new(&ENCODED_NODE);
 }
 
 #[repr(u16)]
@@ -168,10 +170,10 @@ pub enum AssetClass {
 }
 
 impl ::capnp::introspect::Introspect for AssetClass {
-    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema { encoded_node: &asset_class::ENCODED_NODE, annotation_types: asset_class::get_annotation_types }).into() }
+    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema::new(&asset_class::ARENA, asset_class::get_annotation_types)).into() }
 }
 impl ::core::convert::From<AssetClass> for ::capnp::dynamic_value::Reader<'_> {
-    fn from(e: AssetClass) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema { encoded_node: &asset_class::ENCODED_NODE, annotation_types: asset_class::get_annotation_types }.into()).into() }
+    fn from(e: AssetClass) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema::new(&asset_class::ARENA, asset_class::get_annotation_types).into()).into() }
 }
 impl ::core::convert::TryFrom<u16> for AssetClass {
     type Error = ::capnp::NotInSchema;
@@ -251,6 +253,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 50] = [
 pub(crate) fn get_annotation_types(child_index: Option<u16>, index: u32) -> ::capnp::introspect::Type {
     ::capnp::introspect::panic_invalid_annotation_indices(child_index, index)
 }
+pub(crate) static ARENA: ::capnp::private::arena::GeneratedCodeArena = ::capnp::private::arena::GeneratedCodeArena::new(&ENCODED_NODE);
 }
 
 #[repr(u16)]
@@ -271,10 +274,10 @@ pub enum InstrumentClass {
 }
 
 impl ::capnp::introspect::Introspect for InstrumentClass {
-    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema { encoded_node: &instrument_class::ENCODED_NODE, annotation_types: instrument_class::get_annotation_types }).into() }
+    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema::new(&instrument_class::ARENA, instrument_class::get_annotation_types)).into() }
 }
 impl ::core::convert::From<InstrumentClass> for ::capnp::dynamic_value::Reader<'_> {
-    fn from(e: InstrumentClass) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema { encoded_node: &instrument_class::ENCODED_NODE, annotation_types: instrument_class::get_annotation_types }.into()).into() }
+    fn from(e: InstrumentClass) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema::new(&instrument_class::ARENA, instrument_class::get_annotation_types).into()).into() }
 }
 impl ::core::convert::TryFrom<u16> for InstrumentClass {
     type Error = ::capnp::NotInSchema;
@@ -381,6 +384,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 72] = [
 pub(crate) fn get_annotation_types(child_index: Option<u16>, index: u32) -> ::capnp::introspect::Type {
     ::capnp::introspect::panic_invalid_annotation_indices(child_index, index)
 }
+pub(crate) static ARENA: ::capnp::private::arena::GeneratedCodeArena = ::capnp::private::arena::GeneratedCodeArena::new(&ENCODED_NODE);
 }
 
 #[repr(u16)]
@@ -391,10 +395,10 @@ pub enum OptionKind {
 }
 
 impl ::capnp::introspect::Introspect for OptionKind {
-    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema { encoded_node: &option_kind::ENCODED_NODE, annotation_types: option_kind::get_annotation_types }).into() }
+    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema::new(&option_kind::ARENA, option_kind::get_annotation_types)).into() }
 }
 impl ::core::convert::From<OptionKind> for ::capnp::dynamic_value::Reader<'_> {
-    fn from(e: OptionKind) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema { encoded_node: &option_kind::ENCODED_NODE, annotation_types: option_kind::get_annotation_types }.into()).into() }
+    fn from(e: OptionKind) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema::new(&option_kind::ARENA, option_kind::get_annotation_types).into()).into() }
 }
 impl ::core::convert::TryFrom<u16> for OptionKind {
     type Error = ::capnp::NotInSchema;
@@ -446,6 +450,76 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 27] = [
 pub(crate) fn get_annotation_types(child_index: Option<u16>, index: u32) -> ::capnp::introspect::Type {
     ::capnp::introspect::panic_invalid_annotation_indices(child_index, index)
 }
+pub(crate) static ARENA: ::capnp::private::arena::GeneratedCodeArena = ::capnp::private::arena::GeneratedCodeArena::new(&ENCODED_NODE);
+}
+
+#[repr(u16)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GreeksConvention {
+    BlackScholes = 0,
+    PriceAdjusted = 1,
+}
+
+impl ::capnp::introspect::Introspect for GreeksConvention {
+    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema::new(&greeks_convention::ARENA, greeks_convention::get_annotation_types)).into() }
+}
+impl ::core::convert::From<GreeksConvention> for ::capnp::dynamic_value::Reader<'_> {
+    fn from(e: GreeksConvention) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema::new(&greeks_convention::ARENA, greeks_convention::get_annotation_types).into()).into() }
+}
+impl ::core::convert::TryFrom<u16> for GreeksConvention {
+    type Error = ::capnp::NotInSchema;
+    fn try_from(value: u16) -> ::core::result::Result<Self, <GreeksConvention as ::core::convert::TryFrom<u16>>::Error> {
+        match value {
+            0 => ::core::result::Result::Ok(Self::BlackScholes),
+            1 => ::core::result::Result::Ok(Self::PriceAdjusted),
+            n => ::core::result::Result::Err(::capnp::NotInSchema(n)),
+        }
+    }
+}
+impl From<GreeksConvention> for u16 {
+    #[inline]
+    fn from(x: GreeksConvention) -> u16 { x as u16 }
+}
+impl ::capnp::traits::HasTypeId for GreeksConvention {
+    const TYPE_ID: u64 = 0xd844_7a05_6773_4e0bu64;
+}
+mod greeks_convention {
+pub(crate) static ENCODED_NODE: [::capnp::Word; 30] = [
+    ::capnp::word(0, 0, 0, 0, 6, 0, 6, 0),
+    ::capnp::word(11, 78, 115, 103, 5, 122, 68, 216),
+    ::capnp::word(19, 0, 0, 0, 2, 0, 0, 0),
+    ::capnp::word(41, 24, 7, 246, 229, 212, 195, 178),
+    ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
+    ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
+    ::capnp::word(34, 3, 0, 0, 102, 3, 0, 0),
+    ::capnp::word(21, 0, 0, 0, 34, 1, 0, 0),
+    ::capnp::word(37, 0, 0, 0, 7, 0, 0, 0),
+    ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
+    ::capnp::word(33, 0, 0, 0, 55, 0, 0, 0),
+    ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
+    ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
+    ::capnp::word(99, 111, 109, 109, 111, 110, 47, 101),
+    ::capnp::word(110, 117, 109, 115, 46, 99, 97, 112),
+    ::capnp::word(110, 112, 58, 71, 114, 101, 101, 107),
+    ::capnp::word(115, 67, 111, 110, 118, 101, 110, 116),
+    ::capnp::word(105, 111, 110, 0, 0, 0, 0, 0),
+    ::capnp::word(0, 0, 0, 0, 1, 0, 1, 0),
+    ::capnp::word(8, 0, 0, 0, 1, 0, 2, 0),
+    ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
+    ::capnp::word(17, 0, 0, 0, 106, 0, 0, 0),
+    ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
+    ::capnp::word(1, 0, 0, 0, 0, 0, 0, 0),
+    ::capnp::word(13, 0, 0, 0, 114, 0, 0, 0),
+    ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
+    ::capnp::word(98, 108, 97, 99, 107, 83, 99, 104),
+    ::capnp::word(111, 108, 101, 115, 0, 0, 0, 0),
+    ::capnp::word(112, 114, 105, 99, 101, 65, 100, 106),
+    ::capnp::word(117, 115, 116, 101, 100, 0, 0, 0),
+];
+pub(crate) fn get_annotation_types(child_index: Option<u16>, index: u32) -> ::capnp::introspect::Type {
+    ::capnp::introspect::panic_invalid_annotation_indices(child_index, index)
+}
+pub(crate) static ARENA: ::capnp::private::arena::GeneratedCodeArena = ::capnp::private::arena::GeneratedCodeArena::new(&ENCODED_NODE);
 }
 
 #[repr(u16)]
@@ -457,10 +531,10 @@ pub enum OrderSide {
 }
 
 impl ::capnp::introspect::Introspect for OrderSide {
-    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema { encoded_node: &order_side::ENCODED_NODE, annotation_types: order_side::get_annotation_types }).into() }
+    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema::new(&order_side::ARENA, order_side::get_annotation_types)).into() }
 }
 impl ::core::convert::From<OrderSide> for ::capnp::dynamic_value::Reader<'_> {
-    fn from(e: OrderSide) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema { encoded_node: &order_side::ENCODED_NODE, annotation_types: order_side::get_annotation_types }.into()).into() }
+    fn from(e: OrderSide) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema::new(&order_side::ARENA, order_side::get_annotation_types).into()).into() }
 }
 impl ::core::convert::TryFrom<u16> for OrderSide {
     type Error = ::capnp::NotInSchema;
@@ -488,7 +562,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 32] = [
     ::capnp::word(41, 24, 7, 246, 229, 212, 195, 178),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
-    ::capnp::word(34, 3, 0, 0, 97, 3, 0, 0),
+    ::capnp::word(104, 3, 0, 0, 167, 3, 0, 0),
     ::capnp::word(21, 0, 0, 0, 234, 0, 0, 0),
     ::capnp::word(33, 0, 0, 0, 7, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
@@ -518,6 +592,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 32] = [
 pub(crate) fn get_annotation_types(child_index: Option<u16>, index: u32) -> ::capnp::introspect::Type {
     ::capnp::introspect::panic_invalid_annotation_indices(child_index, index)
 }
+pub(crate) static ARENA: ::capnp::private::arena::GeneratedCodeArena = ::capnp::private::arena::GeneratedCodeArena::new(&ENCODED_NODE);
 }
 
 #[repr(u16)]
@@ -535,10 +610,10 @@ pub enum OrderType {
 }
 
 impl ::capnp::introspect::Introspect for OrderType {
-    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema { encoded_node: &order_type::ENCODED_NODE, annotation_types: order_type::get_annotation_types }).into() }
+    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema::new(&order_type::ARENA, order_type::get_annotation_types)).into() }
 }
 impl ::core::convert::From<OrderType> for ::capnp::dynamic_value::Reader<'_> {
-    fn from(e: OrderType) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema { encoded_node: &order_type::ENCODED_NODE, annotation_types: order_type::get_annotation_types }.into()).into() }
+    fn from(e: OrderType) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema::new(&order_type::ARENA, order_type::get_annotation_types).into()).into() }
 }
 impl ::core::convert::TryFrom<u16> for OrderType {
     type Error = ::capnp::NotInSchema;
@@ -572,7 +647,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 64] = [
     ::capnp::word(41, 24, 7, 246, 229, 212, 195, 178),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
-    ::capnp::word(99, 3, 0, 0, 49, 4, 0, 0),
+    ::capnp::word(169, 3, 0, 0, 119, 4, 0, 0),
     ::capnp::word(21, 0, 0, 0, 234, 0, 0, 0),
     ::capnp::word(33, 0, 0, 0, 7, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
@@ -634,6 +709,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 64] = [
 pub(crate) fn get_annotation_types(child_index: Option<u16>, index: u32) -> ::capnp::introspect::Type {
     ::capnp::introspect::panic_invalid_annotation_indices(child_index, index)
 }
+pub(crate) static ARENA: ::capnp::private::arena::GeneratedCodeArena = ::capnp::private::arena::GeneratedCodeArena::new(&ENCODED_NODE);
 }
 
 #[repr(u16)]
@@ -656,10 +732,10 @@ pub enum OrderStatus {
 }
 
 impl ::capnp::introspect::Introspect for OrderStatus {
-    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema { encoded_node: &order_status::ENCODED_NODE, annotation_types: order_status::get_annotation_types }).into() }
+    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema::new(&order_status::ARENA, order_status::get_annotation_types)).into() }
 }
 impl ::core::convert::From<OrderStatus> for ::capnp::dynamic_value::Reader<'_> {
-    fn from(e: OrderStatus) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema { encoded_node: &order_status::ENCODED_NODE, annotation_types: order_status::get_annotation_types }.into()).into() }
+    fn from(e: OrderStatus) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema::new(&order_status::ARENA, order_status::get_annotation_types).into()).into() }
 }
 impl ::core::convert::TryFrom<u16> for OrderStatus {
     type Error = ::capnp::NotInSchema;
@@ -698,7 +774,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 86] = [
     ::capnp::word(41, 24, 7, 246, 229, 212, 195, 178),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
-    ::capnp::word(51, 4, 0, 0, 74, 5, 0, 0),
+    ::capnp::word(121, 4, 0, 0, 144, 5, 0, 0),
     ::capnp::word(21, 0, 0, 0, 250, 0, 0, 0),
     ::capnp::word(33, 0, 0, 0, 7, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
@@ -782,6 +858,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 86] = [
 pub(crate) fn get_annotation_types(child_index: Option<u16>, index: u32) -> ::capnp::introspect::Type {
     ::capnp::introspect::panic_invalid_annotation_indices(child_index, index)
 }
+pub(crate) static ARENA: ::capnp::private::arena::GeneratedCodeArena = ::capnp::private::arena::GeneratedCodeArena::new(&ENCODED_NODE);
 }
 
 #[repr(u16)]
@@ -797,10 +874,10 @@ pub enum TimeInForce {
 }
 
 impl ::capnp::introspect::Introspect for TimeInForce {
-    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema { encoded_node: &time_in_force::ENCODED_NODE, annotation_types: time_in_force::get_annotation_types }).into() }
+    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema::new(&time_in_force::ARENA, time_in_force::get_annotation_types)).into() }
 }
 impl ::core::convert::From<TimeInForce> for ::capnp::dynamic_value::Reader<'_> {
-    fn from(e: TimeInForce) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema { encoded_node: &time_in_force::ENCODED_NODE, annotation_types: time_in_force::get_annotation_types }.into()).into() }
+    fn from(e: TimeInForce) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema::new(&time_in_force::ARENA, time_in_force::get_annotation_types).into()).into() }
 }
 impl ::core::convert::TryFrom<u16> for TimeInForce {
     type Error = ::capnp::NotInSchema;
@@ -832,7 +909,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 49] = [
     ::capnp::word(41, 24, 7, 246, 229, 212, 195, 178),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
-    ::capnp::word(76, 5, 0, 0, 21, 6, 0, 0),
+    ::capnp::word(146, 5, 0, 0, 91, 6, 0, 0),
     ::capnp::word(21, 0, 0, 0, 250, 0, 0, 0),
     ::capnp::word(33, 0, 0, 0, 7, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
@@ -879,6 +956,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 49] = [
 pub(crate) fn get_annotation_types(child_index: Option<u16>, index: u32) -> ::capnp::introspect::Type {
     ::capnp::introspect::panic_invalid_annotation_indices(child_index, index)
 }
+pub(crate) static ARENA: ::capnp::private::arena::GeneratedCodeArena = ::capnp::private::arena::GeneratedCodeArena::new(&ENCODED_NODE);
 }
 
 #[repr(u16)]
@@ -897,10 +975,10 @@ pub enum TriggerType {
 }
 
 impl ::capnp::introspect::Introspect for TriggerType {
-    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema { encoded_node: &trigger_type::ENCODED_NODE, annotation_types: trigger_type::get_annotation_types }).into() }
+    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema::new(&trigger_type::ARENA, trigger_type::get_annotation_types)).into() }
 }
 impl ::core::convert::From<TriggerType> for ::capnp::dynamic_value::Reader<'_> {
-    fn from(e: TriggerType) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema { encoded_node: &trigger_type::ENCODED_NODE, annotation_types: trigger_type::get_annotation_types }.into()).into() }
+    fn from(e: TriggerType) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema::new(&trigger_type::ARENA, trigger_type::get_annotation_types).into()).into() }
 }
 impl ::core::convert::TryFrom<u16> for TriggerType {
     type Error = ::capnp::NotInSchema;
@@ -935,7 +1013,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 67] = [
     ::capnp::word(41, 24, 7, 246, 229, 212, 195, 178),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
-    ::capnp::word(23, 6, 0, 0, 225, 6, 0, 0),
+    ::capnp::word(93, 6, 0, 0, 39, 7, 0, 0),
     ::capnp::word(21, 0, 0, 0, 250, 0, 0, 0),
     ::capnp::word(33, 0, 0, 0, 7, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
@@ -1000,6 +1078,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 67] = [
 pub(crate) fn get_annotation_types(child_index: Option<u16>, index: u32) -> ::capnp::introspect::Type {
     ::capnp::introspect::panic_invalid_annotation_indices(child_index, index)
 }
+pub(crate) static ARENA: ::capnp::private::arena::GeneratedCodeArena = ::capnp::private::arena::GeneratedCodeArena::new(&ENCODED_NODE);
 }
 
 #[repr(u16)]
@@ -1012,10 +1091,10 @@ pub enum ContingencyType {
 }
 
 impl ::capnp::introspect::Introspect for ContingencyType {
-    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema { encoded_node: &contingency_type::ENCODED_NODE, annotation_types: contingency_type::get_annotation_types }).into() }
+    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema::new(&contingency_type::ARENA, contingency_type::get_annotation_types)).into() }
 }
 impl ::core::convert::From<ContingencyType> for ::capnp::dynamic_value::Reader<'_> {
-    fn from(e: ContingencyType) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema { encoded_node: &contingency_type::ENCODED_NODE, annotation_types: contingency_type::get_annotation_types }.into()).into() }
+    fn from(e: ContingencyType) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema::new(&contingency_type::ARENA, contingency_type::get_annotation_types).into()).into() }
 }
 impl ::core::convert::TryFrom<u16> for ContingencyType {
     type Error = ::capnp::NotInSchema;
@@ -1044,7 +1123,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 37] = [
     ::capnp::word(41, 24, 7, 246, 229, 212, 195, 178),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
-    ::capnp::word(227, 6, 0, 0, 129, 7, 0, 0),
+    ::capnp::word(41, 7, 0, 0, 199, 7, 0, 0),
     ::capnp::word(21, 0, 0, 0, 26, 1, 0, 0),
     ::capnp::word(37, 0, 0, 0, 7, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
@@ -1079,6 +1158,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 37] = [
 pub(crate) fn get_annotation_types(child_index: Option<u16>, index: u32) -> ::capnp::introspect::Type {
     ::capnp::introspect::panic_invalid_annotation_indices(child_index, index)
 }
+pub(crate) static ARENA: ::capnp::private::arena::GeneratedCodeArena = ::capnp::private::arena::GeneratedCodeArena::new(&ENCODED_NODE);
 }
 
 #[repr(u16)]
@@ -1090,10 +1170,10 @@ pub enum OrderListType {
 }
 
 impl ::capnp::introspect::Introspect for OrderListType {
-    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema { encoded_node: &order_list_type::ENCODED_NODE, annotation_types: order_list_type::get_annotation_types }).into() }
+    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema::new(&order_list_type::ARENA, order_list_type::get_annotation_types)).into() }
 }
 impl ::core::convert::From<OrderListType> for ::capnp::dynamic_value::Reader<'_> {
-    fn from(e: OrderListType) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema { encoded_node: &order_list_type::ENCODED_NODE, annotation_types: order_list_type::get_annotation_types }.into()).into() }
+    fn from(e: OrderListType) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema::new(&order_list_type::ARENA, order_list_type::get_annotation_types).into()).into() }
 }
 impl ::core::convert::TryFrom<u16> for OrderListType {
     type Error = ::capnp::NotInSchema;
@@ -1121,7 +1201,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 33] = [
     ::capnp::word(41, 24, 7, 246, 229, 212, 195, 178),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
-    ::capnp::word(131, 7, 0, 0, 196, 7, 0, 0),
+    ::capnp::word(201, 7, 0, 0, 10, 8, 0, 0),
     ::capnp::word(21, 0, 0, 0, 10, 1, 0, 0),
     ::capnp::word(37, 0, 0, 0, 7, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
@@ -1152,6 +1232,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 33] = [
 pub(crate) fn get_annotation_types(child_index: Option<u16>, index: u32) -> ::capnp::introspect::Type {
     ::capnp::introspect::panic_invalid_annotation_indices(child_index, index)
 }
+pub(crate) static ARENA: ::capnp::private::arena::GeneratedCodeArena = ::capnp::private::arena::GeneratedCodeArena::new(&ENCODED_NODE);
 }
 
 #[repr(u16)]
@@ -1164,10 +1245,10 @@ pub enum PositionSide {
 }
 
 impl ::capnp::introspect::Introspect for PositionSide {
-    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema { encoded_node: &position_side::ENCODED_NODE, annotation_types: position_side::get_annotation_types }).into() }
+    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema::new(&position_side::ARENA, position_side::get_annotation_types)).into() }
 }
 impl ::core::convert::From<PositionSide> for ::capnp::dynamic_value::Reader<'_> {
-    fn from(e: PositionSide) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema { encoded_node: &position_side::ENCODED_NODE, annotation_types: position_side::get_annotation_types }.into()).into() }
+    fn from(e: PositionSide) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema::new(&position_side::ARENA, position_side::get_annotation_types).into()).into() }
 }
 impl ::core::convert::TryFrom<u16> for PositionSide {
     type Error = ::capnp::NotInSchema;
@@ -1196,7 +1277,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 36] = [
     ::capnp::word(41, 24, 7, 246, 229, 212, 195, 178),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
-    ::capnp::word(198, 7, 0, 0, 26, 8, 0, 0),
+    ::capnp::word(12, 8, 0, 0, 96, 8, 0, 0),
     ::capnp::word(21, 0, 0, 0, 2, 1, 0, 0),
     ::capnp::word(33, 0, 0, 0, 7, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
@@ -1230,6 +1311,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 36] = [
 pub(crate) fn get_annotation_types(child_index: Option<u16>, index: u32) -> ::capnp::introspect::Type {
     ::capnp::introspect::panic_invalid_annotation_indices(child_index, index)
 }
+pub(crate) static ARENA: ::capnp::private::arena::GeneratedCodeArena = ::capnp::private::arena::GeneratedCodeArena::new(&ENCODED_NODE);
 }
 
 #[repr(u16)]
@@ -1241,10 +1323,10 @@ pub enum LiquiditySide {
 }
 
 impl ::capnp::introspect::Introspect for LiquiditySide {
-    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema { encoded_node: &liquidity_side::ENCODED_NODE, annotation_types: liquidity_side::get_annotation_types }).into() }
+    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema::new(&liquidity_side::ARENA, liquidity_side::get_annotation_types)).into() }
 }
 impl ::core::convert::From<LiquiditySide> for ::capnp::dynamic_value::Reader<'_> {
-    fn from(e: LiquiditySide) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema { encoded_node: &liquidity_side::ENCODED_NODE, annotation_types: liquidity_side::get_annotation_types }.into()).into() }
+    fn from(e: LiquiditySide) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema::new(&liquidity_side::ARENA, liquidity_side::get_annotation_types).into()).into() }
 }
 impl ::core::convert::TryFrom<u16> for LiquiditySide {
     type Error = ::capnp::NotInSchema;
@@ -1272,7 +1354,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 33] = [
     ::capnp::word(41, 24, 7, 246, 229, 212, 195, 178),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
-    ::capnp::word(28, 8, 0, 0, 102, 8, 0, 0),
+    ::capnp::word(98, 8, 0, 0, 172, 8, 0, 0),
     ::capnp::word(21, 0, 0, 0, 10, 1, 0, 0),
     ::capnp::word(37, 0, 0, 0, 7, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
@@ -1303,6 +1385,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 33] = [
 pub(crate) fn get_annotation_types(child_index: Option<u16>, index: u32) -> ::capnp::introspect::Type {
     ::capnp::introspect::panic_invalid_annotation_indices(child_index, index)
 }
+pub(crate) static ARENA: ::capnp::private::arena::GeneratedCodeArena = ::capnp::private::arena::GeneratedCodeArena::new(&ENCODED_NODE);
 }
 
 #[repr(u16)]
@@ -1315,10 +1398,10 @@ pub enum BookAction {
 }
 
 impl ::capnp::introspect::Introspect for BookAction {
-    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema { encoded_node: &book_action::ENCODED_NODE, annotation_types: book_action::get_annotation_types }).into() }
+    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema::new(&book_action::ARENA, book_action::get_annotation_types)).into() }
 }
 impl ::core::convert::From<BookAction> for ::capnp::dynamic_value::Reader<'_> {
-    fn from(e: BookAction) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema { encoded_node: &book_action::ENCODED_NODE, annotation_types: book_action::get_annotation_types }.into()).into() }
+    fn from(e: BookAction) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema::new(&book_action::ARENA, book_action::get_annotation_types).into()).into() }
 }
 impl ::core::convert::TryFrom<u16> for BookAction {
     type Error = ::capnp::NotInSchema;
@@ -1347,7 +1430,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 35] = [
     ::capnp::word(41, 24, 7, 246, 229, 212, 195, 178),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
-    ::capnp::word(104, 8, 0, 0, 179, 8, 0, 0),
+    ::capnp::word(174, 8, 0, 0, 249, 8, 0, 0),
     ::capnp::word(21, 0, 0, 0, 242, 0, 0, 0),
     ::capnp::word(33, 0, 0, 0, 7, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
@@ -1380,6 +1463,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 35] = [
 pub(crate) fn get_annotation_types(child_index: Option<u16>, index: u32) -> ::capnp::introspect::Type {
     ::capnp::introspect::panic_invalid_annotation_indices(child_index, index)
 }
+pub(crate) static ARENA: ::capnp::private::arena::GeneratedCodeArena = ::capnp::private::arena::GeneratedCodeArena::new(&ENCODED_NODE);
 }
 
 #[repr(u16)]
@@ -1391,10 +1475,10 @@ pub enum BookType {
 }
 
 impl ::capnp::introspect::Introspect for BookType {
-    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema { encoded_node: &book_type::ENCODED_NODE, annotation_types: book_type::get_annotation_types }).into() }
+    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema::new(&book_type::ARENA, book_type::get_annotation_types)).into() }
 }
 impl ::core::convert::From<BookType> for ::capnp::dynamic_value::Reader<'_> {
-    fn from(e: BookType) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema { encoded_node: &book_type::ENCODED_NODE, annotation_types: book_type::get_annotation_types }.into()).into() }
+    fn from(e: BookType) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema::new(&book_type::ARENA, book_type::get_annotation_types).into()).into() }
 }
 impl ::core::convert::TryFrom<u16> for BookType {
     type Error = ::capnp::NotInSchema;
@@ -1422,7 +1506,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 35] = [
     ::capnp::word(41, 24, 7, 246, 229, 212, 195, 178),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
-    ::capnp::word(181, 8, 0, 0, 113, 9, 0, 0),
+    ::capnp::word(251, 8, 0, 0, 183, 9, 0, 0),
     ::capnp::word(21, 0, 0, 0, 226, 0, 0, 0),
     ::capnp::word(33, 0, 0, 0, 7, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
@@ -1455,6 +1539,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 35] = [
 pub(crate) fn get_annotation_types(child_index: Option<u16>, index: u32) -> ::capnp::introspect::Type {
     ::capnp::introspect::panic_invalid_annotation_indices(child_index, index)
 }
+pub(crate) static ARENA: ::capnp::private::arena::GeneratedCodeArena = ::capnp::private::arena::GeneratedCodeArena::new(&ENCODED_NODE);
 }
 
 #[repr(u16)]
@@ -1467,10 +1552,10 @@ pub enum OrderBookDeltaType {
 }
 
 impl ::capnp::introspect::Introspect for OrderBookDeltaType {
-    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema { encoded_node: &order_book_delta_type::ENCODED_NODE, annotation_types: order_book_delta_type::get_annotation_types }).into() }
+    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema::new(&order_book_delta_type::ARENA, order_book_delta_type::get_annotation_types)).into() }
 }
 impl ::core::convert::From<OrderBookDeltaType> for ::capnp::dynamic_value::Reader<'_> {
-    fn from(e: OrderBookDeltaType) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema { encoded_node: &order_book_delta_type::ENCODED_NODE, annotation_types: order_book_delta_type::get_annotation_types }.into()).into() }
+    fn from(e: OrderBookDeltaType) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema::new(&order_book_delta_type::ARENA, order_book_delta_type::get_annotation_types).into()).into() }
 }
 impl ::core::convert::TryFrom<u16> for OrderBookDeltaType {
     type Error = ::capnp::NotInSchema;
@@ -1499,7 +1584,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 36] = [
     ::capnp::word(41, 24, 7, 246, 229, 212, 195, 178),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
-    ::capnp::word(115, 9, 0, 0, 198, 9, 0, 0),
+    ::capnp::word(185, 9, 0, 0, 12, 10, 0, 0),
     ::capnp::word(21, 0, 0, 0, 50, 1, 0, 0),
     ::capnp::word(37, 0, 0, 0, 7, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
@@ -1533,6 +1618,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 36] = [
 pub(crate) fn get_annotation_types(child_index: Option<u16>, index: u32) -> ::capnp::introspect::Type {
     ::capnp::introspect::panic_invalid_annotation_indices(child_index, index)
 }
+pub(crate) static ARENA: ::capnp::private::arena::GeneratedCodeArena = ::capnp::private::arena::GeneratedCodeArena::new(&ENCODED_NODE);
 }
 
 #[repr(u16)]
@@ -1547,10 +1633,10 @@ pub enum RecordFlag {
 }
 
 impl ::capnp::introspect::Introspect for RecordFlag {
-    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema { encoded_node: &record_flag::ENCODED_NODE, annotation_types: record_flag::get_annotation_types }).into() }
+    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema::new(&record_flag::ARENA, record_flag::get_annotation_types)).into() }
 }
 impl ::core::convert::From<RecordFlag> for ::capnp::dynamic_value::Reader<'_> {
-    fn from(e: RecordFlag) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema { encoded_node: &record_flag::ENCODED_NODE, annotation_types: record_flag::get_annotation_types }.into()).into() }
+    fn from(e: RecordFlag) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema::new(&record_flag::ARENA, record_flag::get_annotation_types).into()).into() }
 }
 impl ::core::convert::TryFrom<u16> for RecordFlag {
     type Error = ::capnp::NotInSchema;
@@ -1581,7 +1667,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 46] = [
     ::capnp::word(41, 24, 7, 246, 229, 212, 195, 178),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
-    ::capnp::word(200, 9, 0, 0, 64, 11, 0, 0),
+    ::capnp::word(14, 10, 0, 0, 134, 11, 0, 0),
     ::capnp::word(21, 0, 0, 0, 242, 0, 0, 0),
     ::capnp::word(33, 0, 0, 0, 7, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
@@ -1625,6 +1711,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 46] = [
 pub(crate) fn get_annotation_types(child_index: Option<u16>, index: u32) -> ::capnp::introspect::Type {
     ::capnp::introspect::panic_invalid_annotation_indices(child_index, index)
 }
+pub(crate) static ARENA: ::capnp::private::arena::GeneratedCodeArena = ::capnp::private::arena::GeneratedCodeArena::new(&ENCODED_NODE);
 }
 
 #[repr(u16)]
@@ -1635,10 +1722,10 @@ pub enum AggregationSource {
 }
 
 impl ::capnp::introspect::Introspect for AggregationSource {
-    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema { encoded_node: &aggregation_source::ENCODED_NODE, annotation_types: aggregation_source::get_annotation_types }).into() }
+    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema::new(&aggregation_source::ARENA, aggregation_source::get_annotation_types)).into() }
 }
 impl ::core::convert::From<AggregationSource> for ::capnp::dynamic_value::Reader<'_> {
-    fn from(e: AggregationSource) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema { encoded_node: &aggregation_source::ENCODED_NODE, annotation_types: aggregation_source::get_annotation_types }.into()).into() }
+    fn from(e: AggregationSource) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema::new(&aggregation_source::ARENA, aggregation_source::get_annotation_types).into()).into() }
 }
 impl ::core::convert::TryFrom<u16> for AggregationSource {
     type Error = ::capnp::NotInSchema;
@@ -1665,7 +1752,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 30] = [
     ::capnp::word(41, 24, 7, 246, 229, 212, 195, 178),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
-    ::capnp::word(66, 11, 0, 0, 126, 11, 0, 0),
+    ::capnp::word(136, 11, 0, 0, 196, 11, 0, 0),
     ::capnp::word(21, 0, 0, 0, 42, 1, 0, 0),
     ::capnp::word(37, 0, 0, 0, 7, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
@@ -1693,6 +1780,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 30] = [
 pub(crate) fn get_annotation_types(child_index: Option<u16>, index: u32) -> ::capnp::introspect::Type {
     ::capnp::introspect::panic_invalid_annotation_indices(child_index, index)
 }
+pub(crate) static ARENA: ::capnp::private::arena::GeneratedCodeArena = ::capnp::private::arena::GeneratedCodeArena::new(&ENCODED_NODE);
 }
 
 #[repr(u16)]
@@ -1706,10 +1794,10 @@ pub enum PriceType {
 }
 
 impl ::capnp::introspect::Introspect for PriceType {
-    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema { encoded_node: &price_type::ENCODED_NODE, annotation_types: price_type::get_annotation_types }).into() }
+    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema::new(&price_type::ARENA, price_type::get_annotation_types)).into() }
 }
 impl ::core::convert::From<PriceType> for ::capnp::dynamic_value::Reader<'_> {
-    fn from(e: PriceType) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema { encoded_node: &price_type::ENCODED_NODE, annotation_types: price_type::get_annotation_types }.into()).into() }
+    fn from(e: PriceType) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema::new(&price_type::ARENA, price_type::get_annotation_types).into()).into() }
 }
 impl ::core::convert::TryFrom<u16> for PriceType {
     type Error = ::capnp::NotInSchema;
@@ -1739,7 +1827,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 39] = [
     ::capnp::word(41, 24, 7, 246, 229, 212, 195, 178),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
-    ::capnp::word(128, 11, 0, 0, 208, 11, 0, 0),
+    ::capnp::word(198, 11, 0, 0, 22, 12, 0, 0),
     ::capnp::word(21, 0, 0, 0, 234, 0, 0, 0),
     ::capnp::word(33, 0, 0, 0, 7, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
@@ -1776,6 +1864,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 39] = [
 pub(crate) fn get_annotation_types(child_index: Option<u16>, index: u32) -> ::capnp::introspect::Type {
     ::capnp::introspect::panic_invalid_annotation_indices(child_index, index)
 }
+pub(crate) static ARENA: ::capnp::private::arena::GeneratedCodeArena = ::capnp::private::arena::GeneratedCodeArena::new(&ENCODED_NODE);
 }
 
 #[repr(u16)]
@@ -1802,10 +1891,10 @@ pub enum BarAggregation {
 }
 
 impl ::capnp::introspect::Introspect for BarAggregation {
-    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema { encoded_node: &bar_aggregation::ENCODED_NODE, annotation_types: bar_aggregation::get_annotation_types }).into() }
+    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema::new(&bar_aggregation::ARENA, bar_aggregation::get_annotation_types)).into() }
 }
 impl ::core::convert::From<BarAggregation> for ::capnp::dynamic_value::Reader<'_> {
-    fn from(e: BarAggregation) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema { encoded_node: &bar_aggregation::ENCODED_NODE, annotation_types: bar_aggregation::get_annotation_types }.into()).into() }
+    fn from(e: BarAggregation) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema::new(&bar_aggregation::ARENA, bar_aggregation::get_annotation_types).into()).into() }
 }
 impl ::core::convert::TryFrom<u16> for BarAggregation {
     type Error = ::capnp::NotInSchema;
@@ -1848,7 +1937,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 99] = [
     ::capnp::word(41, 24, 7, 246, 229, 212, 195, 178),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
-    ::capnp::word(210, 11, 0, 0, 23, 13, 0, 0),
+    ::capnp::word(24, 12, 0, 0, 93, 13, 0, 0),
     ::capnp::word(21, 0, 0, 0, 18, 1, 0, 0),
     ::capnp::word(37, 0, 0, 0, 7, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
@@ -1945,6 +2034,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 99] = [
 pub(crate) fn get_annotation_types(child_index: Option<u16>, index: u32) -> ::capnp::introspect::Type {
     ::capnp::introspect::panic_invalid_annotation_indices(child_index, index)
 }
+pub(crate) static ARENA: ::capnp::private::arena::GeneratedCodeArena = ::capnp::private::arena::GeneratedCodeArena::new(&ENCODED_NODE);
 }
 
 #[repr(u16)]
@@ -1958,10 +2048,10 @@ pub enum TrailingOffsetType {
 }
 
 impl ::capnp::introspect::Introspect for TrailingOffsetType {
-    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema { encoded_node: &trailing_offset_type::ENCODED_NODE, annotation_types: trailing_offset_type::get_annotation_types }).into() }
+    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema::new(&trailing_offset_type::ARENA, trailing_offset_type::get_annotation_types)).into() }
 }
 impl ::core::convert::From<TrailingOffsetType> for ::capnp::dynamic_value::Reader<'_> {
-    fn from(e: TrailingOffsetType) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema { encoded_node: &trailing_offset_type::ENCODED_NODE, annotation_types: trailing_offset_type::get_annotation_types }.into()).into() }
+    fn from(e: TrailingOffsetType) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema::new(&trailing_offset_type::ARENA, trailing_offset_type::get_annotation_types).into()).into() }
 }
 impl ::core::convert::TryFrom<u16> for TrailingOffsetType {
     type Error = ::capnp::NotInSchema;
@@ -1991,7 +2081,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 44] = [
     ::capnp::word(41, 24, 7, 246, 229, 212, 195, 178),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
-    ::capnp::word(25, 13, 0, 0, 143, 13, 0, 0),
+    ::capnp::word(95, 13, 0, 0, 213, 13, 0, 0),
     ::capnp::word(21, 0, 0, 0, 50, 1, 0, 0),
     ::capnp::word(37, 0, 0, 0, 7, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
@@ -2033,6 +2123,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 44] = [
 pub(crate) fn get_annotation_types(child_index: Option<u16>, index: u32) -> ::capnp::introspect::Type {
     ::capnp::introspect::panic_invalid_annotation_indices(child_index, index)
 }
+pub(crate) static ARENA: ::capnp::private::arena::GeneratedCodeArena = ::capnp::private::arena::GeneratedCodeArena::new(&ENCODED_NODE);
 }
 
 #[repr(u16)]
@@ -2044,10 +2135,10 @@ pub enum OmsType {
 }
 
 impl ::capnp::introspect::Introspect for OmsType {
-    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema { encoded_node: &oms_type::ENCODED_NODE, annotation_types: oms_type::get_annotation_types }).into() }
+    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema::new(&oms_type::ARENA, oms_type::get_annotation_types)).into() }
 }
 impl ::core::convert::From<OmsType> for ::capnp::dynamic_value::Reader<'_> {
-    fn from(e: OmsType) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema { encoded_node: &oms_type::ENCODED_NODE, annotation_types: oms_type::get_annotation_types }.into()).into() }
+    fn from(e: OmsType) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema::new(&oms_type::ARENA, oms_type::get_annotation_types).into()).into() }
 }
 impl ::core::convert::TryFrom<u16> for OmsType {
     type Error = ::capnp::NotInSchema;
@@ -2075,7 +2166,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 32] = [
     ::capnp::word(41, 24, 7, 246, 229, 212, 195, 178),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
-    ::capnp::word(145, 13, 0, 0, 213, 13, 0, 0),
+    ::capnp::word(215, 13, 0, 0, 27, 14, 0, 0),
     ::capnp::word(21, 0, 0, 0, 218, 0, 0, 0),
     ::capnp::word(33, 0, 0, 0, 7, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
@@ -2105,6 +2196,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 32] = [
 pub(crate) fn get_annotation_types(child_index: Option<u16>, index: u32) -> ::capnp::introspect::Type {
     ::capnp::introspect::panic_invalid_annotation_indices(child_index, index)
 }
+pub(crate) static ARENA: ::capnp::private::arena::GeneratedCodeArena = ::capnp::private::arena::GeneratedCodeArena::new(&ENCODED_NODE);
 }
 
 #[repr(u16)]
@@ -2116,10 +2208,10 @@ pub enum CurrencyType {
 }
 
 impl ::capnp::introspect::Introspect for CurrencyType {
-    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema { encoded_node: &currency_type::ENCODED_NODE, annotation_types: currency_type::get_annotation_types }).into() }
+    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema::new(&currency_type::ARENA, currency_type::get_annotation_types)).into() }
 }
 impl ::core::convert::From<CurrencyType> for ::capnp::dynamic_value::Reader<'_> {
-    fn from(e: CurrencyType) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema { encoded_node: &currency_type::ENCODED_NODE, annotation_types: currency_type::get_annotation_types }.into()).into() }
+    fn from(e: CurrencyType) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema::new(&currency_type::ARENA, currency_type::get_annotation_types).into()).into() }
 }
 impl ::core::convert::TryFrom<u16> for CurrencyType {
     type Error = ::capnp::NotInSchema;
@@ -2147,7 +2239,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 32] = [
     ::capnp::word(41, 24, 7, 246, 229, 212, 195, 178),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
-    ::capnp::word(215, 13, 0, 0, 32, 14, 0, 0),
+    ::capnp::word(29, 14, 0, 0, 102, 14, 0, 0),
     ::capnp::word(21, 0, 0, 0, 2, 1, 0, 0),
     ::capnp::word(33, 0, 0, 0, 7, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
@@ -2177,6 +2269,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 32] = [
 pub(crate) fn get_annotation_types(child_index: Option<u16>, index: u32) -> ::capnp::introspect::Type {
     ::capnp::introspect::panic_invalid_annotation_indices(child_index, index)
 }
+pub(crate) static ARENA: ::capnp::private::arena::GeneratedCodeArena = ::capnp::private::arena::GeneratedCodeArena::new(&ENCODED_NODE);
 }
 
 #[repr(u16)]
@@ -2187,10 +2280,10 @@ pub enum InstrumentCloseType {
 }
 
 impl ::capnp::introspect::Introspect for InstrumentCloseType {
-    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema { encoded_node: &instrument_close_type::ENCODED_NODE, annotation_types: instrument_close_type::get_annotation_types }).into() }
+    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema::new(&instrument_close_type::ARENA, instrument_close_type::get_annotation_types)).into() }
 }
 impl ::core::convert::From<InstrumentCloseType> for ::capnp::dynamic_value::Reader<'_> {
-    fn from(e: InstrumentCloseType) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema { encoded_node: &instrument_close_type::ENCODED_NODE, annotation_types: instrument_close_type::get_annotation_types }.into()).into() }
+    fn from(e: InstrumentCloseType) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema::new(&instrument_close_type::ARENA, instrument_close_type::get_annotation_types).into()).into() }
 }
 impl ::core::convert::TryFrom<u16> for InstrumentCloseType {
     type Error = ::capnp::NotInSchema;
@@ -2217,7 +2310,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 30] = [
     ::capnp::word(41, 24, 7, 246, 229, 212, 195, 178),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
-    ::capnp::word(34, 14, 0, 0, 107, 14, 0, 0),
+    ::capnp::word(104, 14, 0, 0, 177, 14, 0, 0),
     ::capnp::word(21, 0, 0, 0, 58, 1, 0, 0),
     ::capnp::word(37, 0, 0, 0, 7, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
@@ -2245,6 +2338,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 30] = [
 pub(crate) fn get_annotation_types(child_index: Option<u16>, index: u32) -> ::capnp::introspect::Type {
     ::capnp::introspect::panic_invalid_annotation_indices(child_index, index)
 }
+pub(crate) static ARENA: ::capnp::private::arena::GeneratedCodeArena = ::capnp::private::arena::GeneratedCodeArena::new(&ENCODED_NODE);
 }
 
 #[repr(u16)]
@@ -2256,10 +2350,10 @@ pub enum OptionalBool {
 }
 
 impl ::capnp::introspect::Introspect for OptionalBool {
-    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema { encoded_node: &optional_bool::ENCODED_NODE, annotation_types: optional_bool::get_annotation_types }).into() }
+    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema::new(&optional_bool::ARENA, optional_bool::get_annotation_types)).into() }
 }
 impl ::core::convert::From<OptionalBool> for ::capnp::dynamic_value::Reader<'_> {
-    fn from(e: OptionalBool) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema { encoded_node: &optional_bool::ENCODED_NODE, annotation_types: optional_bool::get_annotation_types }.into()).into() }
+    fn from(e: OptionalBool) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema::new(&optional_bool::ARENA, optional_bool::get_annotation_types).into()).into() }
 }
 impl ::core::convert::TryFrom<u16> for OptionalBool {
     type Error = ::capnp::NotInSchema;
@@ -2287,7 +2381,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 31] = [
     ::capnp::word(41, 24, 7, 246, 229, 212, 195, 178),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
-    ::capnp::word(109, 14, 0, 0, 173, 14, 0, 0),
+    ::capnp::word(179, 14, 0, 0, 243, 14, 0, 0),
     ::capnp::word(21, 0, 0, 0, 2, 1, 0, 0),
     ::capnp::word(33, 0, 0, 0, 7, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
@@ -2316,6 +2410,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 31] = [
 pub(crate) fn get_annotation_types(child_index: Option<u16>, index: u32) -> ::capnp::introspect::Type {
     ::capnp::introspect::panic_invalid_annotation_indices(child_index, index)
 }
+pub(crate) static ARENA: ::capnp::private::arena::GeneratedCodeArena = ::capnp::private::arena::GeneratedCodeArena::new(&ENCODED_NODE);
 }
 
 #[repr(u16)]
@@ -2340,10 +2435,10 @@ pub enum MarketStatusAction {
 }
 
 impl ::capnp::introspect::Introspect for MarketStatusAction {
-    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema { encoded_node: &market_status_action::ENCODED_NODE, annotation_types: market_status_action::get_annotation_types }).into() }
+    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema::new(&market_status_action::ARENA, market_status_action::get_annotation_types)).into() }
 }
 impl ::core::convert::From<MarketStatusAction> for ::capnp::dynamic_value::Reader<'_> {
-    fn from(e: MarketStatusAction) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema { encoded_node: &market_status_action::ENCODED_NODE, annotation_types: market_status_action::get_annotation_types }.into()).into() }
+    fn from(e: MarketStatusAction) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema::new(&market_status_action::ARENA, market_status_action::get_annotation_types).into()).into() }
 }
 impl ::core::convert::TryFrom<u16> for MarketStatusAction {
     type Error = ::capnp::NotInSchema;
@@ -2384,7 +2479,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 95] = [
     ::capnp::word(41, 24, 7, 246, 229, 212, 195, 178),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
-    ::capnp::word(175, 14, 0, 0, 246, 15, 0, 0),
+    ::capnp::word(245, 14, 0, 0, 60, 16, 0, 0),
     ::capnp::word(21, 0, 0, 0, 50, 1, 0, 0),
     ::capnp::word(37, 0, 0, 0, 7, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
@@ -2477,6 +2572,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 95] = [
 pub(crate) fn get_annotation_types(child_index: Option<u16>, index: u32) -> ::capnp::introspect::Type {
     ::capnp::introspect::panic_invalid_annotation_indices(child_index, index)
 }
+pub(crate) static ARENA: ::capnp::private::arena::GeneratedCodeArena = ::capnp::private::arena::GeneratedCodeArena::new(&ENCODED_NODE);
 }
 
 #[repr(u16)]
@@ -2487,10 +2583,10 @@ pub enum PositionAdjustmentType {
 }
 
 impl ::capnp::introspect::Introspect for PositionAdjustmentType {
-    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema { encoded_node: &position_adjustment_type::ENCODED_NODE, annotation_types: position_adjustment_type::get_annotation_types }).into() }
+    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema::new(&position_adjustment_type::ARENA, position_adjustment_type::get_annotation_types)).into() }
 }
 impl ::core::convert::From<PositionAdjustmentType> for ::capnp::dynamic_value::Reader<'_> {
-    fn from(e: PositionAdjustmentType) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema { encoded_node: &position_adjustment_type::ENCODED_NODE, annotation_types: position_adjustment_type::get_annotation_types }.into()).into() }
+    fn from(e: PositionAdjustmentType) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema::new(&position_adjustment_type::ARENA, position_adjustment_type::get_annotation_types).into()).into() }
 }
 impl ::core::convert::TryFrom<u16> for PositionAdjustmentType {
     type Error = ::capnp::NotInSchema;
@@ -2517,7 +2613,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 30] = [
     ::capnp::word(41, 24, 7, 246, 229, 212, 195, 178),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
-    ::capnp::word(248, 15, 0, 0, 58, 16, 0, 0),
+    ::capnp::word(62, 16, 0, 0, 128, 16, 0, 0),
     ::capnp::word(21, 0, 0, 0, 82, 1, 0, 0),
     ::capnp::word(41, 0, 0, 0, 7, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
@@ -2545,6 +2641,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 30] = [
 pub(crate) fn get_annotation_types(child_index: Option<u16>, index: u32) -> ::capnp::introspect::Type {
     ::capnp::introspect::panic_invalid_annotation_indices(child_index, index)
 }
+pub(crate) static ARENA: ::capnp::private::arena::GeneratedCodeArena = ::capnp::private::arena::GeneratedCodeArena::new(&ENCODED_NODE);
 }
 
 #[repr(u16)]
@@ -2567,10 +2664,10 @@ pub enum ComponentState {
 }
 
 impl ::capnp::introspect::Introspect for ComponentState {
-    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema { encoded_node: &component_state::ENCODED_NODE, annotation_types: component_state::get_annotation_types }).into() }
+    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema::new(&component_state::ARENA, component_state::get_annotation_types)).into() }
 }
 impl ::core::convert::From<ComponentState> for ::capnp::dynamic_value::Reader<'_> {
-    fn from(e: ComponentState) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema { encoded_node: &component_state::ENCODED_NODE, annotation_types: component_state::get_annotation_types }.into()).into() }
+    fn from(e: ComponentState) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema::new(&component_state::ARENA, component_state::get_annotation_types).into()).into() }
 }
 impl ::core::convert::TryFrom<u16> for ComponentState {
     type Error = ::capnp::NotInSchema;
@@ -2609,7 +2706,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 86] = [
     ::capnp::word(41, 24, 7, 246, 229, 212, 195, 178),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
-    ::capnp::word(60, 16, 0, 0, 72, 17, 0, 0),
+    ::capnp::word(130, 16, 0, 0, 142, 17, 0, 0),
     ::capnp::word(21, 0, 0, 0, 18, 1, 0, 0),
     ::capnp::word(37, 0, 0, 0, 7, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
@@ -2693,6 +2790,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 86] = [
 pub(crate) fn get_annotation_types(child_index: Option<u16>, index: u32) -> ::capnp::introspect::Type {
     ::capnp::introspect::panic_invalid_annotation_indices(child_index, index)
 }
+pub(crate) static ARENA: ::capnp::private::arena::GeneratedCodeArena = ::capnp::private::arena::GeneratedCodeArena::new(&ENCODED_NODE);
 }
 
 #[repr(u16)]
@@ -2704,10 +2802,10 @@ pub enum TradingState {
 }
 
 impl ::capnp::introspect::Introspect for TradingState {
-    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema { encoded_node: &trading_state::ENCODED_NODE, annotation_types: trading_state::get_annotation_types }).into() }
+    fn introspect() -> ::capnp::introspect::Type { ::capnp::introspect::TypeVariant::Enum(::capnp::introspect::RawEnumSchema::new(&trading_state::ARENA, trading_state::get_annotation_types)).into() }
 }
 impl ::core::convert::From<TradingState> for ::capnp::dynamic_value::Reader<'_> {
-    fn from(e: TradingState) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema { encoded_node: &trading_state::ENCODED_NODE, annotation_types: trading_state::get_annotation_types }.into()).into() }
+    fn from(e: TradingState) -> Self { ::capnp::dynamic_value::Enum::new(e.into(), ::capnp::introspect::RawEnumSchema::new(&trading_state::ARENA, trading_state::get_annotation_types).into()).into() }
 }
 impl ::core::convert::TryFrom<u16> for TradingState {
     type Error = ::capnp::NotInSchema;
@@ -2735,7 +2833,7 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 32] = [
     ::capnp::word(41, 24, 7, 246, 229, 212, 195, 178),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
-    ::capnp::word(74, 17, 0, 0, 142, 17, 0, 0),
+    ::capnp::word(144, 17, 0, 0, 212, 17, 0, 0),
     ::capnp::word(21, 0, 0, 0, 2, 1, 0, 0),
     ::capnp::word(33, 0, 0, 0, 7, 0, 0, 0),
     ::capnp::word(0, 0, 0, 0, 0, 0, 0, 0),
@@ -2765,4 +2863,5 @@ pub(crate) static ENCODED_NODE: [::capnp::Word; 32] = [
 pub(crate) fn get_annotation_types(child_index: Option<u16>, index: u32) -> ::capnp::introspect::Type {
     ::capnp::introspect::panic_invalid_annotation_indices(child_index, index)
 }
+pub(crate) static ARENA: ::capnp::private::arena::GeneratedCodeArena = ::capnp::private::arena::GeneratedCodeArena::new(&ENCODED_NODE);
 }

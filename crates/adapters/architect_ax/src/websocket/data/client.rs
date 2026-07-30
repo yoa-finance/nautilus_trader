@@ -30,6 +30,7 @@ use nautilus_common::live::get_runtime;
 use nautilus_core::{AtomicMap, consts::NAUTILUS_USER_AGENT};
 use nautilus_network::{
     backoff::ExponentialBackoff,
+    http::USER_AGENT,
     mode::ConnectionMode,
     websocket::{
         PingHandler, SubscriptionState, TransportBackend, WebSocketClient, WebSocketConfig,
@@ -299,7 +300,7 @@ impl AxMdWebSocketClient {
         // No-op: ping responses are handled internally by the WebSocketClient
         let ping_handler: PingHandler = Arc::new(move |_payload: Vec<u8>| {});
 
-        let mut headers = vec![("User-Agent".to_string(), NAUTILUS_USER_AGENT.to_string())];
+        let mut headers = vec![(USER_AGENT.to_string(), NAUTILUS_USER_AGENT.to_string())];
 
         if let Some(ref token) = self.auth_token {
             headers.push(("Authorization".to_string(), format!("Bearer {token}")));
@@ -352,7 +353,7 @@ impl AxMdWebSocketClient {
             {
                 Ok(Ok(client)) => {
                     if attempt > 1 {
-                        log::info!("WebSocket connection established after {attempt} attempts");
+                        log::debug!("WebSocket connection established after {attempt} attempts");
                     }
                     break client;
                 }
