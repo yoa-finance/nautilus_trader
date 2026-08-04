@@ -49,7 +49,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.60.1"
+version = "0.60.2"
 edition = "2024"
 rust-version = "1.96.0"
 authors = ["Nautech Systems <info@nautechsystems.io>"]
@@ -69,28 +69,28 @@ repository = "https://github.com/nautechsystems/nautilus_trader"
 homepage = "https://nautilustrader.io"
 
 [workspace.dependencies]
-nautilus-analysis = { package = "stratneo-nautilus-analysis", path = "crates/analysis", version = "0.60.1" }
-nautilus-backtest = { package = "stratneo-nautilus-backtest", path = "crates/backtest", version = "0.60.1" }
+nautilus-analysis = { package = "stratneo-nautilus-analysis", path = "crates/analysis", version = "0.60.2" }
+nautilus-backtest = { package = "stratneo-nautilus-backtest", path = "crates/backtest", version = "0.60.2" }
 nautilus-cli = { path = "crates/cli", version = "0.60.0" }
-nautilus-common = { package = "stratneo-nautilus-common", path = "crates/common", version = "0.60.1" }
-nautilus-core = { package = "stratneo-nautilus-core", path = "crates/core", version = "0.60.1" }
-nautilus-cryptography = { package = "stratneo-nautilus-cryptography", path = "crates/cryptography", version = "0.60.1" }
-nautilus-data = { package = "stratneo-nautilus-data", path = "crates/data", version = "0.60.1" }
-nautilus-execution = { package = "stratneo-nautilus-execution", path = "crates/execution", version = "0.60.1" }
-nautilus-indicators = { package = "stratneo-nautilus-indicators", path = "crates/indicators", version = "0.60.1" }
+nautilus-common = { package = "stratneo-nautilus-common", path = "crates/common", version = "0.60.2" }
+nautilus-core = { package = "stratneo-nautilus-core", path = "crates/core", version = "0.60.2" }
+nautilus-cryptography = { package = "stratneo-nautilus-cryptography", path = "crates/cryptography", version = "0.60.2" }
+nautilus-data = { package = "stratneo-nautilus-data", path = "crates/data", version = "0.60.2" }
+nautilus-execution = { package = "stratneo-nautilus-execution", path = "crates/execution", version = "0.60.2" }
+nautilus-indicators = { package = "stratneo-nautilus-indicators", path = "crates/indicators", version = "0.60.2" }
 nautilus-infrastructure = { path = "crates/infrastructure", version = "0.60.0" }
-nautilus-live = { package = "stratneo-nautilus-live", path = "crates/live", version = "0.60.1", default-features = false }
-nautilus-model = { package = "stratneo-nautilus-model", path = "crates/model", version = "0.60.1" }
-nautilus-network = { package = "stratneo-nautilus-network", path = "crates/network", version = "0.60.1" }
-nautilus-persistence = { package = "stratneo-nautilus-persistence", path = "crates/persistence", version = "0.60.1" }
-nautilus-persistence-macros = { package = "stratneo-nautilus-persistence-macros", path = "crates/persistence/macros", version = "0.60.1" }
-nautilus-portfolio = { package = "stratneo-nautilus-portfolio", path = "crates/portfolio", version = "0.60.1" }
+nautilus-live = { package = "stratneo-nautilus-live", path = "crates/live", version = "0.60.2", default-features = false }
+nautilus-model = { package = "stratneo-nautilus-model", path = "crates/model", version = "0.60.2" }
+nautilus-network = { package = "stratneo-nautilus-network", path = "crates/network", version = "0.60.2" }
+nautilus-persistence = { package = "stratneo-nautilus-persistence", path = "crates/persistence", version = "0.60.2" }
+nautilus-persistence-macros = { package = "stratneo-nautilus-persistence-macros", path = "crates/persistence/macros", version = "0.60.2" }
+nautilus-portfolio = { package = "stratneo-nautilus-portfolio", path = "crates/portfolio", version = "0.60.2" }
 nautilus-pyo3 = { path = "crates/pyo3", version = "0.60.0" }
-nautilus-risk = { package = "stratneo-nautilus-risk", path = "crates/risk", version = "0.60.1" }
-nautilus-serialization = { package = "stratneo-nautilus-serialization", path = "crates/serialization", version = "0.60.1" }
-nautilus-system = { package = "stratneo-nautilus-system", path = "crates/system", version = "0.60.1" }
+nautilus-risk = { package = "stratneo-nautilus-risk", path = "crates/risk", version = "0.60.2" }
+nautilus-serialization = { package = "stratneo-nautilus-serialization", path = "crates/serialization", version = "0.60.2" }
+nautilus-system = { package = "stratneo-nautilus-system", path = "crates/system", version = "0.60.2" }
 nautilus-testkit = { path = "crates/testkit", version = "0.60.0" }
-nautilus-trading = { package = "stratneo-nautilus-trading", path = "crates/trading", version = "0.60.1" }
+nautilus-trading = { package = "stratneo-nautilus-trading", path = "crates/trading", version = "0.60.2" }
 
 # -----------------------------------------------------------------------------
 # Adapters
@@ -99,7 +99,7 @@ nautilus-trading = { package = "stratneo-nautilus-trading", path = "crates/tradi
 # -----------------------------------------------------------------------------
 nautilus-architect-ax = { path = "crates/adapters/architect_ax", version = "0.60.0" }
 nautilus-betfair = { path = "crates/adapters/betfair", version = "0.60.0", default-features = false }
-nautilus-binance = { package = "stratneo-nautilus-binance", path = "crates/adapters/binance", version = "0.60.1", default-features = false }
+nautilus-binance = { package = "stratneo-nautilus-binance", path = "crates/adapters/binance", version = "0.60.2", default-features = false }
 nautilus-bitmex = { path = "crates/adapters/bitmex", version = "0.60.0", default-features = false }
 nautilus-blockchain = { path = "crates/adapters/blockchain", version = "0.60.0" }
 nautilus-bybit = { path = "crates/adapters/bybit", version = "0.60.0", default-features = false }
@@ -114,7 +114,7 @@ nautilus-kraken = { path = "crates/adapters/kraken", version = "0.60.0", default
 nautilus-lighter = { path = "crates/adapters/lighter", version = "0.60.0", default-features = false }
 nautilus-okx = { path = "crates/adapters/okx", version = "0.60.0", default-features = false }
 nautilus-polymarket = { path = "crates/adapters/polymarket", version = "0.60.0", default-features = false }
-nautilus-sandbox = { package = "stratneo-nautilus-sandbox", path = "crates/adapters/sandbox", version = "0.60.1", default-features = false }
+nautilus-sandbox = { package = "stratneo-nautilus-sandbox", path = "crates/adapters/sandbox", version = "0.60.2", default-features = false }
 nautilus-tardis = { path = "crates/adapters/tardis", version = "0.60.0", default-features = false }
 
 # -----------------------------------------------------------------------------

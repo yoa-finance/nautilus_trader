@@ -499,6 +499,18 @@ impl ExecutionEngine {
         adapters
     }
 
+    /// Rebuilds adapter-owned transient state from the canonical execution cache.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when any execution client cannot restore its state.
+    pub fn recover_clients_from_cache(&mut self) -> anyhow::Result<()> {
+        for client in self.get_clients_mut() {
+            client.recover_from_cache()?;
+        }
+        Ok(())
+    }
+
     /// Returns all registered execution clients.
     #[must_use]
     pub fn get_all_clients(&self) -> Vec<&dyn ExecutionClient> {

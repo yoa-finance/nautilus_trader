@@ -76,6 +76,16 @@ impl IdsGenerator {
         self.execution_count = 0;
     }
 
+    /// Advances the deterministic venue-order counter to at least `minimum`.
+    ///
+    /// Recovery paths call this after restoring cached orders so newly generated
+    /// venue order IDs cannot collide with IDs from the restored execution state.
+    pub const fn reserve_order_count(&mut self, minimum: usize) {
+        if self.order_count < minimum {
+            self.order_count = minimum;
+        }
+    }
+
     /// Retrieves or generates a unique venue order ID for the given order.
     ///
     /// # Errors

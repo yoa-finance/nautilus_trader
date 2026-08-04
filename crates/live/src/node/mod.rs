@@ -77,7 +77,7 @@
 //! maintenance below 100ms (defaults are seconds to minutes). Cadence drifts
 //! by at most one body duration per fire.
 
-use std::{fmt::Debug, future::Future, pin::Pin, time::Duration};
+use std::{collections::HashSet, fmt::Debug, future::Future, pin::Pin, time::Duration};
 
 use indexmap::IndexSet;
 use nautilus_common::{
@@ -101,9 +101,10 @@ use nautilus_core::{
     datetime::{NANOSECONDS_IN_MILLISECOND, mins_to_secs, secs_to_nanos_unchecked},
 };
 use nautilus_model::{
+    enums::{ContingencyType, OrderListType},
     events::OrderEventAny,
-    identifiers::{ClientOrderId, TraderId, Venue},
-    orders::Order,
+    identifiers::{ClientOrderId, InstrumentId, OrderListId, StrategyId, TraderId, Venue},
+    orders::{Order, OrderList},
     reports::{OrderStatusReport, PositionStatusReport},
 };
 use nautilus_system::{config::NautilusKernelConfig, kernel::NautilusKernel};
@@ -157,11 +158,29 @@ pub struct LiveNode {
     exec_clients: Vec<LiveExecutionClient>,
     external_msgbus: Option<ExternalMessageBusIngress>,
     shutdown_deadline: Option<dst::time::Instant>,
+    startup_execution_recovery: Option<StartupExecutionRecovery>,
     #[cfg(feature = "plugin")]
     plugins: plugin::NodePlugins,
     #[cfg(feature = "python")]
     #[allow(dead_code)] // TODO: Under development
     python_actors: Vec<pyo3::Py<pyo3::PyAny>>,
+}
+
+/// Durable execution reports to restore before execution clients connect and
+/// before strategies can emit new commands.
+#[derive(Debug)]
+pub struct StartupExecutionRecovery {
+    pub strategy_id: StrategyId,
+    pub reports: Vec<ExecutionReport>,
+    pub order_lists: Vec<StartupOrderListRecovery>,
+}
+
+/// Contingency metadata for an order list rebuilt from durable execution truth.
+#[derive(Debug)]
+pub struct StartupOrderListRecovery {
+    pub order_list_id: OrderListId,
+    pub order_list_type: OrderListType,
+    pub client_order_ids: Vec<ClientOrderId>,
 }
 
 impl LiveNode {
@@ -186,6 +205,7 @@ impl LiveNode {
             exec_clients,
             external_msgbus,
             shutdown_deadline: None,
+            startup_execution_recovery: None,
             #[cfg(feature = "plugin")]
             plugins: plugin::NodePlugins,
             #[cfg(feature = "python")]
@@ -203,6 +223,14 @@ impl LiveNode {
         environment: Environment,
     ) -> anyhow::Result<LiveNodeBuilder> {
         LiveNodeBuilder::new(trader_id, environment)
+    }
+
+    /// Installs a one-shot durable execution recovery seed.
+    ///
+    /// The seed is applied after data clients have populated instruments but before
+    /// execution clients connect and before the trader starts.
+    pub fn set_startup_execution_recovery(&mut self, recovery: StartupExecutionRecovery) {
+        self.startup_execution_recovery = Some(recovery);
     }
 
     /// Creates a new [`LiveNode`] directly from a kernel name and optional configuration.
@@ -256,6 +284,7 @@ impl LiveNode {
             exec_clients: Vec::new(),
             external_msgbus: None,
             shutdown_deadline: None,
+            startup_execution_recovery: None,
             #[cfg(feature = "plugin")]
             plugins: plugin::NodePlugins,
             #[cfg(feature = "python")]
@@ -387,6 +416,8 @@ impl LiveNode {
             runner.flush_pending_data();
         }
 
+        self.apply_startup_execution_recovery()?;
+
         self.kernel.connect_exec_clients().await;
 
         if let Some(reason) = self.startup_abort_reason() {
@@ -423,6 +454,40 @@ impl LiveNode {
 
         self.handle.set_state(NodeState::Running);
 
+        Ok(())
+    }
+
+    fn apply_startup_execution_recovery(&mut self) -> anyhow::Result<()> {
+        let Some(recovery) = self.startup_execution_recovery.take() else {
+            return Ok(());
+        };
+        let mut instrument_ids = HashSet::<InstrumentId>::new();
+        for report in &recovery.reports {
+            let instrument_id = match report {
+                ExecutionReport::Order(report) => report.instrument_id,
+                ExecutionReport::Fill(report) => report.instrument_id,
+                ExecutionReport::OrderWithFills(report, _) => report.instrument_id,
+                ExecutionReport::Position(report) => report.instrument_id,
+                ExecutionReport::MassStatus(_) => {
+                    anyhow::bail!("startup execution recovery does not accept mass status reports")
+                }
+            };
+            instrument_ids.insert(instrument_id);
+        }
+
+        {
+            let cache = self.kernel.cache();
+            let mut exec_engine = self.kernel.exec_engine().borrow_mut();
+            exec_engine.register_external_order_claims(recovery.strategy_id, &instrument_ids)?;
+            for report in &recovery.reports {
+                exec_engine.reconcile_execution_report(report);
+            }
+            validate_startup_execution_recovery_cache(&cache.borrow(), &recovery.reports)?;
+            restore_startup_order_lists(cache, recovery.strategy_id, &recovery.order_lists)?;
+            exec_engine.recover_clients_from_cache()?;
+        }
+        self.kernel.portfolio.borrow_mut().initialize_orders();
+        self.kernel.portfolio.borrow_mut().initialize_positions();
         Ok(())
     }
 
@@ -1778,6 +1843,133 @@ impl LiveNode {
             }),
         })
     }
+}
+
+fn validate_startup_execution_recovery_cache(
+    cache: &nautilus_common::cache::Cache,
+    reports: &[ExecutionReport],
+) -> anyhow::Result<()> {
+    for report in reports {
+        let order_report = match report {
+            ExecutionReport::Order(report) | ExecutionReport::OrderWithFills(report, _) => report,
+            ExecutionReport::Fill(_) | ExecutionReport::Position(_) => continue,
+            ExecutionReport::MassStatus(_) => unreachable!("mass status reports are rejected"),
+        };
+        let client_order_id = order_report.client_order_id.ok_or_else(|| {
+            anyhow::anyhow!(
+                "startup order report {} has no client order ID",
+                order_report.report_id
+            )
+        })?;
+        let order = cache.order(&client_order_id).ok_or_else(|| {
+            anyhow::anyhow!("startup recovery did not materialize order {client_order_id}")
+        })?;
+        if order.quantity() != order_report.quantity
+            || order.filled_qty() != order_report.filled_qty
+            || order.status() != order_report.order_status
+        {
+            anyhow::bail!(
+                "startup recovery order {} state mismatch: expected status={} quantity={} filled_qty={}, actual status={} quantity={} filled_qty={}",
+                client_order_id,
+                order_report.order_status,
+                order_report.quantity,
+                order_report.filled_qty,
+                order.status(),
+                order.quantity(),
+                order.filled_qty(),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn restore_startup_order_lists(
+    cache: std::rc::Rc<std::cell::RefCell<nautilus_common::cache::Cache>>,
+    strategy_id: StrategyId,
+    recoveries: &[StartupOrderListRecovery],
+) -> anyhow::Result<()> {
+    for recovery in recoveries {
+        let mut orders = {
+            let cache = cache.borrow();
+            recovery
+                .client_order_ids
+                .iter()
+                .map(|client_order_id| {
+                    cache
+                        .order(client_order_id)
+                        .map(|order| (*order).clone())
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "startup order list {} is missing recovered order {}",
+                                recovery.order_list_id,
+                                client_order_id
+                            )
+                        })
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?
+        };
+        for order in &mut orders {
+            order.set_order_list_id(recovery.order_list_id);
+        }
+        match recovery.order_list_type {
+            OrderListType::Oco if orders.len() == 2 => {
+                let first_id = orders[0].client_order_id();
+                let second_id = orders[1].client_order_id();
+                orders[0].set_contingency_type(ContingencyType::Oco);
+                orders[0].set_parent_order_id(None);
+                orders[0].set_linked_order_ids(vec![second_id]);
+                orders[1].set_contingency_type(ContingencyType::Oco);
+                orders[1].set_parent_order_id(None);
+                orders[1].set_linked_order_ids(vec![first_id]);
+            }
+            OrderListType::Opoco if orders.len() == 3 => {
+                let working_id = orders[0].client_order_id();
+                let first_pending_id = orders[1].client_order_id();
+                let second_pending_id = orders[2].client_order_id();
+                orders[0].set_contingency_type(ContingencyType::Oto);
+                orders[0].set_parent_order_id(None);
+                orders[0].set_linked_order_ids(vec![first_pending_id, second_pending_id]);
+                orders[1].set_contingency_type(ContingencyType::Oco);
+                orders[1].set_parent_order_id(Some(working_id));
+                orders[1].set_linked_order_ids(vec![second_pending_id]);
+                orders[2].set_contingency_type(ContingencyType::Oco);
+                orders[2].set_parent_order_id(Some(working_id));
+                orders[2].set_linked_order_ids(vec![first_pending_id]);
+            }
+            OrderListType::Oco => anyhow::bail!(
+                "startup OCO order list {} requires 2 orders, found {}",
+                recovery.order_list_id,
+                orders.len()
+            ),
+            OrderListType::Opoco => anyhow::bail!(
+                "startup OPOCO order list {} requires 3 orders, found {}",
+                recovery.order_list_id,
+                orders.len()
+            ),
+            OrderListType::Standard => {
+                anyhow::bail!("startup execution recovery only accepts OCO or OPOCO order lists")
+            }
+        }
+        let first = orders
+            .first()
+            .expect("validated startup order list is non-empty");
+        let order_list = OrderList::new_typed(
+            recovery.order_list_id,
+            recovery.order_list_type,
+            first.instrument_id(),
+            strategy_id,
+            recovery.client_order_ids.clone(),
+            first.ts_init(),
+        );
+        let mut cache = cache.borrow_mut();
+        for order in orders {
+            cache.add_order(order, None, None, true)?;
+        }
+        if !cache.order_list_exists(&recovery.order_list_id) {
+            cache.add_order_list(order_list)?;
+        }
+    }
+    Ok(())
 }
 
 async fn recv_external_msgbus_message(

@@ -200,6 +200,56 @@ impl SandboxInner {
         }
     }
 
+    fn restore_open_orders_from_cache(&mut self) -> anyhow::Result<()> {
+        let venue = self.config.venue;
+        let account_id = self.config.account_id;
+        let (open_orders, recovered_order_counts) = {
+            let cache = self.cache.borrow();
+            let open_orders = cache
+                .orders_open(Some(&venue), None, None, None, None)
+                .into_iter()
+                .map(|order| (*order).clone())
+                .collect::<Vec<_>>();
+            let mut recovered_order_counts = AHashMap::<InstrumentId, usize>::new();
+            for order in cache.orders(Some(&venue), None, None, None, None) {
+                *recovered_order_counts
+                    .entry(order.instrument_id())
+                    .or_default() += 1;
+            }
+            (open_orders, recovered_order_counts)
+        };
+
+        for order in open_orders {
+            let instrument_id = order.instrument_id();
+            let instrument = self
+                .cache
+                .borrow()
+                .instrument(&instrument_id)
+                .cloned()
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "cannot restore sandbox order {}: instrument {} is missing from cache",
+                        order.client_order_id(),
+                        instrument_id,
+                    )
+                })?;
+            self.ensure_matching_engine(&instrument);
+            self.matching_engines
+                .get_mut(&instrument_id)
+                .expect("matching engine was ensured")
+                .get_engine_mut()
+                .restore_open_order(
+                    &order,
+                    account_id,
+                    recovered_order_counts
+                        .get(&instrument_id)
+                        .copied()
+                        .unwrap_or_default(),
+                )?;
+        }
+        Ok(())
+    }
+
     /// Processes a quote tick through the matching engine.
     fn process_quote_tick(&mut self, quote: &QuoteTick) {
         let instrument_id = quote.instrument_id;
@@ -860,6 +910,8 @@ impl ExecutionClient for SandboxExecutionClient {
             return Ok(());
         }
 
+        self.inner.borrow_mut().restore_open_orders_from_cache()?;
+
         if let Some(sender) = try_get_exec_event_sender() {
             let handler: Rc<dyn Fn(OrderEventAny)> = Rc::new(move |event: OrderEventAny| {
                 if let Err(e) = sender.send(ExecutionEvent::Order(event)) {
@@ -903,6 +955,10 @@ impl ExecutionClient for SandboxExecutionClient {
             self.config.venue
         );
         Ok(())
+    }
+
+    fn recover_from_cache(&mut self) -> anyhow::Result<()> {
+        self.inner.borrow_mut().restore_open_orders_from_cache()
     }
 
     async fn connect(&mut self) -> anyhow::Result<()> {

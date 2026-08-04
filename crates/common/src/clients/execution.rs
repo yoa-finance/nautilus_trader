@@ -103,6 +103,19 @@ pub trait ExecutionClient {
         Ok(())
     }
 
+    /// Rebuilds adapter-owned transient execution state from the canonical cache.
+    ///
+    /// Durable recovery may repopulate the cache after clients have started. Adapters
+    /// with their own matching or correlation state should override this hook.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the adapter cannot prove that its transient state matches
+    /// the recovered cache.
+    fn recover_from_cache(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     /// Disposes of client resources and cleans up.
     ///
     /// The default implementation is a no-op. Adapters that hold async tasks,

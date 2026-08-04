@@ -3099,6 +3099,42 @@ impl OrderMatchingEngine {
         }
     }
 
+    /// Restores an already accepted open order into the matching core without
+    /// emitting execution events or changing the cached order projection.
+    ///
+    /// This is intended for deterministic sandbox recovery after the cache has
+    /// been rebuilt from a durable event projection.
+    pub fn restore_open_order(
+        &mut self,
+        order: &OrderAny,
+        account_id: AccountId,
+        recovered_order_count: usize,
+    ) -> anyhow::Result<()> {
+        if order.instrument_id() != self.instrument.id() {
+            anyhow::bail!(
+                "cannot restore order {} for instrument {} into matching engine {}",
+                order.client_order_id(),
+                order.instrument_id(),
+                self.instrument.id(),
+            );
+        }
+        if !order.is_open() {
+            anyhow::bail!("cannot restore closed order {}", order.client_order_id());
+        }
+        self.ids_generator
+            .reserve_order_count(recovered_order_count);
+        self.account_ids.insert(order.trader_id(), account_id);
+        if order.filled_qty().is_positive() {
+            self.cached_filled_qty
+                .insert(order.client_order_id(), order.filled_qty());
+        }
+        if !self.core.order_exists(order.client_order_id()) {
+            self.track_post_match_order(order);
+            self.core.add_order(Self::matching_core_entry(order));
+        }
+        Ok(())
+    }
+
     fn convert_quote_to_base_quantity(&self, order: &mut OrderAny) -> bool {
         // Pick a reference price to convert the quote notional into a base quantity.
         // Priced orders use their own price (worst-case execution); marketable orders

@@ -24,7 +24,7 @@ use nautilus_common::{
     live::set_exec_event_sender,
     messages::{
         ExecutionEvent,
-        execution::{SubmitOrder, SubmitOrderList, TradingCommand},
+        execution::{CancelOrder, SubmitOrder, SubmitOrderList, TradingCommand},
     },
     msgbus::{
         self, MessageBus, MessagingSwitchboard, TypedHandler,
@@ -48,13 +48,13 @@ use nautilus_model::{
     events::{AccountState, OrderEventAny, OrderFilled, PositionClosed, PositionEvent},
     identifiers::{
         AccountId, ClientId, ClientOrderId, InstrumentId, OrderListId, PositionId, TradeId,
-        TraderId, Venue,
+        TraderId, Venue, VenueOrderId,
     },
     instruments::{
         CryptoPerpetual, Instrument, InstrumentAny,
         stubs::{binary_option, crypto_perpetual_ethusdt},
     },
-    orders::{Order, OrderAny, OrderList, OrderTestBuilder},
+    orders::{Order, OrderAny, OrderList, OrderTestBuilder, stubs::TestOrderEventStubs},
     position::Position,
     types::{Currency, Money, Price, Quantity},
 };
@@ -917,6 +917,63 @@ fn test_client_start_idempotent(mut execution_client: SandboxExecutionClient) {
     let result = execution_client.start();
 
     assert!(result.is_ok());
+}
+
+#[rstest]
+fn test_client_start_restores_cached_open_order_for_cancel(
+    trader_id: TraderId,
+    account_id: AccountId,
+    instrument: InstrumentAny,
+) {
+    let venue_order_id = VenueOrderId::new("V-RESTORED-1");
+    let mut context = create_test_context(trader_id, account_id, instrument.id().venue);
+    let mut order = OrderTestBuilder::new(OrderType::Limit)
+        .instrument_id(instrument.id())
+        .side(OrderSide::Buy)
+        .price(Price::from("1000.00"))
+        .quantity(Quantity::from("1.000"))
+        .client_order_id(ClientOrderId::new("RESTORED-1"))
+        .submit(true)
+        .build();
+    let accepted = TestOrderEventStubs::accepted(&order, account_id, venue_order_id);
+    context
+        .cache
+        .borrow_mut()
+        .add_instrument(instrument.clone())
+        .unwrap();
+    context
+        .cache
+        .borrow_mut()
+        .add_order(order.clone(), None, None, false)
+        .unwrap();
+    context.cache.borrow_mut().update_order(&accepted).unwrap();
+    order.apply(accepted).unwrap();
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<ExecutionEvent>();
+    nautilus_common::live::runner::replace_exec_event_sender(tx);
+    context.client.start().unwrap();
+    context
+        .client
+        .cancel_order(CancelOrder::new(
+            trader_id,
+            Some(context.client.client_id()),
+            order.strategy_id(),
+            instrument.id(),
+            order.client_order_id(),
+            Some(venue_order_id),
+            UUID4::new(),
+            UnixNanos::default(),
+            None,
+            None,
+        ))
+        .unwrap();
+
+    assert_eq!(context.client.matching_engine_count(), 1);
+    assert!(matches!(
+        rx.try_recv(),
+        Ok(ExecutionEvent::Order(OrderEventAny::Canceled(event)))
+            if event.client_order_id == order.client_order_id()
+    ));
 }
 
 #[rstest]

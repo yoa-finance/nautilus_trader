@@ -1,3 +1,15 @@
+# StratNeo Rust 0.60.2 Hotfix
+
+Released on 4th August 2026 (UTC).
+
+### Enhancements
+- Added a fail-closed live-node startup recovery seed that rebuilds the
+  execution cache before clients connect and before strategies start.
+- Added sandbox matching-engine restoration for recovered open orders,
+  including deterministic venue-order counter fencing.
+
+---
+
 # StratNeo Rust 0.60.1 Hotfix
 
 Released on 29th July 2026 (UTC).
