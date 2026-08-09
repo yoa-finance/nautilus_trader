@@ -1,12 +1,13 @@
 # StratNeo Rust Crate Release
 
 This runbook releases the pure-Rust StratNeo fork of NautilusTrader aligned to
-official `v1.230.0`. It publishes one coordinated `0.60.2` bundle to crates.io.
+official `v1.230.0`. It publishes one coordinated `0.60.3` bundle to crates.io.
 It does not publish Python wheels, an sdist, PyPI artifacts, R2 artifacts,
 container images, or an upstream-style GitHub release.
 
-`0.60.2` is a Rust-only hotfix for durable live-node startup recovery and
-sandbox matching-engine restoration from a canonical execution cache.
+`0.60.3` is a Rust-only hotfix that makes Binance Spot JSON endpoints use the
+JSON HTTP client instead of negotiating SBE responses and then parsing them as
+JSON.
 
 ## Release boundary
 
@@ -43,7 +44,7 @@ unpublishable-local-dependency checks.
 ## Preconditions
 
 - Confirm the fork is based on official tag `v1.230.0`.
-- Confirm all 20 packages and their workspace dependency entries are `0.60.2`.
+- Confirm all 20 packages and their workspace dependency entries are `0.60.3`.
 - Regenerate Cap'n Proto and Binance Spot SBE sources with the repository
   generators whenever their schemas change.
 - Work from a reviewed, clean release commit. Do not release from an uncommitted
@@ -82,10 +83,10 @@ nautilus_binance::STRATNEO_NAUTILUS_BINANCE_VERSION
 ```bash
 bash scripts/ci/publish-cargo-crates.sh \
   --check \
-  --version 0.60.2
+  --version 0.60.3
 ```
 
-The output must contain exactly 20 entries, all at `0.60.2`, followed by:
+The output must contain exactly 20 entries, all at `0.60.3`, followed by:
 
 ```text
 Cargo crate publish plan is valid.
@@ -96,7 +97,7 @@ Run Cargo packaging for those same 20 packages only:
 ```bash
 bash scripts/ci/publish-cargo-crates.sh \
   --dry-run \
-  --version 0.60.2
+  --version 0.60.3
 ```
 
 The dry-run iterates the allowlisted dependency plan. It never uses
@@ -154,7 +155,7 @@ CARGO_PUBLISH_SUCCESS_DELAY_SECONDS=0 \
 CARGO_PUBLISH_WAIT_TIMEOUT_SECONDS=300 \
 CARGO_PUBLISH_USER_AGENT='stratneo-rust-release (https://github.com/yoa-finance/nautilus_trader)' \
 bash scripts/ci/publish-cargo-crates.sh \
-  --version 0.60.2
+  --version 0.60.3
 ```
 
 The script publishes in dependency order, skips an already-visible immutable
@@ -165,26 +166,26 @@ sparse index before moving to the next crate.
 
 After all 20 versions are visible, validate from clean consumer checkouts with
 the local `[patch.crates-io]` overrides absent or disabled. Keep every direct
-dependency pinned to `=0.60.2`, update lockfiles through the consumer's normal
+dependency pinned to `=0.60.3`, update lockfiles through the consumer's normal
 credential wrapper, then rerun the commands from step 3 plus each workspace's
 normal check.
 
 Review lockfile changes carefully. The resolved `stratneo-nautilus-*` packages
-must all be `0.60.2` from crates.io; no Git or local-path source should remain
+must all be `0.60.3` from crates.io; no Git or local-path source should remain
 in the registry verification checkout.
 
 ## Rollout order
 
 1. Publish and verify all 20 crates.
-2. Deploy `backtest-service` canary and exercise exact catalog loading,
+2. Publish the updated `yoa-graph-runtime` after its Nautilus feature build and
+   graph execution smoke test pass.
+3. Update and deploy `backtest-service` canary; exercise exact catalog loading,
    observer callbacks, and termination reporting.
-3. Deploy `trade-service` canary and exercise Binance connect, submit,
-   OCO/OPOCO, modify, cancel-all, reconnect, and reconciliation.
-4. Deploy `yoa-graph-runtime` after its Nautilus feature build and graph
-   execution smoke test pass.
+4. Update and deploy `trade-service` canary; exercise Binance connect, submit,
+   OCO/OPOCO, modify, cancel-all, reconnect, reconciliation, and quote refresh.
 5. Expand each deployment only after logs show no protocol anomalies, adapter
    fatal signals, duplicate accepted events, or valuation divergence.
 
 Because crates.io versions are immutable, rollback means restoring consumer
-pins and lockfiles to the previous published `0.60.1` bundle. Never overwrite
-or republish `0.60.2`.
+pins and lockfiles to the previous published `0.60.2` bundle. Never overwrite
+or republish `0.60.3`.

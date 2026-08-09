@@ -723,7 +723,7 @@ impl BinanceRawSpotHttpClient {
         let keys = vec![BINANCE_GLOBAL_RATE_KEY.to_string()];
 
         let response = self
-            .client
+            .json_client
             .request(
                 Method::GET,
                 url,

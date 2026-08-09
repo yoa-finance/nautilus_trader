@@ -666,6 +666,7 @@ fn create_router(state: Arc<TestServerState>) -> Router {
     let trades_state = state.clone();
     let klines_state = state.clone();
     let exchange_info_state = state.clone();
+    let ticker_price_state = state.clone();
     let account_state = state.clone();
     let open_orders_state = state.clone();
     let all_orders_state = state.clone();
@@ -804,6 +805,31 @@ fn create_router(state: Arc<TestServerState>) -> Router {
                         ("SOLUSDT", "SOL", "USDT"),
                     ];
                     sbe_response(build_exchange_info_response(&symbols)).into_response()
+                }
+            }),
+        )
+        .route(
+            "/api/v3/ticker/price",
+            get(move |headers: HeaderMap| {
+                let state = ticker_price_state.clone();
+                async move {
+                    if state.increment_and_check() {
+                        return rate_limit_response().into_response();
+                    }
+                    if headers
+                        .get(header::ACCEPT)
+                        .and_then(|value| value.to_str().ok())
+                        != Some("application/json")
+                        || headers.contains_key("x-mbx-sbe")
+                    {
+                        return StatusCode::NOT_ACCEPTABLE.into_response();
+                    }
+                    (
+                        StatusCode::OK,
+                        [(header::CONTENT_TYPE, "application/json")],
+                        Body::from(r#"[{"symbol":"BTCUSDT","price":"64000.00000000"}]"#),
+                    )
+                        .into_response()
                 }
             }),
         )
@@ -1239,6 +1265,30 @@ async fn test_exchange_info_returns_symbols() {
     assert_eq!(info.symbols[0].quote_asset, "USDT");
     assert_eq!(info.symbols[1].symbol, "ETHUSDT");
     assert_eq!(info.symbols[2].symbol, "SOLUSDT");
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_ticker_price_requests_and_parses_json() {
+    let addr = start_test_server(Arc::new(TestServerState::default())).await;
+    let base_url = format!("http://{addr}");
+
+    let client = BinanceRawSpotHttpClient::new(
+        BinanceEnvironment::Live,
+        None,
+        None,
+        Some(base_url),
+        None,
+        Some(60),
+        None,
+    )
+    .unwrap();
+
+    let tickers = client.ticker_price(None).await.unwrap();
+
+    assert_eq!(tickers.len(), 1);
+    assert_eq!(tickers[0].symbol, "BTCUSDT");
+    assert_eq!(tickers[0].price, "64000.00000000");
 }
 
 #[rstest]
