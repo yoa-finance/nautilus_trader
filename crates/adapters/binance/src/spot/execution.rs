@@ -26,7 +26,7 @@ use anyhow::Context;
 use async_trait::async_trait;
 use nautilus_common::{
     cache::fifo::FifoCache,
-    clients::ExecutionClient,
+    clients::{ExecutionClient, ExecutionClientCapabilities},
     live::{get_runtime, runner::get_exec_event_sender},
     messages::{
         execution::{
@@ -48,7 +48,9 @@ use nautilus_core::{
 use nautilus_live::{ExecutionClientCore, ExecutionEventEmitter};
 use nautilus_model::{
     accounts::AccountAny,
-    enums::{LiquiditySide, OmsType, OrderListType, OrderSide, OrderStatus, OrderType},
+    enums::{
+        LiquiditySide, OmsType, OrderListType, OrderSide, OrderStatus, OrderType, TimeInForce,
+    },
     events::{
         AccountState, OrderAccepted, OrderCancelRejected, OrderCanceled, OrderEventAny,
         OrderExpired, OrderFilled, OrderModifyRejected, OrderRejected, OrderUpdated,
@@ -61,6 +63,30 @@ use nautilus_model::{
     reports::{ExecutionMassStatus, FillReport, OrderStatusReport, PositionStatusReport},
     types::{AccountBalance, Currency, MarginBalance, Money, Price, Quantity},
 };
+
+/// Returns the exact technical operations supported by the Binance Spot execution adapter.
+#[must_use]
+pub fn binance_spot_execution_capabilities() -> ExecutionClientCapabilities {
+    ExecutionClientCapabilities {
+        order_types: vec![
+            OrderType::Market,
+            OrderType::Limit,
+            OrderType::StopMarket,
+            OrderType::StopLimit,
+            OrderType::MarketIfTouched,
+            OrderType::LimitIfTouched,
+        ],
+        order_list_types: vec![OrderListType::Oco, OrderListType::Opoco],
+        time_in_force: vec![TimeInForce::Gtc, TimeInForce::Ioc, TimeInForce::Fok],
+        submit_order: true,
+        submit_order_list: true,
+        modify_order: true,
+        cancel_order: true,
+        batch_cancel_orders: true,
+        cancel_all_orders: true,
+        ..ExecutionClientCapabilities::default()
+    }
+}
 use rust_decimal::Decimal;
 use tokio::task::JoinHandle;
 use ustr::Ustr;
@@ -613,6 +639,10 @@ impl ExecutionClient for BinanceSpotExecutionClient {
 
     fn get_account(&self) -> Option<AccountAny> {
         self.core.cache().account_owned(&self.core.account_id)
+    }
+
+    fn capabilities(&self) -> ExecutionClientCapabilities {
+        binance_spot_execution_capabilities()
     }
 
     async fn connect(&mut self) -> anyhow::Result<()> {

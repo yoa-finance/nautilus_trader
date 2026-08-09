@@ -20,7 +20,7 @@ use std::{cell::RefCell, fmt::Debug, rc::Rc};
 use async_trait::async_trait;
 use nautilus_common::{
     cache::Cache,
-    clients::ExecutionClient,
+    clients::{ExecutionClient, ExecutionClientCapabilities},
     clock::Clock,
     factories::OrderEventFactory,
     messages::execution::{
@@ -33,7 +33,7 @@ use nautilus_core::{SharedCell, UnixNanos, WeakCell};
 use nautilus_execution::client::core::ExecutionClientCore;
 use nautilus_model::{
     accounts::AccountAny,
-    enums::OmsType,
+    enums::{OmsType, OrderListType, OrderType, TimeInForce, TrailingOffsetType},
     events::OrderEventAny,
     identifiers::{AccountId, ClientId, ClientOrderId, TraderId, Venue},
     orders::OrderAny,
@@ -41,6 +41,52 @@ use nautilus_model::{
 };
 
 use crate::exchange::SimulatedExchange;
+
+/// Returns the technical operations supported by the backtest execution adapter.
+#[must_use]
+pub fn backtest_execution_capabilities() -> ExecutionClientCapabilities {
+    ExecutionClientCapabilities {
+        order_types: vec![
+            OrderType::Market,
+            OrderType::Limit,
+            OrderType::StopMarket,
+            OrderType::StopLimit,
+            OrderType::MarketToLimit,
+            OrderType::MarketIfTouched,
+            OrderType::LimitIfTouched,
+            OrderType::TrailingStopMarket,
+            OrderType::TrailingStopLimit,
+        ],
+        order_list_types: vec![
+            OrderListType::Standard,
+            OrderListType::Oco,
+            OrderListType::Opoco,
+        ],
+        time_in_force: vec![
+            TimeInForce::Gtc,
+            TimeInForce::Ioc,
+            TimeInForce::Fok,
+            TimeInForce::Gtd,
+            TimeInForce::Day,
+            TimeInForce::AtTheOpen,
+            TimeInForce::AtTheClose,
+        ],
+        trailing_offset_types: vec![
+            TrailingOffsetType::Price,
+            TrailingOffsetType::BasisPoints,
+            TrailingOffsetType::Ticks,
+            TrailingOffsetType::PriceTier,
+        ],
+        submit_order: true,
+        submit_order_list: true,
+        modify_order: true,
+        batch_modify_orders: true,
+        cancel_order: true,
+        batch_cancel_orders: true,
+        cancel_all_orders: true,
+        reduce_only: true,
+    }
+}
 
 /// Execution client implementation for backtesting trading operations.
 ///
@@ -157,6 +203,10 @@ impl ExecutionClient for BacktestExecutionClient {
 
     fn get_account(&self) -> Option<AccountAny> {
         self.cache.borrow().account_owned(&self.core.account_id)
+    }
+
+    fn capabilities(&self) -> ExecutionClientCapabilities {
+        backtest_execution_capabilities()
     }
 
     fn generate_account_state(

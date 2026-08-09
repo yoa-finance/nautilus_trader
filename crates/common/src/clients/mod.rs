@@ -24,7 +24,7 @@ mod execution;
 use std::fmt::{Debug, Display};
 
 pub use data::DataClient;
-pub use execution::ExecutionClient;
+pub use execution::{ExecutionClient, ExecutionClientCapabilities};
 
 #[inline(always)]
 fn log_not_implemented<T: Debug>(cmd: &T) {

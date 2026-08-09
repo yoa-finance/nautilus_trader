@@ -42,8 +42,8 @@ use nautilus_model::{
         TriggerType,
     },
     events::{
-        OrderAccepted, OrderCancelRejected, OrderDenied, OrderEmulated, OrderEventAny,
-        OrderExpired, OrderInitialized, OrderModifyRejected, OrderPendingCancel,
+        OrderAccepted, OrderCancelRejected, OrderDenied, OrderDeniedReason, OrderEmulated,
+        OrderEventAny, OrderExpired, OrderInitialized, OrderModifyRejected, OrderPendingCancel,
         OrderPendingUpdate, OrderRejected, OrderReleased, OrderSubmitted, OrderTriggered,
         OrderUpdated, PositionChanged, PositionClosed, PositionEvent, PositionOpened,
     },
@@ -66,6 +66,69 @@ pub type BatchModifyOrder = (
     Option<Price>,
     Option<Price>,
 );
+
+/// The reason a strategy command API emitted no command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DispatchNoOpReason {
+    /// The requested values already match the order.
+    Unchanged,
+    /// The order is already closed.
+    OrderClosed,
+    /// The order is already pending cancellation.
+    OrderPendingCancel,
+    /// Nautilus did not allow the requested local state transition.
+    StateTransitionRejected,
+    /// No matching order was available to cancel.
+    NothingToCancel,
+    /// The submitted aggregate contained no orders.
+    NothingToSubmit,
+    /// The position is already closed.
+    PositionClosed,
+    /// No matching open position was available to close.
+    NoOpenPositions,
+}
+
+/// The synchronous result of invoking a strategy command API.
+///
+/// `Dispatched` means Nautilus emitted at least one command into its own pipeline. It does not
+/// mean that an execution venue accepted or completed the request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DispatchOutcome {
+    /// One or more commands entered the Nautilus pipeline.
+    Dispatched { command_count: usize },
+    /// The request completed without emitting a command.
+    NoOp { reason: DispatchNoOpReason },
+    /// Nautilus denied the request locally without emitting a command.
+    Denied { reason: OrderDeniedReason },
+}
+
+impl DispatchOutcome {
+    #[must_use]
+    pub const fn dispatched(command_count: usize) -> Self {
+        Self::Dispatched { command_count }
+    }
+}
+
+/// An API error raised after one or more commands already entered the Nautilus pipeline.
+#[derive(Debug)]
+pub struct PartialDispatchError {
+    /// Number of commands known to have been dispatched before the error.
+    pub command_count: usize,
+    /// Error returned while attempting the next command.
+    pub message: String,
+}
+
+impl std::fmt::Display for PartialDispatchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "partial dispatch after {} command(s): {}",
+            self.command_count, self.message
+        )
+    }
+}
+
+impl std::error::Error for PartialDispatchError {}
 
 /// Core trait for implementing trading strategies in NautilusTrader.
 ///
@@ -148,7 +211,7 @@ pub trait Strategy: DataActor {
         position_id: Option<PositionId>,
         client_id: Option<ClientId>,
         params: Option<Params>,
-    ) -> anyhow::Result<()>
+    ) -> anyhow::Result<DispatchOutcome>
     where
         Self: StrategyNative,
     {
@@ -159,10 +222,9 @@ pub trait Strategy: DataActor {
         let ts_init = core.clock_mut().timestamp_ns();
 
         if order.status() != OrderStatus::Initialized {
-            anyhow::bail!(
-                "Order denied: invalid status for {}, expected INITIALIZED",
-                order.client_order_id()
-            );
+            return Ok(DispatchOutcome::NoOp {
+                reason: DispatchNoOpReason::StateTransitionRejected,
+            });
         }
 
         let market_exit_tag = core.market_exit_tag;
@@ -173,8 +235,9 @@ pub trait Strategy: DataActor {
             core.is_exiting && !order.is_reduce_only() && !is_market_exit_order;
 
         if should_deny_for_market_exit {
-            self.deny_order(&order, Ustr::from("MARKET_EXIT_IN_PROGRESS"));
-            return Ok(());
+            let reason = OrderDeniedReason::MarketExitInProgress;
+            self.deny_order(&order, Ustr::from(reason.to_string().as_str()));
+            return Ok(DispatchOutcome::Denied { reason });
         }
 
         let core = StrategyNative::strategy_core_mut(self);
@@ -216,8 +279,13 @@ pub trait Strategy: DataActor {
             send_risk_command(TradingCommand::SubmitOrder(command));
         }
 
-        self.set_gtd_expiry(&order)?;
-        Ok(())
+        let gtd_command_count =
+            self.set_gtd_expiry(&order)
+                .map_err(|error| PartialDispatchError {
+                    command_count: 1,
+                    message: error.to_string(),
+                })?;
+        Ok(DispatchOutcome::dispatched(1 + gtd_command_count))
     }
 
     /// Submits an order list.
@@ -233,21 +301,21 @@ pub trait Strategy: DataActor {
         position_id: Option<PositionId>,
         client_id: Option<ClientId>,
         params: Option<Params>,
-    ) -> anyhow::Result<()>
+    ) -> anyhow::Result<DispatchOutcome>
     where
         Self: StrategyNative,
     {
         if orders.is_empty() {
-            log::error!("OrderList denied: no orders to submit");
-            anyhow::bail!("OrderList denied: no orders to submit");
+            return Ok(DispatchOutcome::NoOp {
+                reason: DispatchNoOpReason::NothingToSubmit,
+            });
         }
 
         for order in &orders {
             if order.status() != OrderStatus::Initialized {
-                anyhow::bail!(
-                    "Order in list denied: invalid status for {}, expected INITIALIZED",
-                    order.client_order_id()
-                );
+                return Ok(DispatchOutcome::NoOp {
+                    reason: DispatchNoOpReason::StateTransitionRejected,
+                });
             }
         }
 
@@ -273,8 +341,9 @@ pub trait Strategy: DataActor {
         };
 
         if should_deny {
-            self.deny_order_list(&orders, Ustr::from("MARKET_EXIT_IN_PROGRESS"));
-            return Ok(());
+            let reason = OrderDeniedReason::MarketExitInProgress;
+            self.deny_order_list(&orders, Ustr::from(reason.to_string().as_str()));
+            return Ok(DispatchOutcome::Denied { reason });
         }
 
         let core = StrategyNative::strategy_core_mut(self);
@@ -363,11 +432,21 @@ pub trait Strategy: DataActor {
             send_risk_command(TradingCommand::SubmitOrderList(command));
         }
 
+        let mut command_count = 1;
         for order in &orders {
-            self.set_gtd_expiry(order)?;
+            match self.set_gtd_expiry(order) {
+                Ok(child_count) => command_count += child_count,
+                Err(error) => {
+                    return Err(PartialDispatchError {
+                        command_count,
+                        message: error.to_string(),
+                    }
+                    .into());
+                }
+            }
         }
 
-        Ok(())
+        Ok(DispatchOutcome::dispatched(command_count))
     }
 
     /// Modifies an order.
@@ -383,7 +462,7 @@ pub trait Strategy: DataActor {
         trigger_price: Option<Price>,
         client_id: Option<ClientId>,
         params: Option<Params>,
-    ) -> anyhow::Result<()>
+    ) -> anyhow::Result<DispatchOutcome>
     where
         Self: StrategyNative,
     {
@@ -438,7 +517,9 @@ pub trait Strategy: DataActor {
                 "Cannot create command ModifyOrder: quantity, price and trigger were either None \
                 or the same as existing values"
             );
-            return Ok(());
+            return Ok(DispatchOutcome::NoOp {
+                reason: DispatchNoOpReason::Unchanged,
+            });
         }
 
         if order.is_closed() || order.is_pending_cancel() {
@@ -446,11 +527,19 @@ pub trait Strategy: DataActor {
                 "Cannot create command ModifyOrder: state is {:?}, {order:?}",
                 order.status()
             );
-            return Ok(());
+            return Ok(DispatchOutcome::NoOp {
+                reason: if order.is_closed() {
+                    DispatchNoOpReason::OrderClosed
+                } else {
+                    DispatchNoOpReason::OrderPendingCancel
+                },
+            });
         }
 
         if !self.mark_order_pending_update(&order)? {
-            return Ok(());
+            return Ok(DispatchOutcome::NoOp {
+                reason: DispatchNoOpReason::StateTransitionRejected,
+            });
         }
 
         let command = ModifyOrder::new(
@@ -476,7 +565,7 @@ pub trait Strategy: DataActor {
         } else {
             send_risk_command(TradingCommand::ModifyOrder(command));
         }
-        Ok(())
+        Ok(DispatchOutcome::dispatched(1))
     }
 
     /// Batch modifies multiple orders for the same instrument.
@@ -492,7 +581,7 @@ pub trait Strategy: DataActor {
         updates: Vec<BatchModifyOrder>,
         client_id: Option<ClientId>,
         params: Option<Params>,
-    ) -> anyhow::Result<()>
+    ) -> anyhow::Result<DispatchOutcome>
     where
         Self: StrategyNative,
     {
@@ -609,7 +698,9 @@ pub trait Strategy: DataActor {
 
         if modifies.is_empty() {
             log::warn!("Cannot send `BatchModifyOrders`, no valid modify commands");
-            return Ok(());
+            return Ok(DispatchOutcome::NoOp {
+                reason: DispatchNoOpReason::StateTransitionRejected,
+            });
         }
 
         let command = BatchModifyOrders::new(
@@ -625,7 +716,7 @@ pub trait Strategy: DataActor {
         );
 
         send_risk_command(TradingCommand::ModifyOrders(command));
-        Ok(())
+        Ok(DispatchOutcome::dispatched(1))
     }
 
     /// Cancels an order.
@@ -638,7 +729,7 @@ pub trait Strategy: DataActor {
         client_order_id: ClientOrderId,
         client_id: Option<ClientId>,
         params: Option<Params>,
-    ) -> anyhow::Result<()>
+    ) -> anyhow::Result<DispatchOutcome>
     where
         Self: StrategyNative,
     {
@@ -663,7 +754,15 @@ pub trait Strategy: DataActor {
             .map_err(|e| anyhow::anyhow!("Cannot cancel order: {e}"))?;
 
         if !self.mark_order_pending_cancel(&order)? {
-            return Ok(());
+            return Ok(DispatchOutcome::NoOp {
+                reason: if order.is_closed() {
+                    DispatchNoOpReason::OrderClosed
+                } else if order.is_pending_cancel() {
+                    DispatchNoOpReason::OrderPendingCancel
+                } else {
+                    DispatchNoOpReason::StateTransitionRejected
+                },
+            });
         }
 
         let command = CancelOrder::new(
@@ -700,7 +799,7 @@ pub trait Strategy: DataActor {
             self.cancel_gtd_expiry(&order.client_order_id());
         }
 
-        Ok(())
+        Ok(DispatchOutcome::dispatched(1))
     }
 
     /// Batch cancels multiple orders for the same instrument.
@@ -714,12 +813,14 @@ pub trait Strategy: DataActor {
         client_order_ids: Vec<ClientOrderId>,
         client_id: Option<ClientId>,
         params: Option<Params>,
-    ) -> anyhow::Result<()>
+    ) -> anyhow::Result<DispatchOutcome>
     where
         Self: StrategyNative,
     {
         if client_order_ids.is_empty() {
-            anyhow::bail!("Cannot batch cancel empty order list");
+            return Ok(DispatchOutcome::NoOp {
+                reason: DispatchNoOpReason::NothingToCancel,
+            });
         }
 
         let (trader_id, strategy_id, ts_init) = {
@@ -784,7 +885,9 @@ pub trait Strategy: DataActor {
 
         if cancels.is_empty() {
             log::warn!("Cannot send `BatchCancelOrders`, no valid cancel commands");
-            return Ok(());
+            return Ok(DispatchOutcome::NoOp {
+                reason: DispatchNoOpReason::NothingToCancel,
+            });
         }
 
         let command = BatchCancelOrders::new(
@@ -800,7 +903,7 @@ pub trait Strategy: DataActor {
         );
 
         send_exec_command(TradingCommand::CancelOrders(command));
-        Ok(())
+        Ok(DispatchOutcome::dispatched(1))
     }
 
     /// Marks an order as pending update locally before the modify command leaves the strategy.
@@ -963,7 +1066,7 @@ pub trait Strategy: DataActor {
         order_side: Option<OrderSide>,
         client_id: Option<ClientId>,
         params: Option<Params>,
-    ) -> anyhow::Result<()>
+    ) -> anyhow::Result<DispatchOutcome>
     where
         Self: StrategyNative,
     {
@@ -1029,7 +1132,9 @@ pub trait Strategy: DataActor {
         if open_count == 0 && emulated_count == 0 && inflight_count == 0 && algo_count == 0 {
             let side_str = order_side.map(|s| format!(" {s}")).unwrap_or_default();
             log::info!("No {instrument_id} open, emulated, or inflight{side_str} orders to cancel");
-            return Ok(());
+            return Ok(DispatchOutcome::NoOp {
+                reason: DispatchNoOpReason::NothingToCancel,
+            });
         }
 
         let side_str = order_side.map(|s| format!(" {s}")).unwrap_or_default();
@@ -1055,6 +1160,8 @@ pub trait Strategy: DataActor {
             );
         }
 
+        let mut command_count = 0usize;
+
         if open_count > 0 || inflight_count > 0 {
             let command = CancelAllOrders::new(
                 trader_id,
@@ -1069,6 +1176,7 @@ pub trait Strategy: DataActor {
             );
 
             send_exec_command(TradingCommand::CancelAllOrders(command));
+            command_count += 1;
         }
 
         if emulated_count > 0 {
@@ -1085,13 +1193,33 @@ pub trait Strategy: DataActor {
             );
 
             send_emulator_command(TradingCommand::CancelAllOrders(command));
+            command_count += 1;
         }
 
         for order in algo_orders {
-            self.cancel_order(order.client_order_id(), client_id, None)?;
+            match self.cancel_order(order.client_order_id(), client_id, None) {
+                Ok(DispatchOutcome::Dispatched {
+                    command_count: child_count,
+                }) => command_count += child_count,
+                Ok(DispatchOutcome::NoOp { .. } | DispatchOutcome::Denied { .. }) => {}
+                Err(error) if command_count > 0 => {
+                    return Err(PartialDispatchError {
+                        command_count,
+                        message: error.to_string(),
+                    }
+                    .into());
+                }
+                Err(error) => return Err(error),
+            }
         }
 
-        Ok(())
+        if command_count == 0 {
+            Ok(DispatchOutcome::NoOp {
+                reason: DispatchNoOpReason::NothingToCancel,
+            })
+        } else {
+            Ok(DispatchOutcome::dispatched(command_count))
+        }
     }
 
     /// Closes a position by submitting a market order for the opposite side.
@@ -1107,7 +1235,7 @@ pub trait Strategy: DataActor {
         time_in_force: Option<TimeInForce>,
         reduce_only: Option<bool>,
         quote_quantity: Option<bool>,
-    ) -> anyhow::Result<()>
+    ) -> anyhow::Result<DispatchOutcome>
     where
         Self: StrategyNative,
     {
@@ -1115,7 +1243,9 @@ pub trait Strategy: DataActor {
 
         if position.is_closed() {
             log::warn!("Cannot close position (already closed): {}", position.id);
-            return Ok(());
+            return Ok(DispatchOutcome::NoOp {
+                reason: DispatchNoOpReason::PositionClosed,
+            });
         }
 
         let closing_side = OrderCore::closing_side(position.side);
@@ -1151,7 +1281,7 @@ pub trait Strategy: DataActor {
         time_in_force: Option<TimeInForce>,
         reduce_only: Option<bool>,
         quote_quantity: Option<bool>,
-    ) -> anyhow::Result<()>
+    ) -> anyhow::Result<DispatchOutcome>
     where
         Self: StrategyNative,
     {
@@ -1171,7 +1301,9 @@ pub trait Strategy: DataActor {
 
         if positions_open.is_empty() {
             log::info!("No {instrument_id} open{side_str} positions to close");
-            return Ok(());
+            return Ok(DispatchOutcome::NoOp {
+                reason: DispatchNoOpReason::NoOpenPositions,
+            });
         }
 
         let count = positions_open.len();
@@ -1188,6 +1320,8 @@ pub trait Strategy: DataActor {
 
         drop(cache);
 
+        let mut command_count = 0usize;
+        let mut denied_reason = None;
         for (pos_id, pos_instrument_id, pos_side, pos_quantity, is_closed) in positions_data {
             if is_closed {
                 continue;
@@ -1208,10 +1342,36 @@ pub trait Strategy: DataActor {
                 None,
             );
 
-            self.submit_order(order, Some(pos_id), client_id, None)?;
+            match self.submit_order(order, Some(pos_id), client_id, None) {
+                Ok(DispatchOutcome::Dispatched {
+                    command_count: child_count,
+                }) => command_count += child_count,
+                Ok(DispatchOutcome::NoOp { .. }) => {}
+                Ok(DispatchOutcome::Denied { reason }) => {
+                    denied_reason.get_or_insert(reason);
+                }
+                Err(error) if command_count > 0 => {
+                    return Err(PartialDispatchError {
+                        command_count,
+                        message: error.to_string(),
+                    }
+                    .into());
+                }
+                Err(error) => return Err(error),
+            }
         }
 
-        Ok(())
+        if command_count == 0
+            && let Some(reason) = denied_reason
+        {
+            Ok(DispatchOutcome::Denied { reason })
+        } else if command_count == 0 {
+            Ok(DispatchOutcome::NoOp {
+                reason: DispatchNoOpReason::NoOpenPositions,
+            })
+        } else {
+            Ok(DispatchOutcome::dispatched(command_count))
+        }
     }
 
     /// Queries account state from the execution client.
@@ -2038,18 +2198,18 @@ pub trait Strategy: DataActor {
     /// # Errors
     ///
     /// Returns an error if timer creation fails.
-    fn set_gtd_expiry(&mut self, order: &OrderAny) -> anyhow::Result<()>
+    fn set_gtd_expiry(&mut self, order: &OrderAny) -> anyhow::Result<usize>
     where
         Self: StrategyNative,
     {
         let core = StrategyNative::strategy_core_mut(self);
 
         if !core.config.manage_gtd_expiry || order.time_in_force() != TimeInForce::Gtd {
-            return Ok(());
+            return Ok(0);
         }
 
         let Some(expire_time) = order.expire_time() else {
-            return Ok(());
+            return Ok(0);
         };
 
         let client_order_id = order.client_order_id();
@@ -2062,7 +2222,12 @@ pub trait Strategy: DataActor {
 
         if current_time_ns >= expire_time.as_u64() {
             log::info!("GTD order {client_order_id} already expired, canceling immediately");
-            return self.cancel_order(order.client_order_id(), None, None);
+            return self
+                .cancel_order(order.client_order_id(), None, None)
+                .map(|outcome| match outcome {
+                    DispatchOutcome::Dispatched { command_count } => command_count,
+                    DispatchOutcome::NoOp { .. } | DispatchOutcome::Denied { .. } => 0,
+                });
         }
 
         {
@@ -2074,7 +2239,7 @@ pub trait Strategy: DataActor {
             .insert(client_order_id, Ustr::from(&timer_name));
 
         log::debug!("Set GTD expiry timer for {client_order_id} at {expire_time}");
-        Ok(())
+        Ok(0)
     }
 
     /// Cancels a GTD expiry timer for an order.
@@ -2988,9 +3153,11 @@ mod tests {
         let topic = format!("events.order.{}", order.strategy_id());
         msgbus::subscribe_order_events(topic.clone().into(), event_handler.clone(), None);
 
-        strategy
+        let outcome = strategy
             .submit_order(order.clone(), None, None, None)
             .unwrap();
+
+        assert_eq!(outcome, DispatchOutcome::Dispatched { command_count: 1 });
 
         msgbus::unsubscribe_order_events(topic.into(), &event_handler);
 
@@ -3001,6 +3168,73 @@ mod tests {
             OrderEventAny::Initialized(order.init_event().clone())
         );
         assert_eq!(timeline.borrow().as_slice(), &["init", "command"]);
+    }
+
+    #[rstest]
+    fn test_submit_expired_gtd_reports_partial_dispatch_when_cancel_cannot_start() {
+        let config = StrategyConfig {
+            strategy_id: Some(StrategyId::from("TEST-001")),
+            order_id_tag: Some("001".to_string()),
+            manage_gtd_expiry: true,
+            ..Default::default()
+        };
+        let mut strategy = TestStrategy::new(config);
+        let trader_id = TraderId::from("TRADER-001");
+        let test_clock = Rc::new(RefCell::new(TestClock::new()));
+        let clock: Rc<RefCell<dyn Clock>> = test_clock.clone();
+        let cache = Rc::new(RefCell::new(Cache::default()));
+        let portfolio = Rc::new(RefCell::new(Portfolio::new(
+            clock.clone(),
+            cache.clone(),
+            None,
+        )));
+        strategy
+            .core
+            .register(trader_id, clock, cache.clone(), portfolio)
+            .unwrap();
+        strategy.initialize().unwrap();
+        test_clock
+            .borrow_mut()
+            .advance_time(UnixNanos::from(2), true);
+
+        let client_order_id = ClientOrderId::from("O-20250208-GTD-PARTIAL-001");
+        let risk_command_count = Rc::new(RefCell::new(0usize));
+        let risk_handler = {
+            let cache = cache.clone();
+            let risk_command_count = risk_command_count.clone();
+            TypedIntoHandler::from_with_id(
+                "RiskEngine.queue_execute",
+                move |command: TradingCommand| {
+                    assert!(matches!(command, TradingCommand::SubmitOrder(_)));
+                    *risk_command_count.borrow_mut() += 1;
+                    cache.borrow_mut().purge_order(client_order_id);
+                },
+            )
+        };
+        msgbus::register_trading_command_endpoint(
+            MessagingSwitchboard::risk_engine_queue_execute(),
+            risk_handler,
+        );
+
+        let order = OrderTestBuilder::new(OrderType::Limit)
+            .trader_id(TraderId::from("TRADER-001"))
+            .strategy_id(StrategyId::from("TEST-001"))
+            .instrument_id(InstrumentId::from("BTCUSDT.BINANCE"))
+            .client_order_id(client_order_id)
+            .quantity(Quantity::from(100_000))
+            .price(Price::from("1.00000"))
+            .time_in_force(TimeInForce::Gtd)
+            .expire_time(UnixNanos::from(1))
+            .build();
+
+        let error = strategy.submit_order(order, None, None, None).unwrap_err();
+        let partial = error
+            .downcast_ref::<PartialDispatchError>()
+            .expect("partial dispatch error");
+
+        assert_eq!(partial.command_count, 1);
+        assert!(partial.message.contains("Cannot cancel order"));
+        assert_eq!(*risk_command_count.borrow(), 1);
     }
 
     #[rstest]
@@ -3086,12 +3320,11 @@ mod tests {
 
         msgbus::unsubscribe_order_events(topic.into(), &event_handler);
 
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("expected INITIALIZED")
+        assert_eq!(
+            result.unwrap(),
+            DispatchOutcome::NoOp {
+                reason: DispatchNoOpReason::StateTransitionRejected,
+            }
         );
         assert!(event_messages.get_messages().is_empty());
     }
@@ -3313,14 +3546,19 @@ mod tests {
 
         let event_messages = event_messages.borrow();
         assert_eq!(event_messages.len(), 2);
-        assert_eq!(
-            event_messages[0],
-            OrderEventAny::Initialized(orders[0].init_event().clone())
-        );
-        assert_eq!(
-            event_messages[1],
-            OrderEventAny::Initialized(orders[1].init_event().clone())
-        );
+        let created_order_list_id = match &event_messages[0] {
+            OrderEventAny::Initialized(event) => {
+                assert_eq!(event.client_order_id, client_order_id1);
+                event.order_list_id.expect("generated order list ID")
+            }
+            event => panic!("unexpected order event {event:?}"),
+        };
+        assert!(matches!(
+            &event_messages[1],
+            OrderEventAny::Initialized(event)
+                if event.client_order_id == client_order_id2
+                    && event.order_list_id == Some(created_order_list_id)
+        ));
         assert_eq!(timeline.borrow().as_slice(), &["init1", "init2", "command"]);
 
         let cache = strategy.cache();
@@ -3449,6 +3687,40 @@ mod tests {
             Some(TradingCommand::ModifyOrder(_))
         ));
         assert!(exec_messages.is_empty());
+    }
+
+    #[rstest]
+    fn test_modify_order_unchanged_returns_no_op_without_command() {
+        let mut strategy = create_test_strategy();
+        register_strategy(&mut strategy);
+
+        let (risk_handler, risk_messages): (_, TypedIntoMessageSavingHandler<TradingCommand>) =
+            get_typed_into_message_saving_handler(Some(Ustr::from("RiskEngine.queue_execute")));
+        msgbus::register_trading_command_endpoint(
+            MessagingSwitchboard::risk_engine_queue_execute(),
+            risk_handler,
+        );
+        let order = make_accepted_limit_order("O-20250208-UNCHANGED-001");
+        add_order_to_cache(&strategy, &order);
+
+        let outcome = strategy
+            .modify_order(
+                order.client_order_id(),
+                Some(order.quantity()),
+                order.price(),
+                None,
+                None,
+                None,
+            )
+            .expect("unchanged modification should be a local no-op");
+
+        assert_eq!(
+            outcome,
+            DispatchOutcome::NoOp {
+                reason: DispatchNoOpReason::Unchanged,
+            }
+        );
+        assert!(risk_messages.get_messages().is_empty());
     }
 
     #[rstest]
@@ -4633,7 +4905,12 @@ mod tests {
 
         msgbus::unsubscribe_order_events(topic.into(), &event_handler);
 
-        assert!(result.is_ok());
+        assert_eq!(
+            result.expect("market-exit denial is a local outcome"),
+            DispatchOutcome::Denied {
+                reason: OrderDeniedReason::MarketExitInProgress,
+            }
+        );
         let cache = strategy.cache();
         let cached_order = cache.order(&client_order_id).unwrap();
         assert_eq!(cached_order.status(), OrderStatus::Denied);
@@ -4774,12 +5051,11 @@ mod tests {
 
         msgbus::unsubscribe_order_events(topic.into(), &event_handler);
 
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("expected INITIALIZED")
+        assert_eq!(
+            result.unwrap(),
+            DispatchOutcome::NoOp {
+                reason: DispatchNoOpReason::StateTransitionRejected,
+            }
         );
         assert!(event_messages.get_messages().is_empty());
     }

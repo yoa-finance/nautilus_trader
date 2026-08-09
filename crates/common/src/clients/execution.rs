@@ -19,7 +19,7 @@ use async_trait::async_trait;
 use nautilus_core::UnixNanos;
 use nautilus_model::{
     accounts::AccountAny,
-    enums::{LiquiditySide, OmsType},
+    enums::{LiquiditySide, OmsType, OrderListType, OrderType, TimeInForce, TrailingOffsetType},
     identifiers::{
         AccountId, ClientId, ClientOrderId, InstrumentId, StrategyId, Venue, VenueOrderId,
     },
@@ -27,6 +27,26 @@ use nautilus_model::{
     reports::{ExecutionMassStatus, FillReport, OrderStatusReport, PositionStatusReport},
     types::{AccountBalance, MarginBalance, Money, Price, Quantity},
 };
+
+/// Adapter-owned technical execution capabilities.
+///
+/// This descriptor intentionally contains no entry/exit or exposure semantics. An empty
+/// descriptor is fail-closed: callers must not infer support from a method's existence.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExecutionClientCapabilities {
+    pub order_types: Vec<OrderType>,
+    pub order_list_types: Vec<OrderListType>,
+    pub time_in_force: Vec<TimeInForce>,
+    pub trailing_offset_types: Vec<TrailingOffsetType>,
+    pub submit_order: bool,
+    pub submit_order_list: bool,
+    pub modify_order: bool,
+    pub batch_modify_orders: bool,
+    pub cancel_order: bool,
+    pub batch_cancel_orders: bool,
+    pub cancel_all_orders: bool,
+    pub reduce_only: bool,
+}
 
 use super::log_not_implemented;
 use crate::messages::execution::{
@@ -49,6 +69,11 @@ pub trait ExecutionClient {
     fn venue(&self) -> Venue;
     fn oms_type(&self) -> OmsType;
     fn get_account(&self) -> Option<AccountAny>;
+
+    /// Returns the adapter's exact technical operation support.
+    fn capabilities(&self) -> ExecutionClientCapabilities {
+        ExecutionClientCapabilities::default()
+    }
 
     /// Returns whether this client can execute orders for the given instrument venue.
     ///

@@ -21,7 +21,7 @@ use ahash::AHashMap;
 use async_trait::async_trait;
 use nautilus_common::{
     cache::Cache,
-    clients::ExecutionClient,
+    clients::{ExecutionClient, ExecutionClientCapabilities},
     clock::Clock,
     factories::OrderEventFactory,
     live::try_get_exec_event_sender,
@@ -48,7 +48,7 @@ use nautilus_execution::{
 use nautilus_model::{
     accounts::AccountAny,
     data::{Bar, InstrumentClose, InstrumentStatus, OrderBookDeltas, QuoteTick, TradeTick},
-    enums::OmsType,
+    enums::{OmsType, OrderListType, OrderType, TimeInForce, TrailingOffsetType},
     events::{OrderEventAny, PositionEvent},
     identifiers::{AccountId, ClientId, ClientOrderId, InstrumentId, Venue},
     instruments::{Instrument, InstrumentAny},
@@ -58,6 +58,52 @@ use nautilus_model::{
 };
 
 use crate::config::SandboxExecutionClientConfig;
+
+/// Returns the technical operations supported by the in-process sandbox adapter.
+#[must_use]
+pub fn sandbox_execution_capabilities() -> ExecutionClientCapabilities {
+    ExecutionClientCapabilities {
+        order_types: vec![
+            OrderType::Market,
+            OrderType::Limit,
+            OrderType::StopMarket,
+            OrderType::StopLimit,
+            OrderType::MarketToLimit,
+            OrderType::MarketIfTouched,
+            OrderType::LimitIfTouched,
+            OrderType::TrailingStopMarket,
+            OrderType::TrailingStopLimit,
+        ],
+        order_list_types: vec![
+            OrderListType::Standard,
+            OrderListType::Oco,
+            OrderListType::Opoco,
+        ],
+        time_in_force: vec![
+            TimeInForce::Gtc,
+            TimeInForce::Ioc,
+            TimeInForce::Fok,
+            TimeInForce::Gtd,
+            TimeInForce::Day,
+            TimeInForce::AtTheOpen,
+            TimeInForce::AtTheClose,
+        ],
+        trailing_offset_types: vec![
+            TrailingOffsetType::Price,
+            TrailingOffsetType::BasisPoints,
+            TrailingOffsetType::Ticks,
+            TrailingOffsetType::PriceTier,
+        ],
+        submit_order: true,
+        submit_order_list: true,
+        modify_order: true,
+        batch_modify_orders: true,
+        cancel_order: true,
+        batch_cancel_orders: true,
+        cancel_all_orders: true,
+        reduce_only: true,
+    }
+}
 
 /// Inner state for the sandbox execution client.
 ///
@@ -886,6 +932,10 @@ impl ExecutionClient for SandboxExecutionClient {
     fn get_account(&self) -> Option<AccountAny> {
         let account_id = self.core.borrow().account_id;
         self.cache.borrow().account_owned(&account_id)
+    }
+
+    fn capabilities(&self) -> ExecutionClientCapabilities {
+        sandbox_execution_capabilities()
     }
 
     fn generate_account_state(

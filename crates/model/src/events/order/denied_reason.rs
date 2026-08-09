@@ -43,6 +43,9 @@ use crate::{
     strum(serialize_all = "SCREAMING_SNAKE_CASE")
 )]
 pub enum OrderDeniedReason {
+    /// A strategy-managed market exit is already in progress.
+    #[error("MARKET_EXIT_IN_PROGRESS")]
+    MarketExitInProgress,
     /// The effective order quantity exceeds the instrument maximum.
     #[error(
         "QUANTITY_EXCEEDS_MAXIMUM: effective_quantity={effective_quantity}, max_quantity={max_quantity}"
@@ -292,6 +295,7 @@ impl OrderDeniedCode {
     #[must_use]
     pub fn description(&self) -> &'static str {
         match self {
+            Self::MarketExitInProgress => "A strategy-managed market exit is already in progress.",
             Self::QuantityExceedsMaximum => {
                 "The effective order quantity exceeds the instrument maximum."
             }
