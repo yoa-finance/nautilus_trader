@@ -885,6 +885,7 @@ pub fn position_adjustment_type_to_capnp(
     match value {
         PositionAdjustmentType::Commission => enums_capnp::PositionAdjustmentType::Commission,
         PositionAdjustmentType::Funding => enums_capnp::PositionAdjustmentType::Funding,
+        PositionAdjustmentType::Dust => enums_capnp::PositionAdjustmentType::Dust,
     }
 }
 
@@ -895,6 +896,7 @@ pub fn position_adjustment_type_from_capnp(
     match value {
         enums_capnp::PositionAdjustmentType::Commission => PositionAdjustmentType::Commission,
         enums_capnp::PositionAdjustmentType::Funding => PositionAdjustmentType::Funding,
+        enums_capnp::PositionAdjustmentType::Dust => PositionAdjustmentType::Dust,
     }
 }
 
@@ -5538,10 +5540,10 @@ mod tests {
             instrument_id_btc_usdt(),
             PositionId::from("P-ADJUST"),
             account_id(),
-            PositionAdjustmentType::Funding,
-            Some(dec!(-0.001)),
-            Some(Money::new(-5.5, Currency::USD())),
-            Some(Ustr::from("funding_2024-01-15")),
+            PositionAdjustmentType::Dust,
+            Some(dec!(-0.000_095)),
+            None,
+            Some(Ustr::from("O-CLOSE")),
             uuid4(),
             UnixNanos::from(17),
             UnixNanos::from(18),

@@ -1646,6 +1646,8 @@ pub enum PositionAdjustmentType {
     Commission = 1,
     /// Funding payment affecting position realized PnL.
     Funding = 2,
+    /// Non-executable residual removed from a strategy position after a complete framework close.
+    Dust = 3,
 }
 
 impl FromU8 for PositionAdjustmentType {
@@ -1653,6 +1655,7 @@ impl FromU8 for PositionAdjustmentType {
         match value {
             1 => Some(Self::Commission),
             2 => Some(Self::Funding),
+            3 => Some(Self::Dust),
             _ => None,
         }
     }

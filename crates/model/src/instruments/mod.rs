@@ -439,6 +439,30 @@ pub trait Instrument: 'static + Send {
         self.try_make_qty(value, round_down).unwrap()
     }
 
+    /// Floors a non-negative decimal quantity to the instrument size increment.
+    ///
+    /// This calculation stays in decimal arithmetic so increments such as `0.005` or `0.50`
+    /// are respected exactly. Unlike [`Instrument::try_make_qty`], zero is a valid result.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `value` is negative, the size increment is not positive, or the
+    /// floored value cannot be represented as a [`Quantity`].
+    #[inline(always)]
+    fn try_floor_qty_to_increment(&self, value: Decimal) -> anyhow::Result<Quantity> {
+        if value.is_sign_negative() {
+            anyhow::bail!("quantity to floor must be non-negative, was {value}");
+        }
+
+        let increment = self.size_increment().as_decimal();
+        if increment <= Decimal::ZERO {
+            anyhow::bail!("instrument size increment must be positive, was {increment}");
+        }
+
+        let floored = (value / increment).floor() * increment;
+        Quantity::from_decimal_dp(floored, self.size_precision()).map_err(Into::into)
+    }
+
     /// Returns `quantity` rebuilt with the instrument precision when it is on the size grid.
     ///
     /// # Errors
@@ -747,6 +771,25 @@ mod tests {
                 .to_string(),
             expected
         );
+    }
+
+    #[rstest]
+    #[case("0.004995", "0.0049")]
+    #[case("0.000095", "0.0000")]
+    #[case("0", "0.0000")]
+    fn floor_qty_to_increment_uses_exact_decimal_grid(
+        mut currency_pair_ethusdt: CurrencyPair,
+        #[case] input: &str,
+        #[case] expected: &str,
+    ) {
+        currency_pair_ethusdt.size_precision = 4;
+        currency_pair_ethusdt.size_increment = Quantity::from("0.0001");
+
+        let quantity = currency_pair_ethusdt
+            .try_floor_qty_to_increment(Decimal::from_str(input).unwrap())
+            .unwrap();
+
+        assert_eq!(quantity, Quantity::from(expected));
     }
 
     #[rstest]

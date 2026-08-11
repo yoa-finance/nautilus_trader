@@ -20,7 +20,7 @@ pub mod core;
 pub use core::{StrategyCore, StrategyNative};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use ahash::AHashSet;
+use ahash::{AHashMap, AHashSet};
 pub use api::{OrderApi, PortfolioApi};
 pub use config::{ImportableStrategyConfig, StrategyConfig};
 use nautilus_common::{
@@ -37,6 +37,7 @@ use nautilus_common::{
 };
 use nautilus_core::{Params, UUID4};
 use nautilus_model::{
+    accounts::AccountAny,
     enums::{
         ContingencyType, OrderListType, OrderSide, OrderStatus, PositionSide, TimeInForce,
         TriggerType,
@@ -51,13 +52,78 @@ use nautilus_model::{
         AccountId, ClientId, ClientOrderId, ExecAlgorithmId, InstrumentId, OrderListId, PositionId,
         StrategyId, TraderId,
     },
+    instruments::{Instrument, InstrumentAny},
     orders::{
-        LIMIT_ORDER_TYPES, Order, OrderAny, OrderCore, OrderError, OrderList, STOP_ORDER_TYPES,
+        LIMIT_ORDER_TYPES, Order, OrderAny, OrderCore, OrderError, OrderList, POSITION_CLOSE_TAG,
+        STOP_ORDER_TYPES,
     },
     position::Position,
-    types::{Price, Quantity},
+    types::{Currency, Price, Quantity},
 };
+use rust_decimal::Decimal;
 use ustr::Ustr;
+
+fn position_close_tags(mut tags: Option<Vec<Ustr>>) -> Vec<Ustr> {
+    let tags = tags.get_or_insert_default();
+    let reserved = Ustr::from(POSITION_CLOSE_TAG);
+    if !tags.contains(&reserved) {
+        tags.push(reserved);
+    }
+    std::mem::take(tags)
+}
+
+fn executable_position_close_quantity(
+    instrument: &InstrumentAny,
+    position_quantity: Decimal,
+    free_asset: Option<Decimal>,
+) -> anyhow::Result<Quantity> {
+    if position_quantity.is_sign_negative() {
+        anyhow::bail!("strategy position quantity must be non-negative, was {position_quantity}");
+    }
+    if free_asset.is_some_and(|free| free.is_sign_negative()) {
+        anyhow::bail!("account free asset balance must be non-negative");
+    }
+
+    let capped = free_asset.map_or(position_quantity, |free| position_quantity.min(free));
+    instrument.try_floor_qty_to_increment(capped)
+}
+
+fn cash_asset_free(
+    instrument: &InstrumentAny,
+    position: &Position,
+    account: &AccountAny,
+) -> anyhow::Result<Option<(Currency, Decimal)>> {
+    if !matches!(instrument, InstrumentAny::CurrencyPair(_))
+        || !position.is_long()
+        || !matches!(account, AccountAny::Cash(_))
+    {
+        return Ok(None);
+    }
+
+    let currency = instrument
+        .base_currency()
+        .ok_or_else(|| anyhow::anyhow!("currency pair {} has no base currency", instrument.id()))?;
+    let balance = account.balance(Some(currency)).ok_or_else(|| {
+        anyhow::anyhow!(
+            "cash account {} has no free balance for {}",
+            position.account_id,
+            currency
+        )
+    })?;
+    if balance.currency != currency || balance.free.currency != currency {
+        anyhow::bail!(
+            "cash account {} balance currency mismatch for {}",
+            position.account_id,
+            currency
+        );
+    }
+
+    Ok(Some((currency, balance.free.as_decimal())))
+}
+
+fn requires_cash_asset_lookup(instrument: &InstrumentAny, position: &Position) -> bool {
+    matches!(instrument, InstrumentAny::CurrencyPair(_)) && position.is_long()
+}
 
 /// Describes one child update in a batch modify request.
 pub type BatchModifyOrder = (
@@ -86,6 +152,8 @@ pub enum DispatchNoOpReason {
     PositionClosed,
     /// No matching open position was available to close.
     NoOpenPositions,
+    /// The position has no quantity executable on the instrument size grid.
+    NoExecutablePositionQuantity,
 }
 
 /// The synchronous result of invoking a strategy command API.
@@ -1240,6 +1308,7 @@ pub trait Strategy: DataActor {
         Self: StrategyNative,
     {
         let core = StrategyNative::strategy_core_mut(self);
+        let strategy_id = StrategyId::from(core.actor_id().inner().as_str());
 
         if position.is_closed() {
             log::warn!("Cannot close position (already closed): {}", position.id);
@@ -1248,18 +1317,56 @@ pub trait Strategy: DataActor {
             });
         }
 
+        if position.strategy_id != strategy_id {
+            anyhow::bail!(
+                "cannot close position {} owned by strategy {} from strategy {}",
+                position.id,
+                position.strategy_id,
+                strategy_id
+            );
+        }
+
         let closing_side = OrderCore::closing_side(position.side);
+        let cache = core.cache_ref();
+        let instrument = cache
+            .try_instrument(&position.instrument_id)
+            .map_err(anyhow::Error::from)?
+            .clone();
+        let free_asset = if requires_cash_asset_lookup(&instrument, position) {
+            let account = cache
+                .try_account(&position.account_id)
+                .map_err(anyhow::Error::from)?;
+            cash_asset_free(&instrument, position, &account)?.map(|(_, free)| free)
+        } else {
+            None
+        };
+        let quantity = executable_position_close_quantity(
+            &instrument,
+            position.signed_decimal_qty().abs(),
+            free_asset,
+        )?;
+        drop(cache);
+
+        if quantity.is_zero() {
+            return Ok(DispatchOutcome::NoOp {
+                reason: DispatchNoOpReason::NoExecutablePositionQuantity,
+            });
+        }
+
+        if reduce_only == Some(false) {
+            log::warn!("Ignoring reduce_only=false for framework position close");
+        }
 
         let order = core.order_factory().market(
             position.instrument_id,
             closing_side,
-            position.quantity,
+            quantity,
             time_in_force,
-            reduce_only.or(Some(true)),
+            Some(true),
             quote_quantity,
             None,
             None,
-            tags,
+            Some(position_close_tags(tags)),
             None,
         );
 
@@ -1312,40 +1419,97 @@ pub trait Strategy: DataActor {
             if count == 1 { "" } else { "s" }
         );
 
-        let positions_data: Vec<_> = positions_open
+        let mut positions_data: Vec<Position> = positions_open
             .iter()
-            .map(|p| (p.id, p.instrument_id, p.side, p.quantity, p.is_closed()))
+            .map(|position| position.cloned())
             .collect();
+        positions_data.sort_by_key(|position| position.id);
         drop(positions_open);
 
         drop(cache);
 
         let mut command_count = 0usize;
         let mut denied_reason = None;
-        for (pos_id, pos_instrument_id, pos_side, pos_quantity, is_closed) in positions_data {
-            if is_closed {
+        let mut had_non_executable = false;
+        let mut free_asset_budgets: AHashMap<(AccountId, Currency), Decimal> = AHashMap::new();
+        let close_tags = position_close_tags(tags);
+        for position in positions_data {
+            if position.is_closed() {
                 continue;
             }
 
             let core = StrategyNative::strategy_core_mut(self);
-            let closing_side = OrderCore::closing_side(pos_side);
+            let close_details = (|| -> anyhow::Result<_> {
+                let cache = core.cache_ref();
+                let instrument = cache
+                    .try_instrument(&position.instrument_id)
+                    .map_err(anyhow::Error::from)?
+                    .clone();
+                let asset = if requires_cash_asset_lookup(&instrument, &position) {
+                    let account = cache
+                        .try_account(&position.account_id)
+                        .map_err(anyhow::Error::from)?;
+                    cash_asset_free(&instrument, &position, &account)?
+                } else {
+                    None
+                };
+                let free_asset = asset.map(|(currency, initial_free)| {
+                    *free_asset_budgets
+                        .entry((position.account_id, currency))
+                        .or_insert(initial_free)
+                });
+                let quantity = executable_position_close_quantity(
+                    &instrument,
+                    position.signed_decimal_qty().abs(),
+                    free_asset,
+                )?;
+                Ok((asset, quantity))
+            })();
+            let (asset, quantity) = match close_details {
+                Ok(details) => details,
+                Err(error) if command_count > 0 => {
+                    return Err(PartialDispatchError {
+                        command_count,
+                        message: error.to_string(),
+                    }
+                    .into());
+                }
+                Err(error) => return Err(error),
+            };
+            if quantity.is_zero() {
+                had_non_executable = true;
+                continue;
+            }
+
+            if reduce_only == Some(false) {
+                log::warn!("Ignoring reduce_only=false for framework position close");
+            }
+            let closing_side = OrderCore::closing_side(position.side);
             let order = core.order_factory().market(
-                pos_instrument_id,
+                position.instrument_id,
                 closing_side,
-                pos_quantity,
+                quantity,
                 time_in_force,
-                reduce_only.or(Some(true)),
+                Some(true),
                 quote_quantity,
                 None,
                 None,
-                tags.clone(),
+                Some(close_tags.clone()),
                 None,
             );
 
-            match self.submit_order(order, Some(pos_id), client_id, None) {
+            match self.submit_order(order, Some(position.id), client_id, None) {
                 Ok(DispatchOutcome::Dispatched {
                     command_count: child_count,
-                }) => command_count += child_count,
+                }) => {
+                    command_count += child_count;
+                    if let Some((currency, _)) = asset {
+                        let budget = free_asset_budgets
+                            .get_mut(&(position.account_id, currency))
+                            .expect("cash asset budget initialized");
+                        *budget -= quantity.as_decimal();
+                    }
+                }
                 Ok(DispatchOutcome::NoOp { .. }) => {}
                 Ok(DispatchOutcome::Denied { reason }) => {
                     denied_reason.get_or_insert(reason);
@@ -1367,7 +1531,11 @@ pub trait Strategy: DataActor {
             Ok(DispatchOutcome::Denied { reason })
         } else if command_count == 0 {
             Ok(DispatchOutcome::NoOp {
-                reason: DispatchNoOpReason::NoOpenPositions,
+                reason: if had_non_executable {
+                    DispatchNoOpReason::NoExecutablePositionQuantity
+                } else {
+                    DispatchNoOpReason::NoOpenPositions
+                },
             })
         } else {
             Ok(DispatchOutcome::dispatched(command_count))
@@ -2482,7 +2650,7 @@ fn required_account_id(order: &OrderAny, operation: &str) -> anyhow::Result<Acco
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::RefCell, rc::Rc};
+    use std::{cell::RefCell, rc::Rc, str::FromStr};
 
     use nautilus_common::{
         actor::DataActor,
@@ -2509,6 +2677,7 @@ mod tests {
             AccountId, ActorId, ClientOrderId, ComponentId, InstrumentId, OrderListId, PositionId,
             StrategyId, TradeId, TraderId, VenueOrderId,
         },
+        instruments::{InstrumentAny, stubs::currency_pair_ethusdt},
         orderbook::own::OwnOrderBook,
         orders::{LimitOrder, MarketOrder, OrderTestBuilder, stubs::TestOrderEventStubs},
         stubs::TestDefault,
@@ -2520,6 +2689,54 @@ mod tests {
 
     use super::*;
     use crate::nautilus_strategy;
+
+    fn ethusdt_with_tenth_milliether_increment() -> InstrumentAny {
+        let mut instrument = currency_pair_ethusdt();
+        instrument.size_precision = 4;
+        instrument.size_increment = Quantity::from("0.0001");
+        InstrumentAny::CurrencyPair(instrument)
+    }
+
+    #[test]
+    fn close_quantity_is_position_bounded_and_increment_floored() {
+        let instrument = ethusdt_with_tenth_milliether_increment();
+        let cases = [
+            ("0.004995", Some("10"), "0.0049"),
+            ("0", Some("10"), "0.0000"),
+            ("0.004995", Some("0.00395"), "0.0039"),
+            ("0.004995", None, "0.0049"),
+        ];
+
+        for (position_quantity, free_asset, expected) in cases {
+            let free_asset = free_asset.map(|value| Decimal::from_str(value).unwrap());
+            let position_quantity = Decimal::from_str(position_quantity).unwrap();
+            let quantity =
+                executable_position_close_quantity(&instrument, position_quantity, free_asset)
+                    .unwrap();
+
+            assert_eq!(quantity, Quantity::from(expected));
+            assert!(quantity.as_decimal() <= position_quantity);
+        }
+    }
+
+    #[rstest]
+    fn close_quantities_share_one_free_asset_budget() {
+        let instrument = ethusdt_with_tenth_milliether_increment();
+        let position_quantity = Decimal::from_str("0.004995").unwrap();
+        let mut budget = Decimal::from_str("0.00705").unwrap();
+        let mut total = Decimal::ZERO;
+
+        for _ in 0..2 {
+            let quantity =
+                executable_position_close_quantity(&instrument, position_quantity, Some(budget))
+                    .unwrap();
+            budget -= quantity.as_decimal();
+            total += quantity.as_decimal();
+        }
+
+        assert_eq!(total, Decimal::from_str("0.0070").unwrap());
+        assert!(total <= Decimal::from_str("0.00705").unwrap());
+    }
 
     #[derive(Debug)]
     struct TestStrategy {

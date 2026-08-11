@@ -30,6 +30,7 @@ use crate::{
 /// order fills, such as:
 /// - Commission adjustments that affect the actual quantity held (e.g., crypto spot commissions)
 /// - Funding payments that affect realized PnL (e.g., perpetual futures funding)
+/// - Dust removal after a fully filled framework position-close order
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(tag = "type")]

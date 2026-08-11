@@ -591,6 +591,35 @@ impl Position {
         );
     }
 
+    /// Removes the remaining non-executable quantity after a fully filled framework close.
+    ///
+    /// The adjustment affects only this strategy position. Account balances remain authoritative
+    /// venue state and are deliberately not modified here.
+    pub fn close_residual_as_dust(&mut self, fill: &OrderFilled) -> PositionAdjusted {
+        let mut adjustment_id = fill.event_id.as_bytes();
+        adjustment_id[15] ^= 0x02;
+
+        let adjustment = PositionAdjusted::new(
+            self.trader_id,
+            self.strategy_id,
+            self.instrument_id,
+            self.id,
+            self.account_id,
+            PositionAdjustmentType::Dust,
+            Some(-self.signed_decimal_qty()),
+            None,
+            Some(fill.client_order_id.inner()),
+            UUID4::from_bytes(adjustment_id),
+            fill.ts_event,
+            fill.ts_init,
+        );
+        self.apply_adjustment(adjustment);
+        self.closing_order_id = Some(fill.client_order_id);
+        self.ts_closed = Some(fill.ts_event);
+        self.duration_ns = fill.ts_event.as_u64() - self.ts_opened.as_u64();
+        adjustment
+    }
+
     /// Calculates the average price using f64 arithmetic.
     ///
     /// # Design Decision: f64 vs Fixed-Point Arithmetic

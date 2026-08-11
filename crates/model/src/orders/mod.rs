@@ -95,6 +95,9 @@ pub const LIMIT_ORDER_TYPES: &[OrderType] = &[
     OrderType::TrailingStopLimit,
 ];
 
+/// Reserved tag applied to orders created by the framework position-closing APIs.
+pub const POSITION_CLOSE_TAG: &str = "POSITION_CLOSE";
+
 /// Order types that support the TRIGGERED order status.
 ///
 /// Market-style stops (`StopMarket`, `MarketIfTouched`, `TrailingStopMarket`) execute

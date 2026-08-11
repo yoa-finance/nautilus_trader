@@ -78,7 +78,7 @@ use nautilus_model::{
     },
     instruments::{Instrument, InstrumentAny},
     orderbook::own::{OwnBookOrder, OwnOrderBook, should_handle_own_book_order},
-    orders::{Order, OrderAny, OrderError},
+    orders::{Order, OrderAny, OrderError, POSITION_CLOSE_TAG},
     position::Position,
     reports::{ExecutionMassStatus, FillReport, OrderStatusReport, PositionStatusReport},
     types::{Money, Quantity},
@@ -2670,7 +2670,7 @@ impl ExecutionEngine {
             );
             Vec::new()
         } else {
-            self.handle_position_update(&instrument, fill, oms_type)
+            self.handle_position_update(&instrument, None, fill, oms_type)
         };
         self.publish_order_event(&event);
         self.publish_position_events(position_events);
@@ -3198,7 +3198,8 @@ impl ExecutionEngine {
         let (position, position_events) = if instrument.is_spread() {
             (None, Vec::new())
         } else {
-            let position_events = self.handle_position_update(&instrument, fill, oms_type);
+            let position_events =
+                self.handle_position_update(&instrument, Some(order), fill, oms_type);
             let position_id = fill.position_id.unwrap();
             (
                 self.cache.borrow().position_owned(&position_id),
@@ -3264,6 +3265,7 @@ impl ExecutionEngine {
     fn handle_position_update(
         &mut self,
         instrument: &InstrumentAny,
+        order: Option<&OrderAny>,
         fill: OrderFilled,
         oms_type: OmsType,
     ) -> Vec<PositionEvent> {
@@ -3295,9 +3297,9 @@ impl ExecutionEngine {
             }
             Some(mut pos) => {
                 if self.will_flip_position(&pos, fill) {
-                    self.flip_position(instrument, &mut pos, fill, oms_type)
+                    self.flip_position(instrument, order, &mut pos, fill, oms_type)
                 } else {
-                    self.update_position(&mut pos, fill).into_iter().collect()
+                    self.update_position(instrument, order, &mut pos, fill)
                 }
             }
         }
@@ -3427,9 +3429,31 @@ impl ExecutionEngine {
         }
     }
 
-    fn update_position(&self, position: &mut Position, fill: OrderFilled) -> Option<PositionEvent> {
+    fn update_position(
+        &self,
+        instrument: &InstrumentAny,
+        order: Option<&OrderAny>,
+        position: &mut Position,
+        fill: OrderFilled,
+    ) -> Vec<PositionEvent> {
+        let position_side_before = position.side;
+        let was_reducing = position.is_opposite_side(fill.order_side);
+
         // Apply the fill to the position
         position.apply(&fill);
+
+        let dust_adjustment = if self.should_close_position_dust(
+            instrument,
+            order,
+            position,
+            &fill,
+            position_side_before,
+            was_reducing,
+        ) {
+            Some(position.close_residual_as_dust(&fill))
+        } else {
+            None
+        };
 
         // Check if position is closed after applying the fill
         let is_closed = position.is_closed();
@@ -3437,7 +3461,7 @@ impl ExecutionEngine {
         // Update position in cache - this should handle the closed state tracking
         if let Err(e) = self.cache.borrow_mut().update_position(position) {
             log::error!("Failed to update position: {e:?}");
-            return None;
+            return Vec::new();
         }
 
         // Verify cache state after update
@@ -3452,13 +3476,91 @@ impl ExecutionEngine {
 
         let ts_init = self.clock.borrow().timestamp_ns();
 
+        let mut events = Vec::with_capacity(if dust_adjustment.is_some() { 2 } else { 1 });
+        if let Some(adjustment) = dust_adjustment {
+            events.push(PositionEvent::PositionAdjusted(adjustment));
+        }
+
         if is_closed {
             let event = PositionClosed::create(position, &fill, UUID4::new(), ts_init);
-            Some(PositionEvent::PositionClosed(event))
+            events.push(PositionEvent::PositionClosed(event));
         } else {
             let event = PositionChanged::create(position, &fill, UUID4::new(), ts_init);
-            Some(PositionEvent::PositionChanged(event))
+            events.push(PositionEvent::PositionChanged(event));
         }
+        events
+    }
+
+    fn should_close_position_dust(
+        &self,
+        instrument: &InstrumentAny,
+        order: Option<&OrderAny>,
+        position: &Position,
+        fill: &OrderFilled,
+        position_side_before: PositionSide,
+        was_reducing: bool,
+    ) -> bool {
+        let Some(order) = order else {
+            return false;
+        };
+        if !matches!(instrument, InstrumentAny::CurrencyPair(_))
+            || position.side != position_side_before
+            || !Self::is_complete_framework_position_close(order, position, fill, was_reducing)
+        {
+            return false;
+        }
+
+        let is_cash_account = self
+            .cache
+            .borrow()
+            .account(&position.account_id)
+            .is_some_and(|account| account.is_cash_account());
+        if !is_cash_account {
+            return false;
+        }
+
+        let residual = position.signed_decimal_qty().abs();
+        if residual.is_zero() {
+            return false;
+        }
+
+        match instrument.try_floor_qty_to_increment(residual) {
+            Ok(quantity) => quantity.is_zero(),
+            Err(error) => {
+                log::error!(
+                    "Cannot evaluate position {} residual {} for dust: {error}",
+                    position.id,
+                    residual
+                );
+                false
+            }
+        }
+    }
+
+    fn is_complete_framework_position_close(
+        order: &OrderAny,
+        position: &Position,
+        fill: &OrderFilled,
+        was_reducing: bool,
+    ) -> bool {
+        was_reducing
+            && order.is_reduce_only()
+            && order.status() == OrderStatus::Filled
+            && order.filled_qty() == order.quantity()
+            && order.leaves_qty().is_zero()
+            && order.strategy_id() == position.strategy_id
+            && order.position_id() == Some(position.id)
+            && order.instrument_id() == position.instrument_id
+            && order.account_id() == Some(position.account_id)
+            && order.client_order_id() == fill.client_order_id
+            && fill.strategy_id == position.strategy_id
+            && fill.position_id == Some(position.id)
+            && fill.instrument_id == position.instrument_id
+            && fill.account_id == position.account_id
+            && fill.order_side == order.order_side()
+            && order
+                .tags()
+                .is_some_and(|tags| tags.iter().any(|tag| tag.as_str() == POSITION_CLOSE_TAG))
     }
 
     fn will_flip_position(&self, position: &Position, fill: OrderFilled) -> bool {
@@ -3491,6 +3593,7 @@ impl ExecutionEngine {
     fn flip_position(
         &mut self,
         instrument: &InstrumentAny,
+        order: Option<&OrderAny>,
         position: &mut Position,
         fill: OrderFilled,
         oms_type: OmsType,
@@ -3549,9 +3652,12 @@ impl ExecutionEngine {
                 commission1,
             ));
 
-            if let Some(position_event) = self.update_position(position, fill_split1.unwrap()) {
-                position_events.push(position_event);
-            }
+            position_events.extend(self.update_position(
+                instrument,
+                order,
+                position,
+                fill_split1.unwrap(),
+            ));
 
             // Snapshot closed position before reusing ID (NETTING mode)
             if oms_type == OmsType::Netting {
@@ -3683,15 +3789,204 @@ impl ExecutionEngine {
 #[cfg(test)]
 mod tests {
     use nautilus_model::{
-        enums::{LiquiditySide, OrderSide, PositionSideSpecified},
-        events::order::spec::OrderFilledSpec,
+        enums::{
+            LiquiditySide, OrderSide, OrderType, PositionAdjustmentType, PositionSideSpecified,
+        },
+        events::{
+            OrderEventAny,
+            order::spec::{OrderExpiredSpec, OrderFilledSpec, OrderRejectedSpec},
+        },
         identifiers::{AccountId, ClientOrderId, TradeId, VenueOrderId},
-        instruments::{InstrumentAny, stubs::audusd_sim},
+        instruments::{
+            InstrumentAny,
+            stubs::{audusd_sim, currency_pair_ethusdt},
+        },
+        orders::{OrderTestBuilder, POSITION_CLOSE_TAG, stubs::TestOrderEventStubs},
         types::Price,
     };
     use rstest::*;
+    use ustr::Ustr;
 
     use super::*;
+
+    fn dust_close_fixture(
+        tagged: bool,
+        fill_quantity: Quantity,
+    ) -> (InstrumentAny, Position, OrderAny, OrderFilled) {
+        let mut currency_pair = currency_pair_ethusdt();
+        currency_pair.size_precision = 4;
+        currency_pair.size_increment = Quantity::from("0.0001");
+        let instrument = InstrumentAny::CurrencyPair(currency_pair);
+        let account_id = AccountId::from("BINANCE-001");
+        let strategy_id = StrategyId::from("S-001");
+        let position_id = PositionId::from("P-001");
+        let position = position_for_account(
+            &instrument,
+            account_id,
+            strategy_id,
+            position_id,
+            OrderSide::Buy,
+            Quantity::from("0.004995"),
+        );
+
+        let mut builder = OrderTestBuilder::new(OrderType::Market);
+        builder
+            .strategy_id(strategy_id)
+            .instrument_id(instrument.id())
+            .client_order_id(ClientOrderId::from("O-CLOSE"))
+            .side(OrderSide::Sell)
+            .quantity(Quantity::from("0.0049"))
+            .reduce_only(true);
+        if tagged {
+            builder.tags(vec![Ustr::from(POSITION_CLOSE_TAG)]);
+        }
+        let mut order = builder.build();
+        order.set_position_id(Some(position_id));
+        order
+            .apply(TestOrderEventStubs::submitted(&order, account_id))
+            .unwrap();
+        order
+            .apply(TestOrderEventStubs::accepted(
+                &order,
+                account_id,
+                VenueOrderId::from("V-CLOSE"),
+            ))
+            .unwrap();
+        let event = TestOrderEventStubs::filled(
+            &order,
+            &instrument,
+            Some(TradeId::from("T-CLOSE")),
+            Some(position_id),
+            Some(Price::from("2000")),
+            Some(fill_quantity),
+            Some(LiquiditySide::Taker),
+            Some(Money::from("0 USDT")),
+            None,
+            Some(account_id),
+        );
+        let OrderEventAny::Filled(fill) = event else {
+            unreachable!();
+        };
+        order.apply(event).unwrap();
+        (instrument, position, order, fill)
+    }
+
+    #[rstest]
+    fn dust_gate_requires_a_complete_framework_close() {
+        let (_, position, filled, fill) = dust_close_fixture(true, Quantity::from("0.0049"));
+        assert!(ExecutionEngine::is_complete_framework_position_close(
+            &filled, &position, &fill, true
+        ));
+        assert!(!ExecutionEngine::is_complete_framework_position_close(
+            &filled, &position, &fill, false
+        ));
+
+        let (_, manual_position, manual, manual_fill) =
+            dust_close_fixture(false, Quantity::from("0.0049"));
+        assert!(!ExecutionEngine::is_complete_framework_position_close(
+            &manual,
+            &manual_position,
+            &manual_fill,
+            true
+        ));
+
+        let (_, partial_position, mut partial, partial_fill) =
+            dust_close_fixture(true, Quantity::from("0.0020"));
+        assert_eq!(partial.status(), OrderStatus::PartiallyFilled);
+        assert!(!ExecutionEngine::is_complete_framework_position_close(
+            &partial,
+            &partial_position,
+            &partial_fill,
+            true
+        ));
+
+        partial
+            .apply(TestOrderEventStubs::canceled(
+                &partial,
+                partial.account_id().unwrap(),
+                partial.venue_order_id(),
+            ))
+            .unwrap();
+        assert_eq!(partial.status(), OrderStatus::Canceled);
+        assert!(!ExecutionEngine::is_complete_framework_position_close(
+            &partial,
+            &partial_position,
+            &partial_fill,
+            true
+        ));
+    }
+
+    #[rstest]
+    fn dust_adjustment_closes_only_the_position_residual() {
+        let (_, mut position, _, fill) = dust_close_fixture(true, Quantity::from("0.0049"));
+        position.apply(&fill);
+        let raw_residual = position.signed_decimal_qty();
+        assert!(raw_residual > Decimal::ZERO);
+
+        let adjustment = position.close_residual_as_dust(&fill);
+
+        assert_eq!(adjustment.adjustment_type, PositionAdjustmentType::Dust);
+        assert_eq!(adjustment.quantity_change, Some(-raw_residual));
+        assert!(position.is_closed());
+        assert!(position.quantity.is_zero());
+    }
+
+    #[rstest]
+    fn dust_gate_rejects_expired_and_rejected_orders() {
+        let (instrument, position, _, fill) = dust_close_fixture(true, Quantity::from("0.0049"));
+        let account_id = position.account_id;
+        let mut rejected_builder = OrderTestBuilder::new(OrderType::Market);
+        rejected_builder
+            .strategy_id(position.strategy_id)
+            .instrument_id(instrument.id())
+            .client_order_id(fill.client_order_id)
+            .side(OrderSide::Sell)
+            .quantity(Quantity::from("0.0049"))
+            .reduce_only(true)
+            .tags(vec![Ustr::from(POSITION_CLOSE_TAG)]);
+        let mut rejected = rejected_builder.build();
+        rejected.set_position_id(Some(position.id));
+        rejected
+            .apply(TestOrderEventStubs::submitted(&rejected, account_id))
+            .unwrap();
+        rejected
+            .apply(OrderEventAny::Rejected(
+                OrderRejectedSpec::builder()
+                    .trader_id(rejected.trader_id())
+                    .strategy_id(rejected.strategy_id())
+                    .instrument_id(rejected.instrument_id())
+                    .client_order_id(rejected.client_order_id())
+                    .account_id(account_id)
+                    .reason(Ustr::from("TEST_REJECT"))
+                    .build(),
+            ))
+            .unwrap();
+        assert!(!ExecutionEngine::is_complete_framework_position_close(
+            &rejected, &position, &fill, true
+        ));
+
+        let (_, partial_position, mut expired, partial_fill) =
+            dust_close_fixture(true, Quantity::from("0.0020"));
+        expired
+            .apply(OrderEventAny::Expired(
+                OrderExpiredSpec::builder()
+                    .trader_id(expired.trader_id())
+                    .strategy_id(expired.strategy_id())
+                    .instrument_id(expired.instrument_id())
+                    .client_order_id(expired.client_order_id())
+                    .venue_order_id(expired.venue_order_id().unwrap())
+                    .account_id(expired.account_id().unwrap())
+                    .build(),
+            ))
+            .unwrap();
+        assert_eq!(expired.status(), OrderStatus::Expired);
+        assert!(!ExecutionEngine::is_complete_framework_position_close(
+            &expired,
+            &partial_position,
+            &partial_fill,
+            true
+        ));
+    }
 
     #[rstest]
     fn netting_positions_open_for_report_scopes_positions_by_account() {

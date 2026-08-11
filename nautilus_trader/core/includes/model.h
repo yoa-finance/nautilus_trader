@@ -774,6 +774,10 @@ typedef enum PositionAdjustmentType {
      * Funding payment affecting position realized PnL.
      */
     FUNDING = 2,
+    /**
+     * Non-executable residual removed from a strategy position after a complete framework close.
+     */
+    DUST = 3,
 } PositionAdjustmentType;
 
 /**

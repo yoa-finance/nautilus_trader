@@ -417,6 +417,8 @@ cdef extern from "../includes/model.h":
         COMMISSION # = 1,
         # Funding payment affecting position realized PnL.
         FUNDING # = 2,
+        # Non-executable residual removed from a strategy position after a complete framework close.
+        DUST # = 3,
 
     # A record flag bit field, indicating event end and data information.
     cpdef enum RecordFlag:
