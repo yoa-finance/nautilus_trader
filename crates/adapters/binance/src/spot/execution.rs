@@ -91,6 +91,8 @@ use rust_decimal::Decimal;
 use tokio::task::JoinHandle;
 use ustr::Ustr;
 
+const ACCOUNT_RECONCILIATION_INTERVAL: Duration = Duration::from_secs(60);
+
 use super::{
     http::models::{
         BinanceSpotCancelAllItem, BinanceSpotCancelAllResult, BinanceSpotOrderListCancelResult,
@@ -598,14 +600,12 @@ impl BinanceSpotExecutionClient {
         crate::common::execution::abort_pending_tasks(&self.pending_tasks);
     }
 
-    async fn enter_http_only_execution_mode(
+    async fn abort_ws_trading_startup(
         &mut self,
         mut ws_trading: BinanceSpotWsTradingClient,
         reason: &str,
     ) {
-        log::error!(
-            "{reason}; entering Spot HTTP-only execution mode. Order commands use HTTP responses; execution reconciliation requires explicit queries until WS trading is re-enabled"
-        );
+        log::error!("{reason}; Binance Spot account state remains unavailable");
 
         if let Some(handle) = self.ws_trading_handle.lock().expect(MUTEX_POISONED).take() {
             handle.abort();
@@ -668,119 +668,194 @@ impl ExecutionClient for BinanceSpotExecutionClient {
             self.core.set_instruments_initialized();
         }
 
-        // Request initial account state
-        let account_state = self
-            .refresh_account_state()
-            .await
-            .context("failed to request Binance account state")?;
+        // Subscribe to private account events before requesting the REST baseline. State-changing
+        // messages are buffered until the baseline is emitted, then replayed in receive order.
+        let mut ws_trading = self
+            .ws_trading_client
+            .take()
+            .context("Binance Spot private user stream is required")?;
+        if let Err(error) = ws_trading.connect().await {
+            let reason = format!("Failed to connect WS trading API: {error}");
+            self.abort_ws_trading_startup(ws_trading, &reason).await;
+            anyhow::bail!(reason);
+        }
+        log::debug!("Connected to Binance Spot WS trading API");
 
-        if !account_state.balances.is_empty() {
-            log::debug!(
-                "Received account state with {} balance(s)",
-                account_state.balances.len()
+        let ws_trading_clone = ws_trading.clone();
+        let emitter = self.emitter.clone();
+        let account_id = self.core.account_id;
+        let clock = self.clock;
+        let http_client = self.http_client.clone();
+        let dispatch_state = self.dispatch_state.clone();
+        let treat_expired_as_canceled = self.config.treat_expired_as_canceled;
+        let ws_authenticated = self.ws_authenticated.clone();
+        let ws_user_data_subscribed = self.ws_user_data_subscribed.clone();
+        let (ws_setup_error_tx, mut ws_setup_error_rx) = tokio::sync::mpsc::unbounded_channel();
+        let seen_trade_ids = self.seen_trade_ids.clone();
+        let startup_buffer = Arc::new(Mutex::new(Some(Vec::new())));
+        let task_buffer = startup_buffer.clone();
+        let task_setup_error_tx = ws_setup_error_tx.clone();
+        let task_emitter = emitter.clone();
+        let task_http_client = http_client.clone();
+        let task_dispatch_state = dispatch_state.clone();
+        let task_ws_authenticated = ws_authenticated.clone();
+        let task_ws_user_data_subscribed = ws_user_data_subscribed.clone();
+        let task_seen_trade_ids = seen_trade_ids.clone();
+
+        let handle = get_runtime().spawn(async move {
+            loop {
+                match ws_trading_clone.recv().await {
+                    Some(msg) => {
+                        let buffered = if is_startup_private_state_message(&msg) {
+                            let mut buffer = task_buffer.lock().expect(MUTEX_POISONED);
+                            if let Some(messages) = buffer.as_mut() {
+                                messages.push(msg.clone());
+                                true
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        };
+                        if !buffered {
+                            dispatch_ws_trading_message(
+                                msg,
+                                &task_emitter,
+                                &task_http_client,
+                                account_id,
+                                treat_expired_as_canceled,
+                                clock,
+                                &task_dispatch_state,
+                                &task_ws_authenticated,
+                                &task_ws_user_data_subscribed,
+                                &task_setup_error_tx,
+                                &task_seen_trade_ids,
+                            );
+                        }
+                    }
+                    None => {
+                        let reason =
+                            "Binance Spot private user stream ended; fresh REST baseline required"
+                                .to_string();
+                        log::error!("{reason}");
+                        publish_adapter_fatal_shutdown(
+                            &task_dispatch_state,
+                            &task_emitter,
+                            clock,
+                            reason,
+                        );
+                        break;
+                    }
+                }
+            }
+        });
+        *self.ws_trading_handle.lock().expect(MUTEX_POISONED) = Some(handle);
+
+        let setup_result = async {
+            ws_trading
+                .session_logon()
+                .await
+                .context("WS session logon failed")?;
+            wait_for_ws_setup_response(
+                Duration::from_secs(10),
+                self.ws_authenticated.notified(),
+                &mut ws_setup_error_rx,
+                "WS session authentication timed out",
+            )
+            .await?;
+            ws_trading
+                .subscribe_user_data()
+                .await
+                .context("WS user data subscribe failed")?;
+            wait_for_ws_setup_response(
+                Duration::from_secs(10),
+                self.ws_user_data_subscribed.notified(),
+                &mut ws_setup_error_rx,
+                "WS user data subscription timed out",
+            )
+            .await
+        }
+        .await;
+        if let Err(error) = setup_result {
+            self.abort_ws_trading_startup(ws_trading, &error.to_string())
+                .await;
+            return Err(error);
+        }
+
+        let account_state = match self.refresh_account_state().await {
+            Ok(account_state) => account_state,
+            Err(error) => {
+                self.abort_ws_trading_startup(ws_trading, &error.to_string())
+                    .await;
+                return Err(error).context("failed to request Binance account state");
+            }
+        };
+        log::debug!(
+            "Received account baseline with {} balance(s)",
+            account_state.balances.len()
+        );
+        self.emitter.send_account_state(account_state);
+
+        let buffered_messages = startup_buffer
+            .lock()
+            .expect(MUTEX_POISONED)
+            .take()
+            .unwrap_or_default();
+        for msg in buffered_messages {
+            dispatch_ws_trading_message(
+                msg,
+                &emitter,
+                &http_client,
+                account_id,
+                treat_expired_as_canceled,
+                clock,
+                &dispatch_state,
+                &ws_authenticated,
+                &ws_user_data_subscribed,
+                &ws_setup_error_tx,
+                &seen_trade_ids,
             );
         }
 
-        self.emitter.send_account_state(account_state);
-
-        // Wait for account to be registered in cache before completing connect
         crate::common::execution::await_account_registered(&self.core, self.core.account_id, 30.0)
             .await?;
-
-        // Connect WS trading client (primary order transport)
-        if let Some(mut ws_trading) = self.ws_trading_client.take() {
-            match ws_trading.connect().await {
-                Ok(()) => {
-                    log::debug!("Connected to Binance Spot WS trading API");
-
-                    let ws_trading_clone = ws_trading.clone();
-                    let emitter = self.emitter.clone();
-                    let account_id = self.core.account_id;
-                    let clock = self.clock;
-                    let http_client = self.http_client.clone();
-                    let dispatch_state = self.dispatch_state.clone();
-                    let treat_expired_as_canceled = self.config.treat_expired_as_canceled;
-                    let ws_authenticated = self.ws_authenticated.clone();
-                    let ws_user_data_subscribed = self.ws_user_data_subscribed.clone();
-                    let (ws_setup_error_tx, mut ws_setup_error_rx) =
-                        tokio::sync::mpsc::unbounded_channel();
-                    let seen_trade_ids = std::sync::Arc::new(Mutex::new(FifoCache::new()));
-
-                    let handle = get_runtime().spawn(async move {
-                        loop {
-                            match ws_trading_clone.recv().await {
-                                Some(msg) => {
-                                    dispatch_ws_trading_message(
-                                        msg,
-                                        &emitter,
-                                        &http_client,
-                                        account_id,
-                                        treat_expired_as_canceled,
-                                        clock,
-                                        &dispatch_state,
-                                        &ws_authenticated,
-                                        &ws_user_data_subscribed,
-                                        &ws_setup_error_tx,
-                                        &seen_trade_ids,
-                                    );
-                                }
-                                None => {
-                                    log::warn!("WS trading dispatch loop ended");
-                                    break;
-                                }
-                            }
-                        }
-                    });
-
-                    *self.ws_trading_handle.lock().expect(MUTEX_POISONED) = Some(handle);
-
-                    if let Err(e) = ws_trading.session_logon().await {
-                        let reason = format!("WS session logon failed: {e}");
-                        self.enter_http_only_execution_mode(ws_trading, &reason)
-                            .await;
-                    } else {
-                        let auth_result = wait_for_ws_setup_response(
-                            Duration::from_secs(10),
-                            self.ws_authenticated.notified(),
-                            &mut ws_setup_error_rx,
-                            "WS session authentication timed out",
-                        )
-                        .await;
-
-                        if let Err(e) = auth_result {
-                            self.enter_http_only_execution_mode(ws_trading, &e.to_string())
-                                .await;
-                        } else if let Err(e) = ws_trading.subscribe_user_data().await {
-                            let reason = format!("WS user data subscribe failed: {e}");
-                            self.enter_http_only_execution_mode(ws_trading, &reason)
-                                .await;
-                        } else {
-                            let subscribe_result = wait_for_ws_setup_response(
-                                Duration::from_secs(10),
-                                self.ws_user_data_subscribed.notified(),
-                                &mut ws_setup_error_rx,
-                                "WS user data subscription timed out",
-                            )
-                            .await;
-
-                            if let Err(e) = subscribe_result {
-                                self.enter_http_only_execution_mode(ws_trading, &e.to_string())
-                                    .await;
-                            } else {
-                                self.ws_trading_client = Some(ws_trading);
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    let reason = format!("Failed to connect WS trading API: {e}");
-                    self.enter_http_only_execution_mode(ws_trading, &reason)
-                        .await;
-                }
-            }
-        }
+        self.ws_trading_client = Some(ws_trading);
 
         self.core.set_connected();
+
+        let reconciliation_http_client = self.http_client.clone();
+        let reconciliation_emitter = self.emitter.clone();
+        let reconciliation_dispatch_state = self.dispatch_state.clone();
+        let reconciliation_clock = self.clock;
+        let reconciliation_account_id = self.core.account_id;
+        self.spawn_task("account_state_reconciliation", async move {
+            let mut interval = tokio::time::interval(ACCOUNT_RECONCILIATION_INTERVAL);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            interval.tick().await;
+
+            loop {
+                interval.tick().await;
+                match reconciliation_http_client
+                    .request_account_state(reconciliation_account_id)
+                    .await
+                {
+                    Ok(state) => reconciliation_emitter.send_account_state(state),
+                    Err(error) => {
+                        let reason = format!(
+                            "Binance Spot account reconciliation failed: {error}; fresh baseline required"
+                        );
+                        publish_adapter_fatal_shutdown(
+                            &reconciliation_dispatch_state,
+                            &reconciliation_emitter,
+                            reconciliation_clock,
+                            reason.clone(),
+                        );
+                        anyhow::bail!(reason);
+                    }
+                }
+            }
+        });
+
         log::info!("Connected: client_id={}", self.core.client_id);
         Ok(())
     }
@@ -1671,6 +1746,16 @@ async fn wait_for_ws_setup_response(
 }
 
 #[expect(clippy::too_many_arguments)]
+fn is_startup_private_state_message(msg: &BinanceSpotWsTradingMessage) -> bool {
+    matches!(
+        msg,
+        BinanceSpotWsTradingMessage::ExecutionReport(_)
+            | BinanceSpotWsTradingMessage::AccountPosition(_)
+            | BinanceSpotWsTradingMessage::BalanceUpdate(_)
+            | BinanceSpotWsTradingMessage::ListStatus(_)
+    )
+}
+
 fn dispatch_ws_trading_message(
     msg: BinanceSpotWsTradingMessage,
     emitter: &ExecutionEventEmitter,
@@ -1920,7 +2005,10 @@ fn dispatch_ws_trading_message(
                 match http_client.request_account_state(account_id).await {
                     Ok(state) => emitter.send_account_state(state),
                     Err(e) => {
-                        log::error!("Failed to refresh account state after balance update: {e}");
+                        let reason =
+                            format!("Failed to refresh account state after balance update: {e}");
+                        log::error!("{reason}");
+                        publish_adapter_shutdown(&emitter, clock, reason);
                     }
                 }
             });
@@ -1936,7 +2024,11 @@ fn dispatch_ws_trading_message(
             ws_authenticated.notify_one();
         }
         BinanceSpotWsTradingMessage::Reconnected => {
-            log::info!("WS trading API reconnected");
+            let reason =
+                "Binance Spot private user stream reconnected; fresh REST baseline required"
+                    .to_string();
+            log::warn!("{reason}");
+            publish_adapter_fatal_shutdown(dispatch_state, emitter, clock, reason);
         }
         BinanceSpotWsTradingMessage::ServerShutdown { event_time } => {
             log::warn!(
@@ -1945,7 +2037,9 @@ fn dispatch_ws_trading_message(
         }
         BinanceSpotWsTradingMessage::Error(err) => {
             log::error!("WS trading API error: {err}");
-            let _ = ws_setup_error_tx.send(err);
+            if ws_setup_error_tx.send(err.clone()).is_err() {
+                publish_adapter_fatal_shutdown(dispatch_state, emitter, clock, err);
+            }
         }
         BinanceSpotWsTradingMessage::ProtocolAnomaly {
             template_id,
@@ -2280,6 +2374,14 @@ fn publish_adapter_fatal_shutdown(
         return;
     }
 
+    publish_adapter_shutdown(emitter, clock, reason);
+}
+
+fn publish_adapter_shutdown(
+    emitter: &ExecutionEventEmitter,
+    clock: &'static AtomicTime,
+    reason: String,
+) {
     let command = ShutdownSystem::new(
         emitter.trader_id(),
         Ustr::from("binance_spot_execution_client"),

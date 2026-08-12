@@ -113,7 +113,8 @@ pub use algorithm::{
     ImportableExecAlgorithmConfig, TwapAlgorithm, TwapAlgorithmConfig,
 };
 pub use strategy::{
-    ImportableStrategyConfig, Strategy, StrategyConfig, StrategyCore, StrategyNative,
+    ImportableStrategyConfig, InstrumentExposure, Strategy, StrategyConfig, StrategyCore,
+    StrategyNative,
 };
 
 #[cfg(feature = "python")]

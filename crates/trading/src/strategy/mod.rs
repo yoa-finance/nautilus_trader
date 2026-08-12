@@ -88,6 +88,48 @@ fn executable_position_close_quantity(
     instrument.try_floor_qty_to_increment(capped)
 }
 
+fn executable_instrument_quantity(
+    instrument: &InstrumentAny,
+    raw_quantity: Decimal,
+) -> anyhow::Result<Quantity> {
+    if raw_quantity.is_sign_negative() {
+        anyhow::bail!("instrument exposure quantity must be non-negative, was {raw_quantity}");
+    }
+
+    let quantity = instrument.try_floor_qty_to_increment(raw_quantity)?;
+    if instrument
+        .min_quantity()
+        .is_some_and(|minimum| quantity < minimum)
+    {
+        Ok(Quantity::zero(instrument.size_precision()))
+    } else {
+        Ok(quantity)
+    }
+}
+
+/// Account-level exposure for one tradable instrument.
+///
+/// Cash currency pairs resolve exposure from the account's base-asset balance. Other instrument
+/// classes resolve exposure from all open positions for the account, without strategy ownership
+/// filtering.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstrumentExposure {
+    /// Account which owns the exposure.
+    pub account_id: AccountId,
+    /// Instrument used to project and execute the exposure.
+    pub instrument_id: InstrumentId,
+    /// Shared base asset for cash currency-pair exposure.
+    pub asset: Option<Currency>,
+    /// Venue-authoritative signed quantity before instrument normalization.
+    pub raw_signed_quantity: Decimal,
+    /// Signed quantity normalized to the instrument size grid and minimum quantity.
+    pub executable_signed_quantity: Decimal,
+    /// Quantity currently available to a new order before notional and price filters.
+    pub available_order_quantity: Decimal,
+    /// Whether the normalized account exposure is non-zero.
+    pub invested: bool,
+}
+
 fn cash_asset_free(
     instrument: &InstrumentAny,
     position: &Position,
@@ -266,6 +308,89 @@ pub trait Strategy: DataActor {
         Self: StrategyNative,
     {
         StrategyNative::strategy_core(self).portfolio_api()
+    }
+
+    /// Resolves account-level exposure for `instrument_id`.
+    ///
+    /// For cash currency pairs, the account base-asset balance is authoritative. `invested` uses
+    /// total balance and instrument quantity filters only; free/locked balances and notional
+    /// filters affect order admission but never investment state. For other instruments, all open
+    /// positions belonging to the venue account are netted without strategy filtering.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the instrument or venue account is unavailable, account balances are
+    /// malformed, or instrument quantity normalization fails.
+    fn instrument_exposure(&self, instrument_id: InstrumentId) -> anyhow::Result<InstrumentExposure>
+    where
+        Self: StrategyNative,
+    {
+        let core = StrategyNative::strategy_core(self);
+        let cache = core.cache_ref();
+        let instrument = cache
+            .try_instrument(&instrument_id)
+            .map_err(anyhow::Error::from)?;
+        let account = cache
+            .account_for_venue(&instrument_id.venue)
+            .ok_or_else(|| anyhow::anyhow!("no account found for venue {}", instrument_id.venue))?;
+        let account_id = account.id();
+
+        if matches!(instrument, InstrumentAny::CurrencyPair(_))
+            && matches!(&*account, AccountAny::Cash(_))
+        {
+            let asset = instrument.base_currency().ok_or_else(|| {
+                anyhow::anyhow!("currency pair {instrument_id} has no base currency")
+            })?;
+            let (raw_quantity, free_quantity) = match account.balance(Some(asset)) {
+                Some(balance) => {
+                    if balance.currency != asset
+                        || balance.total.currency != asset
+                        || balance.free.currency != asset
+                        || balance.locked.currency != asset
+                    {
+                        anyhow::bail!(
+                            "cash account {account_id} balance currency mismatch for {asset}"
+                        );
+                    }
+                    (balance.total.as_decimal(), balance.free.as_decimal())
+                }
+                None => (Decimal::ZERO, Decimal::ZERO),
+            };
+            let executable = executable_instrument_quantity(instrument, raw_quantity)?;
+            let available = executable_instrument_quantity(instrument, free_quantity)?;
+            return Ok(InstrumentExposure {
+                account_id,
+                instrument_id,
+                asset: Some(asset),
+                raw_signed_quantity: raw_quantity,
+                executable_signed_quantity: executable.as_decimal(),
+                available_order_quantity: available.as_decimal(),
+                invested: !executable.is_zero(),
+            });
+        }
+
+        let raw_signed_quantity = cache
+            .positions_open(None, Some(&instrument_id), None, None, None)
+            .into_iter()
+            .filter(|position| position.account_id == account_id)
+            .map(|position| position.signed_decimal_qty())
+            .sum::<Decimal>();
+        let sign = if raw_signed_quantity.is_sign_negative() {
+            Decimal::NEGATIVE_ONE
+        } else {
+            Decimal::ONE
+        };
+        let executable = executable_instrument_quantity(instrument, raw_signed_quantity.abs())?;
+        let executable_signed_quantity = executable.as_decimal() * sign;
+        Ok(InstrumentExposure {
+            account_id,
+            instrument_id,
+            asset: None,
+            raw_signed_quantity,
+            executable_signed_quantity,
+            available_order_quantity: executable.as_decimal(),
+            invested: !executable.is_zero(),
+        })
     }
 
     /// Submits an order.
@@ -1392,6 +1517,53 @@ pub trait Strategy: DataActor {
     where
         Self: StrategyNative,
     {
+        let exposure = self.instrument_exposure(instrument_id)?;
+        if exposure.asset.is_some() {
+            if position_side == Some(PositionSide::Short) {
+                return Ok(DispatchOutcome::NoOp {
+                    reason: DispatchNoOpReason::NoOpenPositions,
+                });
+            }
+            if !exposure.invested {
+                log::info!("No {instrument_id} account exposure to close");
+                return Ok(DispatchOutcome::NoOp {
+                    reason: DispatchNoOpReason::NoOpenPositions,
+                });
+            }
+            if exposure.available_order_quantity.is_zero() {
+                return Ok(DispatchOutcome::NoOp {
+                    reason: DispatchNoOpReason::NoExecutablePositionQuantity,
+                });
+            }
+
+            if reduce_only == Some(false) {
+                log::warn!("Ignoring reduce_only=false for framework position close");
+            }
+            let core = StrategyNative::strategy_core_mut(self);
+            let instrument = core
+                .cache_ref()
+                .try_instrument(&instrument_id)
+                .map_err(anyhow::Error::from)?
+                .clone();
+            let quantity = Quantity::from_decimal_dp(
+                exposure.available_order_quantity,
+                instrument.size_precision(),
+            )?;
+            let order = core.order_factory().market(
+                instrument_id,
+                OrderSide::Sell,
+                quantity,
+                time_in_force,
+                Some(true),
+                quote_quantity,
+                None,
+                None,
+                Some(position_close_tags(tags)),
+                None,
+            );
+            return self.submit_order(order, None, client_id, None);
+        }
+
         let core = StrategyNative::strategy_core_mut(self);
         let strategy_id = StrategyId::from(core.actor_id().inner().as_str());
         let cache = core.cache_ref();
@@ -2717,6 +2889,27 @@ mod tests {
             assert_eq!(quantity, Quantity::from(expected));
             assert!(quantity.as_decimal() <= position_quantity);
         }
+    }
+
+    #[test]
+    fn account_exposure_quantity_uses_only_size_and_minimum_quantity() {
+        let mut instrument = match ethusdt_with_tenth_milliether_increment() {
+            InstrumentAny::CurrencyPair(instrument) => instrument,
+            _ => unreachable!(),
+        };
+        instrument.min_quantity = Some(Quantity::from("0.0001"));
+        instrument.min_notional = Some(Money::from("1000000 USDT"));
+        let instrument = InstrumentAny::CurrencyPair(instrument);
+
+        let dust =
+            executable_instrument_quantity(&instrument, Decimal::from_str("0.00009999").unwrap())
+                .unwrap();
+        let invested =
+            executable_instrument_quantity(&instrument, Decimal::from_str("0.00019999").unwrap())
+                .unwrap();
+
+        assert_eq!(dust, Quantity::from("0.0000"));
+        assert_eq!(invested, Quantity::from("0.0001"));
     }
 
     #[rstest]

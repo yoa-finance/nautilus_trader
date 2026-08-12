@@ -79,6 +79,7 @@
 
 use std::{collections::HashSet, fmt::Debug, future::Future, pin::Pin, time::Duration};
 
+use anyhow::Context;
 use indexmap::IndexSet;
 use nautilus_common::{
     actor::{Actor, DataActor, DataActorNative},
@@ -660,8 +661,9 @@ impl LiveNode {
 
         for client_id in client_ids {
             if start.elapsed() > timeout {
-                log::warn!("Reconciliation timeout reached, stopping early");
-                break;
+                anyhow::bail!(
+                    "startup reconciliation timed out after {timeout:?} before client {client_id}"
+                );
             }
 
             log_info!(
@@ -722,13 +724,11 @@ impl LiveNode {
                     }
                 }
                 Ok(None) => {
-                    log::warn!(
-                        "No mass status available from {client_id} \
-                         (likely adapter error when generating reports)"
-                    );
+                    anyhow::bail!("startup reconciliation returned no mass status for {client_id}");
                 }
                 Err(e) => {
-                    log::warn!("Failed to get mass status from {client_id}: {e}");
+                    return Err(e)
+                        .with_context(|| format!("startup reconciliation failed for {client_id}"));
                 }
             }
         }
@@ -900,8 +900,30 @@ impl LiveNode {
         }
 
         if engine_connection_status == EngineConnectionStatus::Connected {
-            // Run reconciliation now that instruments are in cache and start trader
-            self.perform_startup_reconciliation().await?;
+            // Reconcile while continuing to capture private-stream events, then apply every
+            // buffered update before strategy on_start can run.
+            drive_with_event_buffering(
+                self.perform_startup_reconciliation(),
+                &mut pending,
+                &mut time_evt_rx,
+                &mut data_evt_rx,
+                &mut data_cmd_rx,
+                &mut exec_evt_rx,
+                &mut exec_cmd_rx,
+            )
+            .await?;
+            flush_all_pending(
+                &mut pending,
+                &mut time_evt_rx,
+                &mut data_evt_rx,
+                &mut data_cmd_rx,
+                &mut exec_evt_rx,
+                &mut exec_cmd_rx,
+            );
+            debug_assert!(
+                pending.is_empty(),
+                "startup private-stream events must be applied before trader start",
+            );
             self.kernel.start_trader();
             #[cfg(feature = "plugin")]
             if let Err(e) = self.plugins.start_controllers() {
