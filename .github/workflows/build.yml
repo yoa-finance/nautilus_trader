@@ -971,7 +971,7 @@ jobs:
           rust-cache-save-if: "false"
 
       - name: Check Cargo crate publish plan
-        run: bash scripts/ci/publish-cargo-crates.sh --check --version 0.61.2
+        run: bash scripts/ci/publish-cargo-crates.sh --check --version 0.61.3
 
       - name: Authenticate to crates.io
         id: crates-io-auth
@@ -989,7 +989,7 @@ jobs:
           CARGO_PUBLISH_USER_AGENT: >-
             nautilus-trader-release
             (${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
-        run: bash scripts/ci/publish-cargo-crates.sh --version 0.61.2
+        run: bash scripts/ci/publish-cargo-crates.sh --version 0.61.3
 
   publish-wheels-master:
     runs-on: ubuntu-latest
@@ -1181,10 +1181,10 @@ jobs:
           rust-cache-save-if: "false"
 
       - name: Check Cargo crate publish plan
-        run: bash scripts/ci/publish-cargo-crates.sh --check --version 0.61.2
+        run: bash scripts/ci/publish-cargo-crates.sh --check --version 0.61.3
 
       - name: Dry-run Cargo crate publishing
-        run: bash scripts/ci/publish-cargo-crates.sh --dry-run --version 0.61.2
+        run: bash scripts/ci/publish-cargo-crates.sh --dry-run --version 0.61.3
 
   release-docs-features-preflight:
     name: release docs/features preflight

@@ -1,7 +1,7 @@
 [package]
 name = "stratneo-nautilus-analysis"
 readme = "README.md"
-version = "0.61.2"
+version = "0.61.3"
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true

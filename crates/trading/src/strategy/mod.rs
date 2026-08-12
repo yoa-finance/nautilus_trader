@@ -356,8 +356,35 @@ pub trait Strategy: DataActor {
                 }
                 None => (Decimal::ZERO, Decimal::ZERO),
             };
+            let local_pending_sell_quantity = cache
+                .orders(
+                    Some(&instrument_id.venue),
+                    None,
+                    None,
+                    None,
+                    Some(OrderSide::Sell),
+                )
+                .into_iter()
+                .filter(|order| {
+                    matches!(
+                        order.status(),
+                        OrderStatus::Initialized | OrderStatus::Submitted
+                    ) && order.account_id().is_none_or(|id| id == account_id)
+                })
+                .filter_map(|order| {
+                    let order_instrument = cache.instrument(&order.instrument_id())?;
+                    (matches!(order_instrument, InstrumentAny::CurrencyPair(_))
+                        && order_instrument.base_currency() == Some(asset))
+                    .then(|| order.leaves_qty().as_decimal())
+                })
+                .sum::<Decimal>();
+            let orderable_quantity = if local_pending_sell_quantity >= free_quantity {
+                Decimal::ZERO
+            } else {
+                free_quantity - local_pending_sell_quantity
+            };
             let executable = executable_instrument_quantity(instrument, raw_quantity)?;
-            let available = executable_instrument_quantity(instrument, free_quantity)?;
+            let available = executable_instrument_quantity(instrument, orderable_quantity)?;
             return Ok(InstrumentExposure {
                 account_id,
                 instrument_id,
