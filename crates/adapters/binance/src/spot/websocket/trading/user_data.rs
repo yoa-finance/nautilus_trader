@@ -90,6 +90,12 @@ pub struct BinanceSpotExecutionReport {
     /// Stop price.
     #[serde(rename = "P")]
     pub stop_price: String,
+    /// Trailing delta in basis points.
+    #[serde(rename = "d", default)]
+    pub trailing_delta: Option<i64>,
+    /// Time when trailing price tracking started, in milliseconds.
+    #[serde(rename = "D", default)]
+    pub trailing_time: Option<i64>,
     /// Current execution type.
     #[serde(rename = "x")]
     pub execution_type: BinanceSpotExecutionType,

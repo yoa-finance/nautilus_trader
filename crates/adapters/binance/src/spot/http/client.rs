@@ -1321,6 +1321,7 @@ impl BinanceRawSpotHttpClient {
         price: Option<&str>,
         client_order_id: Option<&str>,
         stop_price: Option<&str>,
+        trailing_delta: Option<i64>,
         iceberg_qty: Option<&str>,
     ) -> BinanceSpotHttpResult<BinanceNewOrderResponse> {
         let params = NewOrderParams {
@@ -1333,7 +1334,7 @@ impl BinanceRawSpotHttpClient {
             price: price.map(|s| s.to_string()),
             new_client_order_id: client_order_id.map(|s| s.to_string()),
             stop_price: stop_price.map(|s| s.to_string()),
-            trailing_delta: None,
+            trailing_delta,
             iceberg_qty: iceberg_qty.map(|s| s.to_string()),
             new_order_resp_type: Some(BinanceOrderResponseType::Full),
             self_trade_prevention_mode: None,
@@ -2011,7 +2012,7 @@ impl BinanceSpotHttpClient {
     /// Returns an error if:
     /// - The instrument is not cached.
     /// - The order type or time-in-force is unsupported.
-    /// - Stop orders are submitted without a trigger price.
+    /// - Conditional orders are submitted without a stop price or trailing delta.
     /// - The request fails or SBE decoding fails.
     #[expect(clippy::too_many_arguments)]
     pub async fn submit_order(
@@ -2024,7 +2025,8 @@ impl BinanceSpotHttpClient {
         quantity: Quantity,
         time_in_force: TimeInForce,
         price: Option<Price>,
-        trigger_price: Option<Price>,
+        stop_price: Option<Price>,
+        trailing_delta: Option<i64>,
         post_only: bool,
         quote_quantity: bool,
         display_qty: Option<Quantity>,
@@ -2039,7 +2041,8 @@ impl BinanceSpotHttpClient {
                 quantity,
                 time_in_force,
                 price,
-                trigger_price,
+                stop_price,
+                trailing_delta,
                 post_only,
                 quote_quantity,
                 display_qty,
@@ -2055,7 +2058,7 @@ impl BinanceSpotHttpClient {
     /// Returns an error if:
     /// - The instrument is not cached.
     /// - The order type or time-in-force is unsupported.
-    /// - Stop orders are submitted without a trigger price.
+    /// - Conditional orders are submitted without a stop price or trailing delta.
     /// - The request fails or SBE decoding fails.
     #[expect(clippy::too_many_arguments)]
     pub async fn submit_order_with_fills(
@@ -2068,7 +2071,8 @@ impl BinanceSpotHttpClient {
         quantity: Quantity,
         time_in_force: TimeInForce,
         price: Option<Price>,
-        trigger_price: Option<Price>,
+        stop_price: Option<Price>,
+        trailing_delta: Option<i64>,
         post_only: bool,
         quote_quantity: bool,
         display_qty: Option<Quantity>,
@@ -2084,6 +2088,21 @@ impl BinanceSpotHttpClient {
         let binance_order_type = order_type_to_binance_spot(order_type, post_only)
             .map_err(|e| Self::command_validation_error(e.to_string()))?;
 
+        match (order_type, trailing_delta) {
+            (OrderType::TrailingStopMarket, Some(delta)) if delta > 0 => {}
+            (OrderType::TrailingStopMarket, _) => {
+                return Err(Self::command_validation_error(
+                    "Binance Spot trailing stop orders require a positive trailingDelta",
+                ));
+            }
+            (_, Some(_)) => {
+                return Err(Self::command_validation_error(
+                    "Binance Spot trailingDelta is only valid for trailing stop orders",
+                ));
+            }
+            (_, None) => {}
+        }
+
         // Validate trigger price for conditional orders
         let requires_trigger = matches!(
             order_type,
@@ -2093,7 +2112,7 @@ impl BinanceSpotHttpClient {
                 | OrderType::LimitIfTouched
         );
 
-        if requires_trigger && trigger_price.is_none() {
+        if requires_trigger && stop_price.is_none() {
             return Err(Self::command_validation_error(
                 "Conditional orders require a trigger price",
             ));
@@ -2132,7 +2151,7 @@ impl BinanceSpotHttpClient {
 
         let qty_str = quantity.to_string();
         let price_str = price.map(|p| p.to_string());
-        let stop_price_str = trigger_price.map(|p| p.to_string());
+        let stop_price_str = stop_price.map(|p| p.to_string());
         let iceberg_qty_str = display_qty.map(|q| q.to_string());
         let client_id_str =
             encode_binance_client_order_id(&client_order_id, BINANCE_NAUTILUS_SPOT_BROKER_ID)?;
@@ -2161,6 +2180,7 @@ impl BinanceSpotHttpClient {
                 price_str.as_deref(),
                 Some(&client_id_str),
                 stop_price_str.as_deref(),
+                trailing_delta,
                 iceberg_qty_str.as_deref(),
             )
             .await?;

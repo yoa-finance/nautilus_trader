@@ -20,7 +20,10 @@
 
 use nautilus_core::{UUID4, UnixNanos};
 use nautilus_model::{
-    enums::{AccountType, LiquiditySide, OrderSide, OrderStatus, OrderType, TimeInForce},
+    enums::{
+        AccountType, LiquiditySide, OrderSide, OrderStatus, OrderType, TimeInForce,
+        TrailingOffsetType, TriggerType,
+    },
     events::AccountState,
     identifiers::{AccountId, InstrumentId, TradeId, VenueOrderId},
     reports::{FillReport, OrderStatusReport},
@@ -73,7 +76,8 @@ pub fn parse_spot_exec_report_to_order_status(
     };
 
     let order_status = parse_order_status(msg.order_status, treat_expired_as_canceled);
-    let order_type = parse_spot_order_type(&msg.order_type);
+    let trailing_delta = msg.trailing_delta.filter(|delta| *delta > 0);
+    let order_type = parse_spot_order_type(&msg.order_type, trailing_delta.is_some());
     let time_in_force = parse_time_in_force(msg.time_in_force);
 
     let quantity =
@@ -122,12 +126,18 @@ pub fn parse_spot_exec_report_to_order_status(
     report.post_only = msg.order_type == "LIMIT_MAKER";
 
     let stop_price = parse_required_decimal(&msg.stop_price, "stop_price")?;
-    if stop_price > Decimal::ZERO {
+    if trailing_delta.is_none() && stop_price > Decimal::ZERO {
         report.trigger_price = Some(parse_required_price_at_precision(
             &msg.stop_price,
             price_precision,
             "stop_price",
         )?);
+    }
+
+    if let Some(delta) = trailing_delta {
+        report.trigger_type = Some(TriggerType::LastPrice);
+        report.trailing_offset = Some(Decimal::from(delta));
+        report.trailing_offset_type = TrailingOffsetType::BasisPoints;
     }
 
     if let Some(avg) = avg_px {
@@ -270,7 +280,11 @@ fn parse_order_status(status: BinanceOrderStatus, treat_expired_as_canceled: boo
     }
 }
 
-fn parse_spot_order_type(order_type: &str) -> OrderType {
+fn parse_spot_order_type(order_type: &str, is_trailing: bool) -> OrderType {
+    if is_trailing && matches!(order_type, "STOP_LOSS" | "TAKE_PROFIT") {
+        return OrderType::TrailingStopMarket;
+    }
+
     match order_type {
         "LIMIT" | "LIMIT_MAKER" => OrderType::Limit,
         "MARKET" => OrderType::Market,
@@ -515,6 +529,41 @@ mod tests {
             Some(Price::new(2450.0, PRICE_PRECISION))
         );
         assert_eq!(report.price, Some(Price::new(2400.0, PRICE_PRECISION)));
+    }
+
+    #[rstest]
+    fn test_parse_execution_report_trailing_stop_uses_basis_points() {
+        let json = r#"{
+            "e":"executionReport","E":1709654400000,"s":"ETHUSDT",
+            "c":"x-TD67BGP9-T0000000000000","S":"SELL","o":"STOP_LOSS",
+            "f":"GTC","q":"0.5","p":"0","P":"2450.00","d":250,
+            "D":1709654400000,"x":"NEW","X":"NEW","r":"NONE","i":12345680,
+            "l":"0","z":"0","L":"0","n":"0","N":null,
+            "T":1709654400000,"t":-1,"w":false,"m":false,
+            "O":1709654400000,"Z":"0","C":""
+        }"#;
+        let msg: BinanceSpotExecutionReport = serde_json::from_str(json).unwrap();
+
+        let report = parse_spot_exec_report_to_order_status(
+            &msg,
+            instrument_id(),
+            PRICE_PRECISION,
+            SIZE_PRECISION,
+            AccountId::from("BINANCE-001"),
+            false,
+            UnixNanos::from(1_000_000_000u64),
+        )
+        .unwrap();
+
+        assert_eq!(report.order_type, OrderType::TrailingStopMarket);
+        assert_eq!(report.trailing_offset, Some(Decimal::from(250)));
+        assert_eq!(report.trailing_offset_type, TrailingOffsetType::BasisPoints);
+        assert_eq!(report.trigger_type, Some(TriggerType::LastPrice));
+        assert!(report.trigger_price.is_none());
+        assert_eq!(
+            parse_spot_order_type("STOP_LOSS", false),
+            OrderType::StopMarket
+        );
     }
 
     #[rstest]

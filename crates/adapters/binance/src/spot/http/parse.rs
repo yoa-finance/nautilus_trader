@@ -307,7 +307,7 @@ pub fn decode_klines(buf: &[u8]) -> Result<BinanceKlines, SbeDecodeError> {
 /// These represent explicit reads and advances up to the last field we extract.
 const NEW_ORDER_FULL_FIELDS_END: usize = 135;
 const CANCEL_ORDER_FIELDS_END: usize = 63;
-const ORDER_FIELDS_END: usize = 104;
+const ORDER_FIELDS_END: usize = 134;
 
 /// Sentinel value for a null `expiryReason` in schema 3:4.
 const EXPIRY_REASON_NULL: u8 = 0xff;
@@ -388,8 +388,8 @@ pub fn decode_new_order_full(buf: &[u8]) -> Result<BinanceNewOrderResponse, SbeD
     let order_type = cursor.read_u8()?.into();
     let side = cursor.read_u8()?.into();
     let stop_price_mantissa = cursor.read_optional_i64_le()?;
-
-    cursor.advance(16)?; // Skip trailing_delta (8) + trailing_time (8)
+    let trailing_delta = cursor.read_optional_i64_le()?;
+    let trailing_time = cursor.read_optional_i64_le()?;
     let working_time = cursor.read_optional_i64_le()?;
 
     cursor.advance(23)?; // Skip iceberg to used_sor
@@ -429,6 +429,8 @@ pub fn decode_new_order_full(buf: &[u8]) -> Result<BinanceNewOrderResponse, SbeD
         order_type,
         side,
         stop_price_mantissa,
+        trailing_delta,
+        trailing_time,
         working_time,
         self_trade_prevention_mode,
         client_order_id,
@@ -527,12 +529,16 @@ pub fn decode_order(buf: &[u8]) -> Result<BinanceOrderResponse, SbeDecodeError> 
     let order_type = cursor.read_u8()?.into();
     let side = cursor.read_u8()?.into();
     let stop_price_mantissa = cursor.read_optional_i64_le()?;
+    let trailing_delta = cursor.read_optional_i64_le()?;
+    let trailing_time = cursor.read_optional_i64_le()?;
     let iceberg_qty_mantissa = cursor.read_optional_i64_le()?;
     let time = cursor.read_i64_le()?;
     let update_time = cursor.read_i64_le()?;
     let is_working = BoolEnum::from(cursor.read_u8()?) == BoolEnum::True;
     let working_time = cursor.read_optional_i64_le()?;
     let orig_quote_order_qty_mantissa = cursor.read_i64_le()?;
+
+    cursor.advance(14)?; // Skip strategy_id to working_floor
     let self_trade_prevention_mode = cursor.read_u8()?.into();
 
     let expiry_reason = read_trailing_expiry_reason(
@@ -559,6 +565,8 @@ pub fn decode_order(buf: &[u8]) -> Result<BinanceOrderResponse, SbeDecodeError> 
         order_type,
         side,
         stop_price_mantissa,
+        trailing_delta,
+        trailing_time,
         iceberg_qty_mantissa,
         time,
         update_time,
@@ -626,8 +634,8 @@ pub fn decode_orders(buf: &[u8]) -> Result<Vec<BinanceOrderResponse>, SbeDecodeE
         let order_type = cursor.read_u8()?.into();
         let side = cursor.read_u8()?.into();
         let stop_price_mantissa = cursor.read_optional_i64_le()?;
-
-        cursor.advance(16)?; // Skip trailing_delta + trailing_time
+        let trailing_delta = cursor.read_optional_i64_le()?;
+        let trailing_time = cursor.read_optional_i64_le()?;
         let iceberg_qty_mantissa = cursor.read_optional_i64_le()?;
         let time = cursor.read_i64_le()?;
         let update_time = cursor.read_i64_le()?;
@@ -662,6 +670,8 @@ pub fn decode_orders(buf: &[u8]) -> Result<Vec<BinanceOrderResponse>, SbeDecodeE
             order_type,
             side,
             stop_price_mantissa,
+            trailing_delta,
+            trailing_time,
             iceberg_qty_mantissa,
             time,
             update_time,
@@ -1547,12 +1557,15 @@ mod tests {
         buf.push(1); // order_type (LIMIT)
         buf.push(1); // side (BUY)
         buf.extend_from_slice(&i64::MIN.to_le_bytes()); // stop_price (None)
+        buf.extend_from_slice(&i64::MIN.to_le_bytes()); // trailing_delta (None)
+        buf.extend_from_slice(&i64::MIN.to_le_bytes()); // trailing_time (None)
         buf.extend_from_slice(&i64::MIN.to_le_bytes()); // iceberg_qty (None)
         buf.extend_from_slice(&1734300000000i64.to_le_bytes()); // time
         buf.extend_from_slice(&1734300001000i64.to_le_bytes()); // update_time
         buf.push(1); // is_working (true)
         buf.extend_from_slice(&1734300000500i64.to_le_bytes()); // working_time
         buf.extend_from_slice(&0i64.to_le_bytes()); // orig_quote_order_qty
+        buf.extend_from_slice(&[0u8; 14]); // strategy_id to working_floor
         buf.push(0); // self_trade_prevention_mode
 
         let block_end = HEADER_LENGTH + block_length as usize;
@@ -1614,12 +1627,15 @@ mod tests {
         buf.push(1); // order_type (LIMIT)
         buf.push(1); // side (BUY)
         buf.extend_from_slice(&i64::MIN.to_le_bytes()); // stop_price (None)
+        buf.extend_from_slice(&i64::MIN.to_le_bytes()); // trailing_delta (None)
+        buf.extend_from_slice(&i64::MIN.to_le_bytes()); // trailing_time (None)
         buf.extend_from_slice(&i64::MIN.to_le_bytes()); // iceberg_qty (None)
         buf.extend_from_slice(&1734300000000i64.to_le_bytes()); // time
         buf.extend_from_slice(&1734300001000i64.to_le_bytes()); // update_time
         buf.push(1); // is_working (true)
         buf.extend_from_slice(&1734300000500i64.to_le_bytes()); // working_time
         buf.extend_from_slice(&0i64.to_le_bytes()); // orig_quote_order_qty_mantissa
+        buf.extend_from_slice(&[0u8; 14]); // strategy_id to working_floor
         buf.push(0); // self_trade_prevention_mode
 
         // Pad to 153 bytes
@@ -1671,12 +1687,15 @@ mod tests {
         buf.push(1); // order_type (LIMIT)
         buf.push(1); // side (BUY)
         buf.extend_from_slice(&i64::MIN.to_le_bytes()); // stop_price (None)
+        buf.extend_from_slice(&i64::MIN.to_le_bytes()); // trailing_delta (None)
+        buf.extend_from_slice(&i64::MIN.to_le_bytes()); // trailing_time (None)
         buf.extend_from_slice(&i64::MIN.to_le_bytes()); // iceberg_qty (None)
         buf.extend_from_slice(&1734300000000i64.to_le_bytes()); // time
         buf.extend_from_slice(&1734300001000i64.to_le_bytes()); // update_time
         buf.push(1); // is_working (true)
         buf.extend_from_slice(&1734300000500i64.to_le_bytes()); // working_time
         buf.extend_from_slice(&0i64.to_le_bytes()); // orig_quote_order_qty
+        buf.extend_from_slice(&[0u8; 14]); // strategy_id to working_floor
         buf.push(0); // self_trade_prevention_mode
 
         while buf.len() < 8 + FUTURE_BLOCK_LENGTH as usize {
@@ -1719,7 +1738,8 @@ mod tests {
         buf.push(1); // order_type
         buf.push(1); // side
         buf.extend_from_slice(&i64::MIN.to_le_bytes()); // stop_price (None)
-        buf.extend_from_slice(&[0u8; 16]); // trailing_delta + trailing_time
+        buf.extend_from_slice(&i64::MIN.to_le_bytes()); // trailing_delta (None)
+        buf.extend_from_slice(&i64::MIN.to_le_bytes()); // trailing_time (None)
         buf.extend_from_slice(&i64::MIN.to_le_bytes()); // iceberg_qty (None)
         buf.extend_from_slice(&1734300000000i64.to_le_bytes()); // time
         buf.extend_from_slice(&1734300000000i64.to_le_bytes()); // update_time
@@ -1749,7 +1769,8 @@ mod tests {
         buf.push(1); // order_type
         buf.push(2); // side (SELL)
         buf.extend_from_slice(&i64::MIN.to_le_bytes()); // stop_price (None)
-        buf.extend_from_slice(&[0u8; 16]); // trailing_delta + trailing_time
+        buf.extend_from_slice(&i64::MIN.to_le_bytes()); // trailing_delta (None)
+        buf.extend_from_slice(&i64::MIN.to_le_bytes()); // trailing_time (None)
         buf.extend_from_slice(&i64::MIN.to_le_bytes()); // iceberg_qty (None)
         buf.extend_from_slice(&1734300001000i64.to_le_bytes()); // time
         buf.extend_from_slice(&1734300001000i64.to_le_bytes()); // update_time
@@ -2415,7 +2436,8 @@ mod tests {
         buf.push(1); // order_type (LIMIT)
         buf.push(1); // side (BUY)
         buf.extend_from_slice(&12_000i64.to_le_bytes()); // stop_price
-        buf.extend_from_slice(&[0u8; 16]); // trailing_delta + trailing_time
+        buf.extend_from_slice(&i64::MIN.to_le_bytes()); // trailing_delta (None)
+        buf.extend_from_slice(&i64::MIN.to_le_bytes()); // trailing_time (None)
         buf.extend_from_slice(&1_700_000_000_000_500i64.to_le_bytes()); // working_time
         buf.extend_from_slice(&[0u8; 23]); // iceberg to used_sor
         buf.push(0); // self_trade_prevention_mode
@@ -2484,7 +2506,8 @@ mod tests {
         buf.push(1); // order_type (LIMIT)
         buf.push(1); // side (BUY)
         buf.extend_from_slice(&12_000i64.to_le_bytes()); // stop_price
-        buf.extend_from_slice(&[0u8; 16]); // trailing_delta + trailing_time
+        buf.extend_from_slice(&i64::MIN.to_le_bytes()); // trailing_delta (None)
+        buf.extend_from_slice(&i64::MIN.to_le_bytes()); // trailing_time (None)
         buf.extend_from_slice(&1_700_000_000_000_500i64.to_le_bytes()); // working_time
         buf.extend_from_slice(&[0u8; 23]); // iceberg to used_sor
         buf.push(0); // self_trade_prevention_mode

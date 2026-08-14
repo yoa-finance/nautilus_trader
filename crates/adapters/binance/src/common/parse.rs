@@ -26,7 +26,7 @@ use nautilus_model::{
     data::{Bar, BarSpecification, BarType, TradeTick},
     enums::{
         AggressorSide, BarAggregation, LiquiditySide, OrderSide, OrderStatus, OrderType,
-        TimeInForce, TriggerType,
+        TimeInForce, TrailingOffsetType, TriggerType,
     },
     identifiers::{AccountId, InstrumentId, OrderListId, Symbol, TradeId, Venue, VenueOrderId},
     instruments::{
@@ -643,6 +643,19 @@ pub const fn map_order_type_sbe(order_type: SbeOrderType) -> OrderType {
     }
 }
 
+fn map_spot_order_type_sbe(order_type: SbeOrderType, trailing_delta: Option<i64>) -> OrderType {
+    if trailing_delta.is_some_and(|delta| delta > 0)
+        && matches!(
+            order_type,
+            SbeOrderType::StopLoss | SbeOrderType::TakeProfit
+        )
+    {
+        OrderType::TrailingStopMarket
+    } else {
+        map_order_type_sbe(order_type)
+    }
+}
+
 /// Maps Binance SBE order side to Nautilus order side.
 #[must_use]
 pub const fn map_order_side_sbe(side: SbeOrderSide) -> OrderSide {
@@ -719,27 +732,34 @@ pub fn parse_order_status_report_sbe(
         None
     };
 
-    // Parse trigger price for stop orders
-    let trigger_price = order.stop_price_mantissa.and_then(|mantissa| {
-        if mantissa != 0 {
-            Some(Price::from_mantissa_exponent(
-                mantissa,
-                order.price_exponent,
-                price_precision,
-            ))
-        } else {
-            None
-        }
-    });
+    let trailing_delta = order.trailing_delta.filter(|delta| *delta > 0);
+    // Binance stopPrice is an activation price for trailing orders, not a
+    // Nautilus dynamic trigger price.
+    let trigger_price = trailing_delta
+        .is_none()
+        .then(|| {
+            order.stop_price_mantissa.and_then(|mantissa| {
+                if mantissa != 0 {
+                    Some(Price::from_mantissa_exponent(
+                        mantissa,
+                        order.price_exponent,
+                        price_precision,
+                    ))
+                } else {
+                    None
+                }
+            })
+        })
+        .flatten();
 
     // Map enums
     let order_status = map_order_status_sbe(order.status);
-    let order_type = map_order_type_sbe(order.order_type);
+    let order_type = map_spot_order_type_sbe(order.order_type, trailing_delta);
     let order_side = map_order_side_sbe(order.side);
     let time_in_force = map_time_in_force_sbe(order.time_in_force);
 
     // Determine trigger type for stop orders
-    let trigger_type = if trigger_price.is_some() {
+    let trigger_type = if trigger_price.is_some() || trailing_delta.is_some() {
         Some(TriggerType::LastPrice)
     } else {
         None
@@ -817,6 +837,12 @@ pub fn parse_order_status_report_sbe(
         report = report.with_trigger_type(tt);
     }
 
+    if let Some(delta) = trailing_delta {
+        report = report
+            .with_trailing_offset(Decimal::from(delta))
+            .with_trailing_offset_type(TrailingOffsetType::BasisPoints);
+    }
+
     if let Some(oli) = order_list_id {
         report = report.with_order_list_id(oli);
     }
@@ -884,24 +910,32 @@ pub fn parse_new_order_response_sbe(
         None
     };
 
-    let trigger_price = response.stop_price_mantissa.and_then(|mantissa| {
-        if mantissa != 0 {
-            Some(Price::from_mantissa_exponent(
-                mantissa,
-                response.price_exponent,
-                price_precision,
-            ))
-        } else {
-            None
-        }
-    });
+    let trailing_delta = response.trailing_delta.filter(|delta| *delta > 0);
+    // Binance stopPrice is an activation price for trailing orders, not a
+    // Nautilus dynamic trigger price.
+    let trigger_price = trailing_delta
+        .is_none()
+        .then(|| {
+            response.stop_price_mantissa.and_then(|mantissa| {
+                if mantissa != 0 {
+                    Some(Price::from_mantissa_exponent(
+                        mantissa,
+                        response.price_exponent,
+                        price_precision,
+                    ))
+                } else {
+                    None
+                }
+            })
+        })
+        .flatten();
 
     let order_status = map_order_status_sbe(response.status);
-    let order_type = map_order_type_sbe(response.order_type);
+    let order_type = map_spot_order_type_sbe(response.order_type, trailing_delta);
     let order_side = map_order_side_sbe(response.side);
     let time_in_force = map_time_in_force_sbe(response.time_in_force);
 
-    let trigger_type = if trigger_price.is_some() {
+    let trigger_type = if trigger_price.is_some() || trailing_delta.is_some() {
         Some(TriggerType::LastPrice)
     } else {
         None
@@ -961,6 +995,12 @@ pub fn parse_new_order_response_sbe(
 
     if let Some(tt) = trigger_type {
         report = report.with_trigger_type(tt);
+    }
+
+    if let Some(delta) = trailing_delta {
+        report = report
+            .with_trailing_offset(Decimal::from(delta))
+            .with_trailing_offset_type(TrailingOffsetType::BasisPoints);
     }
 
     if let Some(oli) = order_list_id {
@@ -1584,6 +1624,8 @@ mod tests {
             order_type: SbeOrderType::LimitMaker,
             side: SbeOrderSide::Buy,
             stop_price_mantissa: None,
+            trailing_delta: None,
+            trailing_time: None,
             iceberg_qty_mantissa: None,
             time: 1_700_000_000_000_000,
             update_time: 1_700_000_000_100_000,
@@ -1652,6 +1694,8 @@ mod tests {
             order_type: SbeOrderType::StopLossLimit,
             side: SbeOrderSide::Sell,
             stop_price_mantissa: Some(12_000),
+            trailing_delta: None,
+            trailing_time: None,
             working_time: Some(1_700_000_000_000_000),
             self_trade_prevention_mode:
                 crate::spot::sbe::spot::self_trade_prevention_mode::SelfTradePreventionMode::None,
@@ -1696,6 +1740,56 @@ mod tests {
         assert_eq!(
             report.ts_last,
             UnixNanos::from(1_700_000_000_000_000_000u64)
+        );
+    }
+
+    #[rstest]
+    fn test_parse_spot_trailing_stop_response_sbe() {
+        let instrument = sample_spot_instrument();
+        let response = BinanceNewOrderResponse {
+            price_exponent: -2,
+            qty_exponent: -4,
+            order_id: 100,
+            order_list_id: None,
+            transact_time: 1_700_000_000_000_000,
+            price_mantissa: 0,
+            orig_qty_mantissa: 20_000,
+            executed_qty_mantissa: 0,
+            cummulative_quote_qty_mantissa: 0,
+            status: SbeOrderStatus::New,
+            time_in_force: SbeTimeInForce::Gtc,
+            order_type: SbeOrderType::StopLoss,
+            side: SbeOrderSide::Sell,
+            stop_price_mantissa: Some(12_000),
+            trailing_delta: Some(250),
+            trailing_time: Some(1_700_000_000_000_000),
+            working_time: Some(1_700_000_000_000_000),
+            self_trade_prevention_mode:
+                crate::spot::sbe::spot::self_trade_prevention_mode::SelfTradePreventionMode::None,
+            client_order_id: "client-trailing".to_string(),
+            symbol: "ETHUSDT".to_string(),
+            fills: vec![],
+            expiry_reason: None,
+        };
+        let ts_init = UnixNanos::from(1_700_000_001_000_000_000u64);
+
+        let report = parse_new_order_response_sbe(
+            &response,
+            sample_account_id(),
+            &instrument,
+            BINANCE_NAUTILUS_SPOT_BROKER_ID,
+            ts_init,
+        )
+        .unwrap();
+
+        assert_eq!(report.order_type, OrderType::TrailingStopMarket);
+        assert_eq!(report.trailing_offset, Some(Decimal::from(250)));
+        assert_eq!(report.trailing_offset_type, TrailingOffsetType::BasisPoints);
+        assert_eq!(report.trigger_type, Some(TriggerType::LastPrice));
+        assert!(report.trigger_price.is_none());
+        assert_eq!(
+            map_spot_order_type_sbe(SbeOrderType::StopLoss, None),
+            OrderType::StopMarket
         );
     }
 

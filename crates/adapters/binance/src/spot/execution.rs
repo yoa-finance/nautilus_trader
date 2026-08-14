@@ -50,6 +50,7 @@ use nautilus_model::{
     accounts::AccountAny,
     enums::{
         LiquiditySide, OmsType, OrderListType, OrderSide, OrderStatus, OrderType, TimeInForce,
+        TrailingOffsetType,
     },
     events::{
         AccountState, OrderAccepted, OrderCancelRejected, OrderCanceled, OrderEventAny,
@@ -75,9 +76,11 @@ pub fn binance_spot_execution_capabilities() -> ExecutionClientCapabilities {
             OrderType::StopLimit,
             OrderType::MarketIfTouched,
             OrderType::LimitIfTouched,
+            OrderType::TrailingStopMarket,
         ],
         order_list_types: vec![OrderListType::Oco, OrderListType::Opoco],
         time_in_force: vec![TimeInForce::Gtc, TimeInForce::Ioc, TimeInForce::Fok],
+        trailing_offset_types: vec![TrailingOffsetType::BasisPoints],
         submit_order: true,
         submit_order_list: true,
         modify_order: true,
@@ -131,6 +134,7 @@ use crate::{
     },
     config::BinanceExecClientConfig,
     spot::{
+        conversions::trailing_offset_to_delta,
         enums::{
             BinanceCancelReplaceMode, BinanceOrderResponseType, BinanceSpotOrderType,
             order_type_to_binance_spot, time_in_force_to_binance_spot,
@@ -153,6 +157,24 @@ const ORDER_LIST_CANCEL_PARAM: &str = "order_list_cancel";
 const ORDER_LIST_CLIENT_ORDER_ID_PARAM: &str = "list_client_order_id";
 const ORDER_LIST_ID_PARAM: &str = "order_list_id";
 const BINANCE_SPOT_SUBMIT_ACK_TIMEOUT_MS: u64 = 5_000;
+
+fn trailing_delta_for_order(order: &impl Order) -> anyhow::Result<Option<i64>> {
+    if order.order_type() != OrderType::TrailingStopMarket {
+        return Ok(None);
+    }
+
+    let offset = order
+        .trailing_offset()
+        .context("Binance Spot trailing stop is missing trailing_offset")?;
+    let offset_type = order
+        .trailing_offset_type()
+        .context("Binance Spot trailing stop is missing trailing_offset_type")?;
+    let trigger_type = order
+        .trigger_type()
+        .context("Binance Spot trailing stop is missing trigger_type")?;
+
+    trailing_offset_to_delta(offset, offset_type, trigger_type).map(Some)
+}
 
 /// Live execution client for Binance Spot trading.
 ///
@@ -279,7 +301,11 @@ impl BinanceSpotExecutionClient {
             && dispatch_running
     }
 
-    fn submit_order_internal(&self, cmd: &SubmitOrder) -> anyhow::Result<()> {
+    fn submit_order_internal(
+        &self,
+        cmd: &SubmitOrder,
+        trailing_delta: Option<i64>,
+    ) -> anyhow::Result<()> {
         let order = self.core.cache().try_order_owned(&cmd.client_order_id)?;
 
         let event_emitter = self.emitter.clone();
@@ -293,7 +319,11 @@ impl BinanceSpotExecutionClient {
         let quantity = order.quantity();
         let time_in_force = order.time_in_force();
         let price = order.price();
-        let trigger_price = order.trigger_price();
+        let stop_price = if trailing_delta.is_some() {
+            order.activation_price()
+        } else {
+            order.trigger_price()
+        };
         let is_post_only = order.is_post_only();
         let is_quote_quantity = order.is_quote_quantity();
         let display_qty = order.display_qty();
@@ -329,7 +359,8 @@ impl BinanceSpotExecutionClient {
                     quantity,
                     time_in_force,
                     price,
-                    trigger_price,
+                    stop_price,
+                    trailing_delta,
                     is_post_only,
                     is_quote_quantity,
                     display_qty,
@@ -1149,10 +1180,12 @@ impl ExecutionClient for BinanceSpotExecutionClient {
             return Ok(());
         }
 
+        let trailing_delta = trailing_delta_for_order(&order)?;
+
         log::debug!("OrderSubmitted client_order_id={}", order.client_order_id());
         self.emitter.emit_order_submitted(&order);
 
-        self.submit_order_internal(&cmd)
+        self.submit_order_internal(&cmd, trailing_delta)
     }
 
     fn submit_order_list(&self, cmd: SubmitOrderList) -> anyhow::Result<()> {
@@ -3428,7 +3461,6 @@ fn order_type_accepts_update_trigger(order_type: OrderType) -> bool {
             | OrderType::StopLimit
             | OrderType::MarketIfTouched
             | OrderType::LimitIfTouched
-            | OrderType::TrailingStopMarket
             | OrderType::TrailingStopLimit
     )
 }

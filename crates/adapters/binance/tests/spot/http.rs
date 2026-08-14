@@ -263,16 +263,19 @@ fn build_single_order_response(
     buf.push(1); // order_type (LIMIT)
     buf.push(1); // side (BUY)
     buf.extend_from_slice(&i64::MIN.to_le_bytes()); // stop_price (None)
+    buf.extend_from_slice(&i64::MIN.to_le_bytes()); // trailing_delta (None)
+    buf.extend_from_slice(&i64::MIN.to_le_bytes()); // trailing_time (None)
     buf.extend_from_slice(&i64::MIN.to_le_bytes()); // iceberg_qty (None)
     buf.extend_from_slice(&1734300000000i64.to_le_bytes()); // time
     buf.extend_from_slice(&1734300000000i64.to_le_bytes()); // update_time
     buf.push(1); // is_working
     buf.extend_from_slice(&1734300000000i64.to_le_bytes()); // working_time
     buf.extend_from_slice(&0i64.to_le_bytes()); // orig_quote_order_qty
+    buf.extend_from_slice(&[0u8; 14]); // strategy_id to working_floor
     buf.push(0); // self_trade_prevention_mode
 
-    // Pad to ORDER_BLOCK_LENGTH (153 bytes) - we've written 104 bytes of fixed data
-    let fixed_written = 104;
+    // Pad to ORDER_BLOCK_LENGTH (153 bytes) - we've written 134 bytes of fixed data
+    let fixed_written = 134;
     buf.extend(std::iter::repeat_n(
         0u8,
         ORDER_BLOCK_LENGTH as usize - fixed_written,
@@ -413,7 +416,8 @@ fn build_orders_response(orders: &[(i64, &str, &str, i64, i64)]) -> Vec<u8> {
         buf.push(1); // order_type (LIMIT)
         buf.push(1); // side (BUY)
         buf.extend_from_slice(&i64::MIN.to_le_bytes()); // stop_price (None)
-        buf.extend_from_slice(&[0u8; 16]); // trailing_delta + trailing_time
+        buf.extend_from_slice(&i64::MIN.to_le_bytes()); // trailing_delta (None)
+        buf.extend_from_slice(&i64::MIN.to_le_bytes()); // trailing_time (None)
         buf.extend_from_slice(&i64::MIN.to_le_bytes()); // iceberg_qty (None)
         buf.extend_from_slice(&1734300000000i64.to_le_bytes()); // time
         buf.extend_from_slice(&1734300000000i64.to_le_bytes()); // update_time
@@ -499,7 +503,8 @@ fn build_new_order_response(
     buf.push(1); // order_type (LIMIT)
     buf.push(1); // side (BUY)
     buf.extend_from_slice(&i64::MIN.to_le_bytes()); // stop_price (None)
-    buf.extend_from_slice(&[0u8; 16]); // trailing_delta + trailing_time
+    buf.extend_from_slice(&i64::MIN.to_le_bytes()); // trailing_delta (None)
+    buf.extend_from_slice(&i64::MIN.to_le_bytes()); // trailing_time (None)
     buf.extend_from_slice(&1734300000000i64.to_le_bytes()); // working_time
     buf.extend_from_slice(&[0u8; 23]); // iceberg to used_sor
     buf.push(0); // self_trade_prevention_mode
@@ -591,6 +596,7 @@ fn build_cancel_open_orders_response(orders: &[(i64, &str, &str, &str, i64, i64)
 struct TestServerState {
     request_count: Arc<std::sync::Mutex<usize>>,
     rate_limit_after: usize,
+    last_new_order_params: Arc<std::sync::Mutex<Option<HashMap<String, String>>>>,
 }
 
 impl TestServerState {
@@ -598,6 +604,7 @@ impl TestServerState {
         Self {
             request_count: Arc::new(std::sync::Mutex::new(0)),
             rate_limit_after: limit,
+            last_new_order_params: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -988,6 +995,7 @@ fn create_router(state: Arc<TestServerState>) -> Router {
                         if state.increment_and_check() {
                             return rate_limit_response().into_response();
                         }
+                        *state.last_new_order_params.lock().unwrap() = Some(params.clone());
                         let symbol = params
                             .get("symbol")
                             .cloned()
@@ -1822,6 +1830,7 @@ async fn test_domain_submit_order() {
             TimeInForce::Gtc,
             Some(Price::from("50000.00")),
             None,
+            None,
             false,
             false,
             None,
@@ -1831,6 +1840,78 @@ async fn test_domain_submit_order() {
 
     assert_eq!(report.venue_order_id, VenueOrderId::from("99999"));
     assert_eq!(report.client_order_id, Some(client_order_id));
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_domain_submit_trailing_stop_order_maps_native_spot_params() {
+    let state = Arc::new(TestServerState::default());
+    let addr = start_test_server(state.clone()).await;
+    let base_url = format!("http://{addr}");
+
+    let client = create_domain_client_with_instruments(
+        base_url,
+        Some("test_api_key".to_string()),
+        Some("test_api_secret".to_string()),
+    )
+    .await;
+    let account_id = AccountId::from("BINANCE-001");
+    let instrument_id = InstrumentId::from("BTCUSDT.BINANCE");
+
+    client
+        .submit_order(
+            account_id,
+            instrument_id,
+            ClientOrderId::from("trailing-no-activation"),
+            OrderSide::Sell,
+            OrderType::TrailingStopMarket,
+            Quantity::from("0.1"),
+            TimeInForce::Gtc,
+            None,
+            None,
+            Some(250),
+            false,
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+
+    {
+        let params = state.last_new_order_params.lock().unwrap();
+        let params = params.as_ref().unwrap();
+        assert_eq!(params.get("type").map(String::as_str), Some("STOP_LOSS"));
+        assert_eq!(params.get("trailingDelta").map(String::as_str), Some("250"));
+        assert!(!params.contains_key("stopPrice"));
+    }
+
+    client
+        .submit_order(
+            account_id,
+            instrument_id,
+            ClientOrderId::from("trailing-with-activation"),
+            OrderSide::Sell,
+            OrderType::TrailingStopMarket,
+            Quantity::from("0.1"),
+            TimeInForce::Gtc,
+            None,
+            Some(Price::from("49000.00")),
+            Some(250),
+            false,
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let params = state.last_new_order_params.lock().unwrap();
+    let params = params.as_ref().unwrap();
+    assert_eq!(params.get("type").map(String::as_str), Some("STOP_LOSS"));
+    assert_eq!(params.get("trailingDelta").map(String::as_str), Some("250"));
+    assert_eq!(
+        params.get("stopPrice").map(String::as_str),
+        Some("49000.00")
+    );
 }
 
 #[rstest]

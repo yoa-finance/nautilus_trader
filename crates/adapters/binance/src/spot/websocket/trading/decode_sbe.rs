@@ -124,6 +124,10 @@ pub fn decode_execution_report(data: &[u8]) -> anyhow::Result<BinanceSpotExecuti
     let executed_qty_mantissa = dec.executed_qty();
     let cummulative_quote_qty_mantissa = dec.cummulative_quote_qty();
     let commission_mantissa = dec.commission();
+    let trailing_delta = dec
+        .trailing_delta()
+        .and_then(|value| i64::try_from(value).ok());
+    let trailing_time = dec.trailing_time().map(us_to_ms);
 
     // Variable-length fields must be read in schema order.
     // Each field is converted to an owned String immediately to release the borrow.
@@ -172,6 +176,8 @@ pub fn decode_execution_report(data: &[u8]) -> anyhow::Result<BinanceSpotExecuti
         original_qty: mantissa_to_decimal_string(orig_qty_mantissa, qty_exp),
         price: mantissa_to_decimal_string(price_mantissa, price_exp),
         stop_price: mantissa_to_decimal_string(stop_price_mantissa, price_exp),
+        trailing_delta,
+        trailing_time,
         execution_type,
         order_status,
         reject_reason,

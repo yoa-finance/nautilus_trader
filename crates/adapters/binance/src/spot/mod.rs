@@ -41,6 +41,7 @@
 //!         └── handler.rs  # Request/response handling
 //! ```
 
+pub(crate) mod conversions;
 pub mod data;
 pub mod enums;
 pub mod execution;

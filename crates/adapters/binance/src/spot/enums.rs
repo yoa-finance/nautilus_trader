@@ -109,6 +109,7 @@ pub fn order_type_to_binance_spot(
         (OrderType::Limit, true) => Ok(BinanceSpotOrderType::LimitMaker),
         (OrderType::Limit, false) => Ok(BinanceSpotOrderType::Limit),
         (OrderType::StopMarket, _) => Ok(BinanceSpotOrderType::StopLoss),
+        (OrderType::TrailingStopMarket, _) => Ok(BinanceSpotOrderType::StopLoss),
         (OrderType::StopLimit, _) => Ok(BinanceSpotOrderType::StopLossLimit),
         (OrderType::MarketIfTouched, _) => Ok(BinanceSpotOrderType::TakeProfit),
         (OrderType::LimitIfTouched, _) => Ok(BinanceSpotOrderType::TakeProfitLimit),
@@ -161,7 +162,7 @@ mod tests {
     }
 
     #[rstest]
-    #[case(OrderType::TrailingStopMarket)]
+    #[case(OrderType::TrailingStopLimit)]
     fn test_order_type_to_binance_spot_unsupported(#[case] order_type: OrderType) {
         let result = order_type_to_binance_spot(order_type, false);
         result.unwrap_err();

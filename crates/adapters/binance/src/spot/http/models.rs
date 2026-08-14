@@ -142,6 +142,10 @@ pub struct BinanceNewOrderResponse {
     pub side: OrderSide,
     /// Stop price mantissa (for stop orders).
     pub stop_price_mantissa: Option<i64>,
+    /// Trailing delta in basis points.
+    pub trailing_delta: Option<i64>,
+    /// Time when trailing price tracking started, in microseconds.
+    pub trailing_time: Option<i64>,
     /// Working time in microseconds.
     pub working_time: Option<i64>,
     /// Self-trade prevention mode.
@@ -369,6 +373,10 @@ pub struct BinanceOrderResponse {
     pub side: OrderSide,
     /// Stop price mantissa (for stop orders).
     pub stop_price_mantissa: Option<i64>,
+    /// Trailing delta in basis points.
+    pub trailing_delta: Option<i64>,
+    /// Time when trailing price tracking started, in microseconds.
+    pub trailing_time: Option<i64>,
     /// Iceberg quantity mantissa.
     pub iceberg_qty_mantissa: Option<i64>,
     /// Order creation time in microseconds.

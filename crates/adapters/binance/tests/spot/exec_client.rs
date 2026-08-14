@@ -271,7 +271,8 @@ fn build_new_order_response(
     buf.push(1); // order_type (LIMIT)
     buf.push(1); // side (BUY)
     buf.extend_from_slice(&i64::MIN.to_le_bytes()); // stop_price (None)
-    buf.extend_from_slice(&[0u8; 16]); // trailing_delta + trailing_time
+    buf.extend_from_slice(&i64::MIN.to_le_bytes()); // trailing_delta (None)
+    buf.extend_from_slice(&i64::MIN.to_le_bytes()); // trailing_time (None)
     buf.extend_from_slice(&1734300000000i64.to_le_bytes()); // working_time
     buf.extend_from_slice(&[0u8; 23]); // iceberg to used_sor
     buf.push(0); // self_trade_prevention_mode
@@ -379,7 +380,8 @@ fn build_orders_response(orders: &[(i64, &str, &str, i64, i64)]) -> Vec<u8> {
         buf.push(1); // order_type (LIMIT)
         buf.push(1); // side (BUY)
         buf.extend_from_slice(&i64::MIN.to_le_bytes()); // stop_price (None)
-        buf.extend_from_slice(&[0u8; 16]); // trailing_delta + trailing_time
+        buf.extend_from_slice(&i64::MIN.to_le_bytes()); // trailing_delta (None)
+        buf.extend_from_slice(&i64::MIN.to_le_bytes()); // trailing_time (None)
         buf.extend_from_slice(&i64::MIN.to_le_bytes()); // iceberg_qty (None)
         buf.extend_from_slice(&1734300000000i64.to_le_bytes()); // time
         buf.extend_from_slice(&1734300000000i64.to_le_bytes()); // update_time
