@@ -75,7 +75,6 @@ pub fn backtest_execution_capabilities() -> ExecutionClientCapabilities {
             TrailingOffsetType::Price,
             TrailingOffsetType::BasisPoints,
             TrailingOffsetType::Ticks,
-            TrailingOffsetType::PriceTier,
         ],
         submit_order: true,
         submit_order_list: true,
@@ -85,6 +84,25 @@ pub fn backtest_execution_capabilities() -> ExecutionClientCapabilities {
         batch_cancel_orders: true,
         cancel_all_orders: true,
         reduce_only: true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use nautilus_model::enums::TrailingOffsetType;
+
+    use super::backtest_execution_capabilities;
+
+    #[test]
+    fn backtest_capabilities_only_advertise_supported_trailing_offset_types() {
+        assert_eq!(
+            backtest_execution_capabilities().trailing_offset_types,
+            vec![
+                TrailingOffsetType::Price,
+                TrailingOffsetType::BasisPoints,
+                TrailingOffsetType::Ticks,
+            ]
+        );
     }
 }
 
