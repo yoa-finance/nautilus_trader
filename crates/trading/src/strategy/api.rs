@@ -718,6 +718,20 @@ impl<'a> PortfolioApi<'a> {
         self.portfolio.borrow().net_exposures(venue, account_id)
     }
 
+    /// Returns gross exposures by currency for the given venue.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the portfolio is already mutably borrowed.
+    #[must_use]
+    pub fn gross_exposures(
+        &self,
+        venue: &Venue,
+        account_id: Option<&AccountId>,
+    ) -> Option<IndexMap<Currency, Money>> {
+        self.portfolio.borrow().gross_exposures(venue, account_id)
+    }
+
     /// Returns the unrealized PnL for the given instrument ID.
     ///
     /// # Panics

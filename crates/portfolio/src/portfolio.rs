@@ -521,18 +521,36 @@ impl Portfolio {
         venue: &Venue,
         account_id: Option<&AccountId>,
     ) -> Option<IndexMap<Currency, Money>> {
+        self.exposures(venue, account_id, false)
+    }
+
+    #[must_use]
+    pub fn gross_exposures(
+        &self,
+        venue: &Venue,
+        account_id: Option<&AccountId>,
+    ) -> Option<IndexMap<Currency, Money>> {
+        self.exposures(venue, account_id, true)
+    }
+
+    fn exposures(
+        &self,
+        venue: &Venue,
+        account_id: Option<&AccountId>,
+        gross: bool,
+    ) -> Option<IndexMap<Currency, Money>> {
         let cache = self.cache.borrow();
         let account = if let Some(id) = account_id {
             if let Some(account) = cache.account(id) {
                 account
             } else {
-                log::error!("Cannot calculate net exposures: no account for {id}");
+                log::error!("Cannot calculate exposures: no account for {id}");
                 return None;
             }
         } else if let Some(account) = cache.account_for_venue(venue) {
             account
         } else {
-            log::error!("Cannot calculate net exposures: no account registered for {venue}");
+            log::error!("Cannot calculate exposures: no account registered for {venue}");
             return None;
         };
 
@@ -541,7 +559,7 @@ impl Portfolio {
             return Some(IndexMap::new()); // Nothing to calculate
         }
 
-        let mut net_exposures: IndexMap<Currency, Money> = IndexMap::new();
+        let mut exposures: IndexMap<Currency, Money> = IndexMap::new();
 
         for position in positions_open {
             let instrument = if let Some(instrument) = cache.instrument(&position.instrument_id) {
@@ -579,27 +597,33 @@ impl Portfolio {
                 .base_currency()
                 .unwrap_or_else(|| instrument.settlement_currency());
 
-            let net_exposure = match Money::from_decimal(
+            let direction = if gross || position.side == PositionSide::Long {
+                Decimal::ONE
+            } else {
+                -Decimal::ONE
+            };
+            let exposure = match Money::from_decimal(
                 instrument
                     .calculate_notional_value(position.quantity, price, None)
                     .as_decimal()
-                    * xrate,
+                    * xrate
+                    * direction,
                 settlement_currency,
             ) {
                 Ok(money) => money,
                 Err(e) => {
-                    log::error!("Cannot calculate net exposures: {e}");
+                    log::error!("Cannot calculate exposures: {e}");
                     return None;
                 }
             };
 
-            net_exposures
+            exposures
                 .entry(settlement_currency)
-                .and_modify(|total| *total = *total + net_exposure)
-                .or_insert(net_exposure);
+                .and_modify(|total| *total = *total + exposure)
+                .or_insert(exposure);
         }
 
-        Some(net_exposures)
+        Some(exposures)
     }
 
     #[must_use]

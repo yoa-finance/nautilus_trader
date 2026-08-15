@@ -3848,11 +3848,11 @@ fn test_net_exposures_filters_by_account_id(
     let opened_a = get_open_position(&pos_a);
     portfolio.update_position(&PositionEvent::PositionOpened(opened_a));
 
-    // Account B: long 50_000 AUD/USD
+    // Account B: short 50_000 AUD/USD
     let fill_b = make_fill_for_account(
         &instrument_audusd,
         account_b,
-        OrderSide::Buy,
+        OrderSide::Sell,
         Quantity::from("50000"),
         Price::new(0.8, instrument_audusd.price_precision()),
         PositionId::new("P-B"),
@@ -3872,6 +3872,9 @@ fn test_net_exposures_filters_by_account_id(
     let all = portfolio.net_exposures(&venue, None);
     assert!(all.is_some());
     let all_usd = all.unwrap().get(&Currency::USD()).unwrap().as_decimal();
+    let gross = portfolio.gross_exposures(&venue, None);
+    assert!(gross.is_some());
+    let gross_usd = gross.unwrap().get(&Currency::USD()).unwrap().as_decimal();
 
     // Filter account A only
     let a_only = portfolio.net_exposures(&venue, Some(&account_a));
@@ -3883,10 +3886,12 @@ fn test_net_exposures_filters_by_account_id(
     assert!(b_only.is_some());
     let b_usd = b_only.unwrap().get(&Currency::USD()).unwrap().as_decimal();
 
-    // Account A exposure > Account B exposure (100k vs 50k)
+    assert!(a_usd > Decimal::ZERO);
+    assert!(b_usd < Decimal::ZERO);
     assert!(a_usd > b_usd);
-    // Combined should equal the sum
     assert_eq!(all_usd, a_usd + b_usd);
+    assert_eq!(gross_usd, a_usd.abs() + b_usd.abs());
+    assert!(gross_usd > all_usd.abs());
 }
 
 #[rstest]

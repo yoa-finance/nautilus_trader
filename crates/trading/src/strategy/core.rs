@@ -889,6 +889,7 @@ mod tests {
         let unrealized_pnls = portfolio.unrealized_pnls(&venue, None);
         let realized_pnls = portfolio.realized_pnls(&venue, None);
         let net_exposures = portfolio.net_exposures(&venue, None);
+        let gross_exposures = portfolio.gross_exposures(&venue, None);
         let unrealized_pnl = portfolio.unrealized_pnl(&instrument_id);
         let realized_pnl = portfolio.realized_pnl(&instrument_id);
         let total_pnl = portfolio.total_pnl(&instrument_id);
@@ -910,6 +911,7 @@ mod tests {
         assert!(unrealized_pnls.is_empty());
         assert!(realized_pnls.is_empty());
         assert_eq!(net_exposures, None);
+        assert_eq!(gross_exposures, None);
         assert_eq!(unrealized_pnl, None);
         assert_eq!(realized_pnl, None);
         assert_eq!(total_pnl, None);
