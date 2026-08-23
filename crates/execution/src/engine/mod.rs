@@ -98,6 +98,7 @@ const TIMER_SNAPSHOT_POSITIONS: &str = "ExecEngine_SNAPSHOT_POSITIONS";
 const TIMER_PURGE_CLOSED_ORDERS: &str = "ExecEngine_PURGE_CLOSED_ORDERS";
 const TIMER_PURGE_CLOSED_POSITIONS: &str = "ExecEngine_PURGE_CLOSED_POSITIONS";
 const TIMER_PURGE_ACCOUNT_EVENTS: &str = "ExecEngine_PURGE_ACCOUNT_EVENTS";
+const STOP_LOSS_TAG: &str = "STOP_LOSS";
 
 /// Position state snapshot published to the `snapshots.position.{position_id}` topic.
 #[derive(Debug, Clone)]
@@ -3436,24 +3437,17 @@ impl ExecutionEngine {
         position: &mut Position,
         fill: OrderFilled,
     ) -> Vec<PositionEvent> {
-        let position_side_before = position.side;
         let was_reducing = position.is_opposite_side(fill.order_side);
 
         // Apply the fill to the position
         position.apply(&fill);
 
-        let dust_adjustment = if self.should_close_position_dust(
-            instrument,
-            order,
-            position,
-            &fill,
-            position_side_before,
-            was_reducing,
-        ) {
-            Some(position.close_residual_as_dust(&fill))
-        } else {
-            None
-        };
+        let dust_adjustment =
+            if self.should_close_position_dust(instrument, order, position, &fill, was_reducing) {
+                Some(position.close_residual_as_dust(&fill))
+            } else {
+                None
+            };
 
         // Check if position is closed after applying the fill
         let is_closed = position.is_closed();
@@ -3497,15 +3491,23 @@ impl ExecutionEngine {
         order: Option<&OrderAny>,
         position: &Position,
         fill: &OrderFilled,
-        position_side_before: PositionSide,
         was_reducing: bool,
     ) -> bool {
         let Some(order) = order else {
             return false;
         };
+        let is_complete_position_close =
+            Self::is_complete_framework_position_close(order, position, fill, was_reducing)
+                || Self::is_complete_protective_stop_close(
+                    instrument,
+                    order,
+                    position,
+                    fill,
+                    was_reducing,
+                );
         if !matches!(instrument, InstrumentAny::CurrencyPair(_))
-            || position.side != position_side_before
-            || !Self::is_complete_framework_position_close(order, position, fill, was_reducing)
+            || !position.is_opposite_side(fill.order_side)
+            || !is_complete_position_close
         {
             return false;
         }
@@ -3561,6 +3563,45 @@ impl ExecutionEngine {
             && order
                 .tags()
                 .is_some_and(|tags| tags.iter().any(|tag| tag.as_str() == POSITION_CLOSE_TAG))
+    }
+
+    fn is_complete_protective_stop_close(
+        instrument: &InstrumentAny,
+        order: &OrderAny,
+        position: &Position,
+        fill: &OrderFilled,
+        was_reducing: bool,
+    ) -> bool {
+        // The order and position already include this fill; adding cumulative fills back to the
+        // residual reconstructs the position quantity before this order began filling.
+        let position_qty_before_order =
+            position.quantity.as_decimal() + order.filled_qty().as_decimal();
+        let Ok(close_qty) = instrument.try_floor_qty_to_increment(position_qty_before_order) else {
+            return false;
+        };
+
+        was_reducing
+            && matches!(
+                order.order_type(),
+                OrderType::StopMarket | OrderType::StopLimit
+            )
+            && order.status() == OrderStatus::Filled
+            && order.quantity() == close_qty
+            && order.filled_qty() == order.quantity()
+            && order.leaves_qty().is_zero()
+            && order.strategy_id() == position.strategy_id
+            && order.position_id().is_none_or(|id| id == position.id)
+            && order.instrument_id() == position.instrument_id
+            && order.account_id() == Some(position.account_id)
+            && order.client_order_id() == fill.client_order_id
+            && fill.strategy_id == position.strategy_id
+            && fill.position_id == Some(position.id)
+            && fill.instrument_id == position.instrument_id
+            && fill.account_id == position.account_id
+            && fill.order_side == order.order_side()
+            && order
+                .tags()
+                .is_some_and(|tags| tags.iter().any(|tag| tag.as_str() == STOP_LOSS_TAG))
     }
 
     fn will_flip_position(&self, position: &Position, fill: OrderFilled) -> bool {
@@ -3788,7 +3829,9 @@ impl ExecutionEngine {
 
 #[cfg(test)]
 mod tests {
+    use nautilus_common::clock::TestClock;
     use nautilus_model::{
+        accounts::CashAccount,
         enums::{
             LiquiditySide, OrderSide, OrderType, PositionAdjustmentType, PositionSideSpecified,
         },
@@ -3871,6 +3914,68 @@ mod tests {
         (instrument, position, order, fill)
     }
 
+    fn protective_stop_dust_fixture(
+        tagged: bool,
+        order_quantity: Quantity,
+    ) -> (InstrumentAny, Position, OrderAny, OrderFilled) {
+        let mut currency_pair = currency_pair_ethusdt();
+        currency_pair.size_precision = 8;
+        currency_pair.size_increment = Quantity::from("0.00001");
+        let instrument = InstrumentAny::CurrencyPair(currency_pair);
+        let account_id = AccountId::from("SIM-001");
+        let strategy_id = StrategyId::from("S-001");
+        let position_id = PositionId::from("P-001");
+        let position = position_for_account(
+            &instrument,
+            account_id,
+            strategy_id,
+            position_id,
+            OrderSide::Buy,
+            Quantity::from("0.00113886"),
+        );
+
+        let mut builder = OrderTestBuilder::new(OrderType::StopMarket);
+        builder
+            .strategy_id(strategy_id)
+            .instrument_id(instrument.id())
+            .client_order_id(ClientOrderId::from("O-STOP"))
+            .side(OrderSide::Sell)
+            .quantity(order_quantity)
+            .trigger_price(Price::from("77000"))
+            .reduce_only(false);
+        if tagged {
+            builder.tags(vec![Ustr::from(STOP_LOSS_TAG)]);
+        }
+        let mut order = builder.build();
+        order
+            .apply(TestOrderEventStubs::submitted(&order, account_id))
+            .unwrap();
+        order
+            .apply(TestOrderEventStubs::accepted(
+                &order,
+                account_id,
+                VenueOrderId::from("V-STOP"),
+            ))
+            .unwrap();
+        let event = TestOrderEventStubs::filled(
+            &order,
+            &instrument,
+            Some(TradeId::from("T-STOP")),
+            Some(position_id),
+            Some(Price::from("76900")),
+            Some(order_quantity),
+            Some(LiquiditySide::Taker),
+            Some(Money::from("0 USDT")),
+            None,
+            Some(account_id),
+        );
+        let OrderEventAny::Filled(fill) = event else {
+            unreachable!();
+        };
+        order.apply(event).unwrap();
+        (instrument, position, order, fill)
+    }
+
     #[rstest]
     fn dust_gate_requires_a_complete_framework_close() {
         let (_, position, filled, fill) = dust_close_fixture(true, Quantity::from("0.0049"));
@@ -3929,6 +4034,56 @@ mod tests {
         assert_eq!(adjustment.quantity_change, Some(-raw_residual));
         assert!(position.is_closed());
         assert!(position.quantity.is_zero());
+    }
+
+    #[rstest]
+    fn protective_stop_dust_gate_requires_the_full_executable_position() {
+        let (instrument, mut position, stop, fill) =
+            protective_stop_dust_fixture(true, Quantity::from("0.00113"));
+        let cache = Rc::new(RefCell::new(Cache::default()));
+        cache
+            .borrow_mut()
+            .add_account(CashAccount::default().into())
+            .unwrap();
+        cache
+            .borrow_mut()
+            .add_position(&position, OmsType::Netting)
+            .unwrap();
+        let engine = ExecutionEngine::new(Rc::new(RefCell::new(TestClock::new())), cache, None);
+
+        let events = engine.update_position(&instrument, Some(&stop), &mut position, fill);
+
+        assert_eq!(events.len(), 2);
+        assert!(matches!(
+            &events[0],
+            PositionEvent::PositionAdjusted(adjustment)
+                if adjustment.adjustment_type == PositionAdjustmentType::Dust
+        ));
+        assert!(matches!(&events[1], PositionEvent::PositionClosed(_)));
+        assert!(position.is_closed());
+        assert!(position.quantity.is_zero());
+
+        let (instrument, mut position, partial_stop, partial_fill) =
+            protective_stop_dust_fixture(true, Quantity::from("0.00100"));
+        position.apply(&partial_fill);
+        assert!(!ExecutionEngine::is_complete_protective_stop_close(
+            &instrument,
+            &partial_stop,
+            &position,
+            &partial_fill,
+            true,
+        ));
+
+        let (instrument, mut position, untagged_stop, untagged_fill) =
+            protective_stop_dust_fixture(false, Quantity::from("0.00113"));
+        position.apply(&untagged_fill);
+        assert!(!ExecutionEngine::is_complete_protective_stop_close(
+            &instrument,
+            &untagged_stop,
+            &position,
+            &untagged_fill,
+            true,
+        ));
     }
 
     #[rstest]

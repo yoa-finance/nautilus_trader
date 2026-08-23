@@ -591,7 +591,7 @@ impl Position {
         );
     }
 
-    /// Removes the remaining non-executable quantity after a fully filled framework close.
+    /// Removes the remaining non-executable quantity after a fully filled position close.
     ///
     /// The adjustment affects only this strategy position. Account balances remain authoritative
     /// venue state and are deliberately not modified here.
