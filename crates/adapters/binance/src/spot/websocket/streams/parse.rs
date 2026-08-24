@@ -459,6 +459,8 @@ mod tests {
                     max_qty: 900_000_000_000,
                     step_size: 10_000,
                 }),
+                min_notional_filter: None,
+                notional_filter: None,
             },
             permissions: vec![vec!["SPOT".to_string()]],
         };

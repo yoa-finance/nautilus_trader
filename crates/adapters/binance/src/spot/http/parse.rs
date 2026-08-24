@@ -23,11 +23,11 @@ use super::{
     models::{
         BinanceAccountInfo, BinanceAccountTrade, BinanceBalance, BinanceCancelOrderResponse,
         BinanceDepth, BinanceExchangeInfoSbe, BinanceKline, BinanceKlines, BinanceLotSizeFilterSbe,
-        BinanceNewOrderResponse, BinanceOrderFill, BinanceOrderResponse, BinancePriceFilterSbe,
-        BinancePriceLevel, BinanceSpotCancelAllItem, BinanceSpotCancelAllResult,
-        BinanceSpotOrderListCancelResult, BinanceSpotOrderListChild,
-        BinanceSpotOrderListChildReport, BinanceSymbolFiltersSbe, BinanceSymbolSbe, BinanceTrade,
-        BinanceTrades,
+        BinanceMinNotionalFilterSbe, BinanceNewOrderResponse, BinanceNotionalFilterSbe,
+        BinanceOrderFill, BinanceOrderResponse, BinancePriceFilterSbe, BinancePriceLevel,
+        BinanceSpotCancelAllItem, BinanceSpotCancelAllResult, BinanceSpotOrderListCancelResult,
+        BinanceSpotOrderListChild, BinanceSpotOrderListChildReport, BinanceSymbolFiltersSbe,
+        BinanceSymbolSbe, BinanceTrade, BinanceTrades,
     },
 };
 use crate::spot::sbe::{
@@ -36,7 +36,8 @@ use crate::spot::sbe::{
         ReadBuf, SBE_SCHEMA_ID, SBE_SCHEMA_VERSION,
         account_response_codec::SBE_TEMPLATE_ID as ACCOUNT_TEMPLATE_ID,
         account_trades_response_codec::SBE_TEMPLATE_ID as ACCOUNT_TRADES_TEMPLATE_ID,
-        account_type::AccountType, bool_enum::BoolEnum,
+        account_type::AccountType,
+        bool_enum::BoolEnum,
         cancel_open_orders_response_codec::SBE_TEMPLATE_ID as CANCEL_OPEN_ORDERS_TEMPLATE_ID,
         cancel_order_list_response_codec,
         cancel_order_list_response_codec::SBE_TEMPLATE_ID as CANCEL_ORDER_LIST_TEMPLATE_ID,
@@ -46,7 +47,15 @@ use crate::spot::sbe::{
         klines_response_codec::SBE_TEMPLATE_ID as KLINES_TEMPLATE_ID,
         lot_size_filter_codec::SBE_TEMPLATE_ID as LOT_SIZE_FILTER_TEMPLATE_ID,
         message_header_codec::ENCODED_LENGTH as HEADER_LENGTH,
+        min_notional_filter_codec::{
+            SBE_BLOCK_LENGTH as MIN_NOTIONAL_FILTER_BLOCK_LENGTH,
+            SBE_TEMPLATE_ID as MIN_NOTIONAL_FILTER_TEMPLATE_ID,
+        },
         new_order_full_response_codec::SBE_TEMPLATE_ID as NEW_ORDER_FULL_TEMPLATE_ID,
+        notional_filter_codec::{
+            SBE_BLOCK_LENGTH as NOTIONAL_FILTER_BLOCK_LENGTH,
+            SBE_TEMPLATE_ID as NOTIONAL_FILTER_TEMPLATE_ID,
+        },
         order_response_codec::SBE_TEMPLATE_ID as ORDER_TEMPLATE_ID,
         orders_response_codec::SBE_TEMPLATE_ID as ORDERS_TEMPLATE_ID,
         ping_response_codec::SBE_TEMPLATE_ID as PING_TEMPLATE_ID,
@@ -1159,6 +1168,8 @@ pub fn decode_exchange_info(buf: &[u8]) -> Result<BinanceExchangeInfoSbe, SbeDec
                 let potential_template = u16::from_le_bytes([filter_bytes[2], filter_bytes[3]]);
                 if potential_template == PRICE_FILTER_TEMPLATE_ID
                     || potential_template == LOT_SIZE_FILTER_TEMPLATE_ID
+                    || potential_template == MIN_NOTIONAL_FILTER_TEMPLATE_ID
+                    || potential_template == NOTIONAL_FILTER_TEMPLATE_ID
                 {
                     (potential_template, HEADER_LENGTH)
                 } else {
@@ -1210,6 +1221,58 @@ pub fn decode_exchange_info(buf: &[u8]) -> Result<BinanceExchangeInfoSbe, SbeDec
                         step_size,
                     });
                 }
+                MIN_NOTIONAL_FILTER_TEMPLATE_ID => {
+                    validate_filter_block(&filter_bytes, offset, MIN_NOTIONAL_FILTER_BLOCK_LENGTH)?;
+                    let price_exponent = filter_bytes[offset] as i8;
+                    if price_exponent == i8::MIN {
+                        return Err(SbeDecodeError::InvalidValue {
+                            field: "MIN_NOTIONAL.priceExponent",
+                        });
+                    }
+                    let min_notional = i64::from_le_bytes(
+                        filter_bytes[offset + 1..offset + 9].try_into().unwrap(),
+                    );
+                    if min_notional <= 0 {
+                        return Err(SbeDecodeError::InvalidValue {
+                            field: "MIN_NOTIONAL.minNotional",
+                        });
+                    }
+                    let apply_to_market = decode_required_bool(
+                        filter_bytes[offset + 9],
+                        "MIN_NOTIONAL.applyToMarket",
+                    )?;
+                    filters.min_notional_filter = Some(BinanceMinNotionalFilterSbe {
+                        price_exponent,
+                        min_notional,
+                        apply_to_market,
+                    });
+                }
+                NOTIONAL_FILTER_TEMPLATE_ID => {
+                    validate_filter_block(&filter_bytes, offset, NOTIONAL_FILTER_BLOCK_LENGTH)?;
+                    let price_exponent = filter_bytes[offset] as i8;
+                    if price_exponent == i8::MIN {
+                        return Err(SbeDecodeError::InvalidValue {
+                            field: "NOTIONAL.priceExponent",
+                        });
+                    }
+                    let min_notional = i64::from_le_bytes(
+                        filter_bytes[offset + 1..offset + 9].try_into().unwrap(),
+                    );
+                    if min_notional <= 0 {
+                        return Err(SbeDecodeError::InvalidValue {
+                            field: "NOTIONAL.minNotional",
+                        });
+                    }
+                    let apply_min_to_market = decode_required_bool(
+                        filter_bytes[offset + 9],
+                        "NOTIONAL.applyMinToMarket",
+                    )?;
+                    filters.notional_filter = Some(BinanceNotionalFilterSbe {
+                        price_exponent,
+                        min_notional,
+                        apply_min_to_market,
+                    });
+                }
                 _ => {}
             }
         }
@@ -1258,6 +1321,38 @@ pub fn decode_exchange_info(buf: &[u8]) -> Result<BinanceExchangeInfoSbe, SbeDec
     // Skip SOR group (we don't need it)
 
     Ok(BinanceExchangeInfoSbe { symbols })
+}
+
+fn validate_filter_block(
+    filter_bytes: &[u8],
+    offset: usize,
+    expected_block_length: u16,
+) -> Result<(), SbeDecodeError> {
+    if offset == HEADER_LENGTH {
+        let actual_block_length = u16::from_le_bytes([filter_bytes[0], filter_bytes[1]]);
+        if actual_block_length != expected_block_length {
+            return Err(SbeDecodeError::InvalidBlockLength {
+                expected: expected_block_length,
+                actual: actual_block_length,
+            });
+        }
+    }
+    let expected = offset + usize::from(expected_block_length);
+    if filter_bytes.len() < expected {
+        return Err(SbeDecodeError::BufferTooShort {
+            expected,
+            actual: filter_bytes.len(),
+        });
+    }
+    Ok(())
+}
+
+fn decode_required_bool(value: u8, field: &'static str) -> Result<bool, SbeDecodeError> {
+    match value {
+        value if value == BoolEnum::False as u8 => Ok(false),
+        value if value == BoolEnum::True as u8 => Ok(true),
+        _ => Err(SbeDecodeError::InvalidValue { field }),
+    }
 }
 
 #[cfg(test)]
@@ -1526,6 +1621,39 @@ mod tests {
     fn write_var_string(buf: &mut Vec<u8>, s: &str) {
         buf.push(s.len() as u8);
         buf.extend_from_slice(s.as_bytes());
+    }
+
+    fn write_var_bytes(buf: &mut Vec<u8>, value: &[u8]) {
+        buf.push(value.len() as u8);
+        buf.extend_from_slice(value);
+    }
+
+    fn build_min_notional_filter(min_notional: i64, apply_to_market: u8) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&MIN_NOTIONAL_FILTER_BLOCK_LENGTH.to_le_bytes());
+        buf.extend_from_slice(&MIN_NOTIONAL_FILTER_TEMPLATE_ID.to_le_bytes());
+        buf.extend_from_slice(&SBE_SCHEMA_ID.to_le_bytes());
+        buf.extend_from_slice(&SBE_SCHEMA_VERSION.to_le_bytes());
+        buf.push((-8_i8) as u8);
+        buf.extend_from_slice(&min_notional.to_le_bytes());
+        buf.push(apply_to_market);
+        buf.extend_from_slice(&5_i32.to_le_bytes());
+        buf
+    }
+
+    fn build_notional_filter(min_notional: i64, apply_min_to_market: u8) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&NOTIONAL_FILTER_BLOCK_LENGTH.to_le_bytes());
+        buf.extend_from_slice(&NOTIONAL_FILTER_TEMPLATE_ID.to_le_bytes());
+        buf.extend_from_slice(&SBE_SCHEMA_ID.to_le_bytes());
+        buf.extend_from_slice(&SBE_SCHEMA_VERSION.to_le_bytes());
+        buf.push((-8_i8) as u8);
+        buf.extend_from_slice(&min_notional.to_le_bytes());
+        buf.push(apply_min_to_market);
+        buf.extend_from_slice(&900_000_000_000_000_i64.to_le_bytes());
+        buf.push(BoolEnum::False as u8);
+        buf.extend_from_slice(&5_i32.to_le_bytes());
+        buf
     }
 
     /// Builds an `orderResponse` SBE buffer with the supplied `block_length`.
@@ -2220,8 +2348,16 @@ mod tests {
         buf.push(0); // allowed_self_trade_prevention_modes
         buf.push(0); // peg_instructions_allowed
 
-        // Filters nested group: 0 filters (SBE binary filters are skipped)
-        buf.extend_from_slice(&create_group_header(0, 0));
+        // Filters nested group: legacy and current notional filters.
+        buf.extend_from_slice(&create_group_header(0, 2));
+        write_var_bytes(
+            &mut buf,
+            &build_min_notional_filter(700_000_000, BoolEnum::False as u8),
+        );
+        write_var_bytes(
+            &mut buf,
+            &build_notional_filter(500_000_000, BoolEnum::True as u8),
+        );
 
         // Permission sets nested group: 1 set with 1 permission
         buf.extend_from_slice(&create_group_header(0, 1));
@@ -2255,8 +2391,36 @@ mod tests {
         assert!(!symbol.is_margin_trading_allowed);
         assert!(symbol.filters.price_filter.is_none()); // No filters in test data
         assert!(symbol.filters.lot_size_filter.is_none());
+        assert_eq!(
+            symbol.filters.min_notional_filter,
+            Some(BinanceMinNotionalFilterSbe {
+                price_exponent: -8,
+                min_notional: 700_000_000,
+                apply_to_market: false,
+            })
+        );
+        assert_eq!(
+            symbol.filters.notional_filter,
+            Some(BinanceNotionalFilterSbe {
+                price_exponent: -8,
+                min_notional: 500_000_000,
+                apply_min_to_market: true,
+            })
+        );
         assert_eq!(symbol.permissions.len(), 1);
         assert_eq!(symbol.permissions[0], vec!["SPOT"]);
+    }
+
+    #[rstest]
+    fn test_notional_filter_validation_rejects_invalid_wire_values() {
+        assert!(matches!(
+            decode_required_bool(2, "NOTIONAL.applyMinToMarket"),
+            Err(SbeDecodeError::InvalidValue { .. })
+        ));
+        assert!(matches!(
+            validate_filter_block(&[0; 10], HEADER_LENGTH, NOTIONAL_FILTER_BLOCK_LENGTH),
+            Err(SbeDecodeError::InvalidBlockLength { .. })
+        ));
     }
 
     #[rstest]

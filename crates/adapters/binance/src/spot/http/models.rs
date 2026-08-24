@@ -527,6 +527,28 @@ pub struct BinanceLotSizeFilterSbe {
     pub step_size: i64,
 }
 
+/// Minimum notional filter from SBE response.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BinanceMinNotionalFilterSbe {
+    /// Price exponent for mantissa conversion.
+    pub price_exponent: i8,
+    /// Minimum notional mantissa.
+    pub min_notional: i64,
+    /// Whether the minimum applies to market orders.
+    pub apply_to_market: bool,
+}
+
+/// Notional range filter from SBE response.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BinanceNotionalFilterSbe {
+    /// Price exponent for mantissa conversion.
+    pub price_exponent: i8,
+    /// Minimum notional mantissa.
+    pub min_notional: i64,
+    /// Whether the minimum applies to market orders.
+    pub apply_min_to_market: bool,
+}
+
 /// Symbol filters from SBE response.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct BinanceSymbolFiltersSbe {
@@ -534,6 +556,10 @@ pub struct BinanceSymbolFiltersSbe {
     pub price_filter: Option<BinancePriceFilterSbe>,
     /// Lot size filter (required for trading).
     pub lot_size_filter: Option<BinanceLotSizeFilterSbe>,
+    /// Legacy minimum notional filter.
+    pub min_notional_filter: Option<BinanceMinNotionalFilterSbe>,
+    /// Notional range filter.
+    pub notional_filter: Option<BinanceNotionalFilterSbe>,
 }
 
 /// Symbol information from SBE exchange info response.

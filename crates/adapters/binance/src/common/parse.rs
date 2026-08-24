@@ -49,7 +49,8 @@ use crate::{
     futures::http::models::{BinanceFuturesCoinSymbol, BinanceFuturesUsdSymbol},
     spot::{
         http::models::{
-            BinanceAccountTrade, BinanceKlines, BinanceLotSizeFilterSbe, BinanceNewOrderResponse,
+            BinanceAccountTrade, BinanceKlines, BinanceLotSizeFilterSbe,
+            BinanceMinNotionalFilterSbe, BinanceNewOrderResponse, BinanceNotionalFilterSbe,
             BinanceOrderFill, BinanceOrderResponse, BinancePriceFilterSbe, BinanceSymbolSbe,
             BinanceTrades,
         },
@@ -478,6 +479,51 @@ fn parse_sbe_lot_size_filter(
     Ok((step_size, max_qty, min_qty))
 }
 
+fn sbe_decimal(mantissa: i64, exponent: i8) -> anyhow::Result<Decimal> {
+    if exponent < 0 {
+        return Decimal::try_from_i128_with_scale(
+            i128::from(mantissa),
+            u32::from(exponent.unsigned_abs()),
+        )
+        .context("SBE decimal exponent exceeds supported precision");
+    }
+
+    let mut value = Decimal::from(mantissa);
+    for _ in 0..exponent {
+        value = value
+            .checked_mul(Decimal::TEN)
+            .context("SBE decimal value overflow")?;
+    }
+    Ok(value)
+}
+
+fn parse_sbe_market_min_notional(
+    min_notional_filter: Option<&BinanceMinNotionalFilterSbe>,
+    notional_filter: Option<&BinanceNotionalFilterSbe>,
+    quote_currency: Currency,
+) -> anyhow::Result<Option<Money>> {
+    let mut minimum = None;
+    for (mantissa, exponent) in min_notional_filter
+        .filter(|filter| filter.apply_to_market)
+        .map(|filter| (filter.min_notional, filter.price_exponent))
+        .into_iter()
+        .chain(
+            notional_filter
+                .filter(|filter| filter.apply_min_to_market)
+                .map(|filter| (filter.min_notional, filter.price_exponent)),
+        )
+    {
+        let value = sbe_decimal(mantissa, exponent)?;
+        if value <= Decimal::ZERO {
+            anyhow::bail!("SBE market min notional must be positive");
+        }
+        minimum = Some(minimum.map_or(value, |current: Decimal| current.max(value)));
+    }
+    minimum
+        .map(|value| Money::from_decimal(value, quote_currency).map_err(anyhow::Error::from))
+        .transpose()
+}
+
 /// Parses a Binance Spot SBE symbol into a Nautilus CurrencyPair instrument.
 ///
 /// # Errors
@@ -523,6 +569,11 @@ pub fn parse_spot_instrument_sbe(
         .context("Missing LOT_SIZE in symbol filters")?;
 
     let (step_size, max_quantity, min_quantity) = parse_sbe_lot_size_filter(lot_filter)?;
+    let min_notional = parse_sbe_market_min_notional(
+        symbol.filters.min_notional_filter.as_ref(),
+        symbol.filters.notional_filter.as_ref(),
+        quote_currency,
+    )?;
 
     // Spot has no leverage, use 1.0 margin
     let default_margin = Decimal::new(1, 0);
@@ -541,7 +592,7 @@ pub fn parse_spot_instrument_sbe(
         max_quantity,
         min_quantity,
         None, // max_notional
-        None, // min_notional
+        min_notional,
         max_price,
         min_price,
         Some(default_margin),
@@ -1437,6 +1488,12 @@ mod tests {
                     max_qty: 900_000_000_000,
                     step_size: 10_000,
                 }),
+                min_notional_filter: None,
+                notional_filter: Some(BinanceNotionalFilterSbe {
+                    price_exponent: -8,
+                    min_notional: 500_000_000,
+                    apply_min_to_market: true,
+                }),
             },
             permissions: vec![vec!["SPOT".to_string()]],
         }
@@ -1557,9 +1614,55 @@ mod tests {
                 assert_eq!(pair.quote_currency.code.as_str(), "USDT");
                 assert_eq!(pair.price_increment, Price::from_str("0.01").unwrap());
                 assert_eq!(pair.size_increment, Quantity::from_str("0.0001").unwrap());
+                assert_eq!(pair.min_notional, Some(Money::from("5.00000000 USDT")));
             }
             other => panic!("Expected CurrencyPair, was {other:?}"),
         }
+    }
+
+    #[rstest]
+    fn test_parse_spot_instrument_sbe_uses_strictest_market_minimum() {
+        let mut symbol = sample_spot_symbol_sbe();
+        symbol.filters.min_notional_filter = Some(BinanceMinNotionalFilterSbe {
+            price_exponent: -8,
+            min_notional: 700_000_000,
+            apply_to_market: true,
+        });
+
+        let result = parse_spot_instrument_sbe(
+            &symbol,
+            UnixNanos::from(1_700_000_000_000_000_000u64),
+            UnixNanos::from(1_700_000_000_000_000_000u64),
+        )
+        .unwrap();
+
+        let InstrumentAny::CurrencyPair(pair) = result else {
+            panic!("Expected CurrencyPair");
+        };
+        assert_eq!(pair.min_notional, Some(Money::from("7.00000000 USDT")));
+
+        symbol
+            .filters
+            .min_notional_filter
+            .as_mut()
+            .unwrap()
+            .apply_to_market = false;
+        symbol
+            .filters
+            .notional_filter
+            .as_mut()
+            .unwrap()
+            .apply_min_to_market = false;
+        let result = parse_spot_instrument_sbe(
+            &symbol,
+            UnixNanos::from(1_700_000_000_000_000_000u64),
+            UnixNanos::from(1_700_000_000_000_000_000u64),
+        )
+        .unwrap();
+        let InstrumentAny::CurrencyPair(pair) = result else {
+            panic!("Expected CurrencyPair");
+        };
+        assert_eq!(pair.min_notional, None);
     }
 
     #[rstest]
