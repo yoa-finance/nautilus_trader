@@ -641,8 +641,8 @@ pub enum OrderListType {
     Oco = 1,
     /// One-Places-the-Other-Cancels-the-Other native order list.
     Opoco = 2,
-    /// Local parent entry with protection activated from the authoritative net position.
-    ProtectedEntry = 3,
+    /// One-Places-the-Other native order list.
+    Opo = 3,
 }
 
 /// The price-adjustment scheme applied when stitching segment contracts into a

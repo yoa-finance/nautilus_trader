@@ -367,9 +367,6 @@ impl<'a> ToCapnp<'a> for SubmitOrderList {
             order_init.to_capnp(order_init_builder);
         }
         builder.set_order_list_type(order_list_type_to_capnp(self.order_list.order_list_type));
-        if let Some(policy) = self.order_list.protected_entry_policy {
-            builder.set_protected_entry_ratio(policy.protection_ratio.to_string());
-        }
 
         if let Some(ref position_id) = self.position_id {
             let position_id_builder = builder.reborrow().init_position_id();

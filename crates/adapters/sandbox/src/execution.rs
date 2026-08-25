@@ -78,6 +78,7 @@ pub fn sandbox_execution_capabilities() -> ExecutionClientCapabilities {
             OrderListType::Standard,
             OrderListType::Oco,
             OrderListType::Opoco,
+            OrderListType::Opo,
         ],
         time_in_force: vec![
             TimeInForce::Gtc,

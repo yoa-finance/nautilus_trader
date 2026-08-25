@@ -580,6 +580,53 @@ pub struct NewOcoOrderListParams {
     pub self_trade_prevention_mode: Option<BinanceSelfTradePreventionMode>,
 }
 
+/// Query parameters for a new OPO order list.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NewOpoOrderListParams {
+    /// Trading pair symbol.
+    pub symbol: String,
+    /// Optional client order ID for the OPO list.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub list_client_order_id: Option<String>,
+    /// Working order type.
+    pub working_type: BinanceSpotOrderType,
+    /// Working order side.
+    pub working_side: BinanceSide,
+    /// Working order client order ID.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub working_client_order_id: Option<String>,
+    /// Working order price.
+    pub working_price: String,
+    /// Working order quantity.
+    pub working_quantity: String,
+    /// Working order time in force.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub working_time_in_force: Option<BinanceTimeInForce>,
+    /// Pending order type.
+    pub pending_type: BinanceSpotOrderType,
+    /// Pending order side.
+    pub pending_side: BinanceSide,
+    /// Pending order client order ID.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_client_order_id: Option<String>,
+    /// Pending order limit price.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_price: Option<String>,
+    /// Pending order stop trigger price.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_stop_price: Option<String>,
+    /// Pending order time in force.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_time_in_force: Option<BinanceTimeInForce>,
+    /// Response type.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_order_resp_type: Option<BinanceOrderResponseType>,
+    /// Self-trade prevention mode.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub self_trade_prevention_mode: Option<BinanceSelfTradePreventionMode>,
+}
+
 /// Query parameters for a new OPOCO order list.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

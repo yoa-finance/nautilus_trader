@@ -758,7 +758,7 @@ impl AlternatingMarketOrders {
             None,
         );
         self.orders_submitted += 1;
-        self.submit_order(order, None, None, None)
+        self.submit_order(order, None, None, None).map(|_| ())
     }
 }
 
@@ -839,7 +839,7 @@ impl PassiveLimitOrders {
             None,
         );
         self.orders_submitted += 1;
-        self.submit_order(order, None, None, None)
+        self.submit_order(order, None, None, None).map(|_| ())
     }
 }
 
@@ -869,6 +869,7 @@ impl DataActor for PassiveLimitOrders {
 
     fn on_stop(&mut self) -> anyhow::Result<()> {
         self.cancel_all_orders(self.instrument_id, None, None, None)
+            .map(|_| ())
     }
 }
 
@@ -924,7 +925,7 @@ impl GtdLimitExpiry {
             None,
         );
         self.orders_submitted += 1;
-        self.submit_order(order, None, None, None)
+        self.submit_order(order, None, None, None).map(|_| ())
     }
 }
 
@@ -1185,6 +1186,7 @@ impl OrderTypeSweep {
             None,
             None,
         )
+        .map(|_| ())
     }
 }
 
@@ -1212,6 +1214,7 @@ impl DataActor for OrderTypeSweep {
 
     fn on_stop(&mut self) -> anyhow::Result<()> {
         self.cancel_all_orders(self.instrument_id, None, None, None)
+            .map(|_| ())
     }
 }
 

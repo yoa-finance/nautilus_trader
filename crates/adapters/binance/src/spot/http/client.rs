@@ -69,8 +69,8 @@ use super::{
         AccountInfoParams, AccountTradesParams, AllOrdersParams, AvgPriceParams, BatchCancelItem,
         BatchOrderItem, CancelOpenOrdersParams, CancelOrderListParams, CancelOrderParams,
         CancelReplaceOrderParams, DepthParams, KlinesParams, ListenKeyParams,
-        NewOcoOrderListParams, NewOpocoOrderListParams, NewOrderParams, OpenOrdersParams,
-        QueryOrderParams, TickerParams, TradeFeeParams, TradesParams,
+        NewOcoOrderListParams, NewOpoOrderListParams, NewOpocoOrderListParams, NewOrderParams,
+        OpenOrdersParams, QueryOrderParams, TickerParams, TradeFeeParams, TradesParams,
     },
 };
 use crate::{
@@ -998,6 +998,21 @@ impl BinanceRawSpotHttpClient {
         params: &NewOcoOrderListParams,
     ) -> BinanceSpotHttpResult<BinanceOrderListResponse> {
         let bytes = self.post_signed_json("orderList/oco", Some(params)).await?;
+
+        serde_json::from_slice(&bytes).map_err(|e| BinanceSpotHttpError::JsonError(e.to_string()))
+    }
+
+    /// Submits a native Spot OPO order list.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if credentials are missing, the request fails, or
+    /// JSON parsing fails.
+    pub async fn submit_opo_order_list(
+        &self,
+        params: &NewOpoOrderListParams,
+    ) -> BinanceSpotHttpResult<BinanceOrderListResponse> {
+        let bytes = self.post_signed_json("orderList/opo", Some(params)).await?;
 
         serde_json::from_slice(&bytes).map_err(|e| BinanceSpotHttpError::JsonError(e.to_string()))
     }
@@ -2229,6 +2244,18 @@ impl BinanceSpotHttpClient {
         params: &NewOcoOrderListParams,
     ) -> BinanceSpotHttpResult<BinanceOrderListResponse> {
         self.inner.submit_oco_order_list(params).await
+    }
+
+    /// Submits a Spot OPO order list.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request fails or JSON parsing fails.
+    pub async fn submit_opo_order_list(
+        &self,
+        params: &NewOpoOrderListParams,
+    ) -> BinanceSpotHttpResult<BinanceOrderListResponse> {
+        self.inner.submit_opo_order_list(params).await
     }
 
     /// Submits a Spot OPOCO order list.

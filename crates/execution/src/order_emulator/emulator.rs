@@ -41,10 +41,7 @@ use nautilus_core::{UUID4, WeakCell};
 use nautilus_model::{
     data::{OrderBookDeltas, QuoteTick, TradeTick},
     enums::{ContingencyType, OrderSide, OrderSideSpecified, OrderStatus, OrderType, TriggerType},
-    events::{
-        OrderCanceled, OrderDenied, OrderEmulated, OrderEventAny, OrderPendingCancel,
-        OrderReleased, OrderUpdated, PositionEvent,
-    },
+    events::{OrderCanceled, OrderEmulated, OrderEventAny, OrderReleased, OrderUpdated},
     identifiers::{ClientOrderId, ExecAlgorithmId, InstrumentId, PositionId, StrategyId},
     instruments::Instrument,
     orders::{LimitOrder, MarketOrder, Order, OrderAny},
@@ -52,7 +49,7 @@ use nautilus_model::{
 };
 use ustr::Ustr;
 
-use super::handlers::{OrderEmulatorOnEventHandler, OrderEmulatorOnPositionEventHandler};
+use super::handlers::OrderEmulatorOnEventHandler;
 use crate::{
     matching_core::{MatchAction, OrderMatchingCore, RestingOrder},
     order_manager::{OrderManagerAction, manager::OrderManager},
@@ -73,7 +70,6 @@ pub struct OrderEmulator {
     quote_handlers: AHashMap<InstrumentId, TypedHandler<QuoteTick>>,
     trade_handlers: AHashMap<InstrumentId, TypedHandler<TradeTick>>,
     on_event_handler: Option<TypedHandler<OrderEventAny>>,
-    on_position_event_handler: Option<TypedHandler<PositionEvent>>,
 }
 
 impl Debug for OrderEmulator {
@@ -106,7 +102,6 @@ impl OrderEmulator {
             quote_handlers: AHashMap::new(),
             trade_handlers: AHashMap::new(),
             on_event_handler: None,
-            on_position_event_handler: None,
         }
     }
 
@@ -140,17 +135,13 @@ impl OrderEmulator {
 
         let on_event_handler = TypedHandler::new(OrderEmulatorOnEventHandler::new(
             Ustr::from(UUID4::new().as_str()),
-            weak.clone(),
+            weak,
         ));
-        let on_position_event_handler = TypedHandler::new(
-            OrderEmulatorOnPositionEventHandler::new(Ustr::from(UUID4::new().as_str()), weak),
-        );
 
         let mut emulator = emulator.borrow_mut();
         emulator.quote_tick_handler = Some(quote_handler);
         emulator.trade_tick_handler = Some(trade_handler);
         emulator.on_event_handler = Some(on_event_handler);
-        emulator.on_position_event_handler = Some(on_position_event_handler);
     }
 
     pub fn set_on_event_handler(&mut self, handler: TypedHandler<OrderEventAny>) {
@@ -299,6 +290,7 @@ impl OrderEmulator {
 
         if emulated_orders.is_empty() {
             log::debug!("No emulated orders to reactivate");
+            return Ok(());
         }
 
         for order in emulated_orders {
@@ -364,22 +356,6 @@ impl OrderEmulator {
             self.handle_submit_order(&command);
         }
 
-        let protected_strategies: Vec<StrategyId> = self
-            .cache
-            .borrow()
-            .order_lists(None, None, None, None)
-            .into_iter()
-            .filter(|list| {
-                list.order_list_type == nautilus_model::enums::OrderListType::ProtectedEntry
-            })
-            .map(|list| list.strategy_id)
-            .collect();
-        for strategy_id in protected_strategies {
-            self.check_monitoring(strategy_id, None);
-        }
-        let actions = self.manager.reconcile_protected_entries();
-        self.dispatch_manager_actions(actions);
-
         Ok(())
     }
 
@@ -397,13 +373,6 @@ impl OrderEmulator {
             log::debug!("Error deleting order: {e}");
         }
         // else: Order not in cache yet
-    }
-
-    pub fn on_position_event(&mut self, event: &PositionEvent) {
-        if let PositionEvent::PositionClosed(closed) = event {
-            let actions = self.manager.handle_position_closed(closed);
-            self.dispatch_manager_actions(actions);
-        }
     }
 
     pub const fn on_stop(&self) {}
@@ -472,19 +441,12 @@ impl OrderEmulator {
 
     fn unsubscribe_strategy_order_events(&mut self) {
         let strategy_ids: Vec<_> = self.subscribed_strategies.drain().collect();
+        let Some(handler) = &self.on_event_handler else {
+            return;
+        };
+
         for strategy_id in strategy_ids {
-            if let Some(handler) = &self.on_event_handler {
-                msgbus::unsubscribe_order_events(
-                    format!("events.order.{strategy_id}").into(),
-                    handler,
-                );
-            }
-            if let Some(handler) = &self.on_position_event_handler {
-                msgbus::unsubscribe_position_events(
-                    format!("events.position.{strategy_id}").into(),
-                    handler,
-                );
-            }
+            msgbus::unsubscribe_order_events(format!("events.order.{strategy_id}").into(), handler);
         }
     }
 
@@ -520,15 +482,11 @@ impl OrderEmulator {
                 exec_algorithm_id,
             } => self.send_algo_command(command, exec_algorithm_id),
             OrderManagerAction::CancelLocal(order) => self.cancel_order(&order),
-            OrderManagerAction::CancelToExecution(order) => self.cancel_venue_order(&order),
             OrderManagerAction::ModifyLocalQuantity {
                 mut order,
                 quantity,
             } => {
                 self.update_order(&mut order, quantity);
-            }
-            OrderManagerAction::DenyLocal { order, reason } => {
-                self.deny_local_order(&order, reason);
             }
         }
     }
@@ -1129,13 +1087,6 @@ impl OrderEmulator {
                 self.subscribed_strategies.insert(strategy_id);
                 log::info!("Subscribed to strategy {strategy_id} order events");
             }
-            if let Some(handler) = &self.on_position_event_handler {
-                msgbus::subscribe_position_events(
-                    format!("events.position.{strategy_id}").into(),
-                    handler.clone(),
-                    None,
-                );
-            }
         }
 
         if let Some(position_id) = position_id
@@ -1143,80 +1094,6 @@ impl OrderEmulator {
         {
             self.monitored_positions.insert(position_id);
         }
-    }
-
-    fn deny_local_order(&mut self, order: &OrderAny, reason: Ustr) {
-        let ts_now = self.clock.borrow().timestamp_ns();
-        let event = OrderEventAny::Denied(OrderDenied::new(
-            order.trader_id(),
-            order.strategy_id(),
-            order.instrument_id(),
-            order.client_order_id(),
-            reason,
-            UUID4::new(),
-            ts_now,
-            ts_now,
-        ));
-        if let Err(error) = self.cache.borrow_mut().update_order(&event) {
-            log::error!("Failed to deny local protected-entry order: {error}");
-            return;
-        }
-        self.send_portfolio_order_event(event.clone());
-        publish_order_event(&event);
-    }
-
-    fn cancel_venue_order(&mut self, order: &OrderAny) {
-        if order.is_closed() || order.is_pending_cancel() {
-            return;
-        }
-        let Some(account_id) = order.account_id() else {
-            log::error!(
-                "Cannot cancel protected-entry child {}: account_id not assigned",
-                order.client_order_id()
-            );
-            return;
-        };
-
-        let ts_now = self.clock.borrow().timestamp_ns();
-        let pending = OrderEventAny::PendingCancel(OrderPendingCancel::new(
-            order.trader_id(),
-            order.strategy_id(),
-            order.instrument_id(),
-            order.client_order_id(),
-            account_id,
-            UUID4::new(),
-            ts_now,
-            ts_now,
-            false,
-            order.venue_order_id(),
-        ));
-        if let Err(error) = self.cache.borrow_mut().update_order(&pending) {
-            log::error!("Cannot mark protected-entry child pending cancel: {error}");
-            return;
-        }
-        self.cache
-            .borrow_mut()
-            .update_order_pending_cancel_local(order);
-        publish_order_event(&pending);
-
-        let client_id = self
-            .cache
-            .borrow()
-            .client_id(&order.client_order_id())
-            .copied();
-        let command = CancelOrder::new(
-            order.trader_id(),
-            client_id,
-            order.strategy_id(),
-            order.instrument_id(),
-            order.client_order_id(),
-            order.venue_order_id(),
-            UUID4::new(),
-            ts_now,
-            None,
-            None,
-        );
-        self.send_exec_command(TradingCommand::CancelOrder(command));
     }
 
     /// Validates market data availability for order release.

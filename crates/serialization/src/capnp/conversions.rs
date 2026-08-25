@@ -846,7 +846,7 @@ pub fn order_list_type_to_capnp(value: OrderListType) -> enums_capnp::OrderListT
         OrderListType::Standard => enums_capnp::OrderListType::Standard,
         OrderListType::Oco => enums_capnp::OrderListType::Oco,
         OrderListType::Opoco => enums_capnp::OrderListType::Opoco,
-        OrderListType::ProtectedEntry => enums_capnp::OrderListType::ProtectedEntry,
+        OrderListType::Opo => enums_capnp::OrderListType::Opo,
     }
 }
 
@@ -856,7 +856,7 @@ pub fn order_list_type_from_capnp(value: enums_capnp::OrderListType) -> OrderLis
         enums_capnp::OrderListType::Standard => OrderListType::Standard,
         enums_capnp::OrderListType::Oco => OrderListType::Oco,
         enums_capnp::OrderListType::Opoco => OrderListType::Opoco,
-        enums_capnp::OrderListType::ProtectedEntry => OrderListType::ProtectedEntry,
+        enums_capnp::OrderListType::Opo => OrderListType::Opo,
     }
 }
 

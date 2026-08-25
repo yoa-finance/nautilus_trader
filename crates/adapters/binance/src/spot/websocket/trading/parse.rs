@@ -262,7 +262,8 @@ pub fn parse_spot_account_position(
 
 fn parse_order_status(status: BinanceOrderStatus, treat_expired_as_canceled: bool) -> OrderStatus {
     match status {
-        BinanceOrderStatus::New | BinanceOrderStatus::PendingNew => OrderStatus::Accepted,
+        BinanceOrderStatus::New => OrderStatus::Accepted,
+        BinanceOrderStatus::PendingNew => OrderStatus::Submitted,
         BinanceOrderStatus::PartiallyFilled => OrderStatus::PartiallyFilled,
         BinanceOrderStatus::Filled
         | BinanceOrderStatus::NewAdl

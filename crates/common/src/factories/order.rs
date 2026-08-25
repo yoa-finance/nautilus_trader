@@ -29,8 +29,8 @@ use nautilus_model::{
     },
     orders::{
         LimitIfTouchedOrder, LimitOrder, MarketIfTouchedOrder, MarketOrder, MarketToLimitOrder,
-        Order, OrderAny, OrderList, ProtectedEntryPolicy, StopLimitOrder, StopMarketOrder,
-        TrailingStopLimitOrder, TrailingStopMarketOrder,
+        Order, OrderAny, OrderList, StopLimitOrder, StopMarketOrder, TrailingStopLimitOrder,
+        TrailingStopMarketOrder,
     },
     types::{Price, Quantity},
 };
@@ -1144,19 +1144,6 @@ impl OrderFactory {
             order_ids,
             ts_init,
         )
-    }
-
-    /// Creates a protected-entry [`OrderList`] from the given orders.
-    #[must_use]
-    pub fn create_protected_entry_list(
-        &mut self,
-        orders: &mut [OrderAny],
-        policy: ProtectedEntryPolicy,
-        ts_init: UnixNanos,
-    ) -> OrderList {
-        let mut order_list = self.create_list_typed(OrderListType::ProtectedEntry, orders, ts_init);
-        order_list.protected_entry_policy = Some(policy);
-        order_list
     }
 
     /// Creates a bracket order with an entry order and attached take-profit and stop-loss legs.

@@ -42,8 +42,8 @@ use nautilus_execution::trailing::{
 use nautilus_model::{
     accounts::{Account, AccountAny},
     enums::{
-        AggregationSource, ContingencyType, OrderListType, OrderSide, OrderStatus, PositionSide,
-        PriceType, TimeInForce, TradingState, TrailingOffsetType, TriggerType,
+        AggregationSource, ContingencyType, OrderListType, OrderSide, OrderStatus, OrderType,
+        PositionSide, PriceType, TimeInForce, TradingState, TrailingOffsetType, TriggerType,
     },
     events::{OrderDenied, OrderDeniedReason, OrderEventAny, OrderModifyRejected, PositionEvent},
     identifiers::{AccountId, InstrumentId},
@@ -994,10 +994,20 @@ impl RiskEngine {
         order_list_type: OrderListType,
         orders: &[OrderAny],
     ) -> bool {
-        if order_list_type == OrderListType::Oco && !self.validate_oco_order_list(orders) {
-            return false;
+        match order_list_type {
+            OrderListType::Oco if !self.validate_oco_order_list(orders) => return false,
+            OrderListType::Opo if !self.validate_opo_order_list(orders) => return false,
+            OrderListType::Opoco if !self.validate_opoco_order_list(orders) => return false,
+            _ => {}
         }
 
+        if matches!(order_list_type, OrderListType::Opo | OrderListType::Opoco) {
+            return self.check_orders_risk_for_order_list_type(
+                instrument,
+                order_list_type,
+                &orders[..1],
+            );
+        }
         self.check_orders_risk_for_order_list_type(instrument, order_list_type, orders)
     }
 
@@ -1071,6 +1081,79 @@ impl RiskEngine {
         }
 
         true
+    }
+
+    fn validate_opo_order_list(&self, orders: &[OrderAny]) -> bool {
+        let Some(working) = orders.first() else {
+            return true;
+        };
+        if orders.len() != 2 {
+            self.deny_order(
+                working,
+                &format!(
+                    "OPO_ORDER_LIST_REQUIRES_TWO_LEGS: received={}",
+                    orders.len()
+                ),
+            );
+            return false;
+        }
+
+        let pending = &orders[1];
+        let valid = working.order_side() == OrderSide::Buy
+            && working.order_type() == OrderType::Limit
+            && working.contingency_type() == Some(ContingencyType::Oto)
+            && working.parent_order_id().is_none()
+            && pending.order_side() == OrderSide::Sell
+            && matches!(
+                pending.order_type(),
+                OrderType::StopMarket | OrderType::StopLimit
+            )
+            && pending.parent_order_id() == Some(working.client_order_id())
+            && working.account_id() == pending.account_id()
+            && working.instrument_id() == pending.instrument_id()
+            && working.quantity() == pending.quantity();
+        if !valid {
+            self.deny_order(
+                working,
+                "OPO_ORDER_LIST_REQUIRES_BUY_LIMIT_WORKING_AND_SELL_STOP_PENDING_WITH_NATIVE_OTO_METADATA",
+            );
+        }
+        valid
+    }
+
+    fn validate_opoco_order_list(&self, orders: &[OrderAny]) -> bool {
+        let Some(working) = orders.first() else {
+            return true;
+        };
+        if orders.len() != 3 {
+            self.deny_order(
+                working,
+                &format!(
+                    "OPOCO_ORDER_LIST_REQUIRES_THREE_LEGS: received={}",
+                    orders.len()
+                ),
+            );
+            return false;
+        }
+
+        let valid = working.order_side() == OrderSide::Buy
+            && working.order_type() == OrderType::Limit
+            && working.contingency_type() == Some(ContingencyType::Oto)
+            && working.parent_order_id().is_none()
+            && orders[1..].iter().all(|pending| {
+                pending.order_side() == OrderSide::Sell
+                    && pending.parent_order_id() == Some(working.client_order_id())
+                    && pending.account_id() == working.account_id()
+                    && pending.instrument_id() == working.instrument_id()
+                    && pending.quantity() == working.quantity()
+            });
+        if !valid {
+            self.deny_order(
+                working,
+                "OPOCO_ORDER_LIST_REQUIRES_BUY_LIMIT_WORKING_AND_TWO_SELL_PENDING_LEGS_WITH_NATIVE_OTO_METADATA",
+            );
+        }
+        valid
     }
 
     #[allow(
@@ -2109,19 +2192,6 @@ impl RiskEngine {
     }
 
     fn deny_order(&self, order: &OrderAny, reason: &str) {
-        let reason = if order.order_list_id().is_some_and(|order_list_id| {
-            self.cache
-                .borrow()
-                .order_list(&order_list_id)
-                .is_some_and(|order_list| {
-                    order_list.order_list_type == OrderListType::ProtectedEntry
-                        && order_list.client_order_ids.get(1) == Some(&order.client_order_id())
-                })
-        }) {
-            format!("PROTECTED_ENTRY: {reason}")
-        } else {
-            reason.to_string()
-        };
         log::warn!(
             "SubmitOrder for {} DENIED: {}",
             order.client_order_id(),

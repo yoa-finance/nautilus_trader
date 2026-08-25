@@ -49,8 +49,8 @@ use nautilus_live::{ExecutionClientCore, ExecutionEventEmitter};
 use nautilus_model::{
     accounts::AccountAny,
     enums::{
-        LiquiditySide, OmsType, OrderListType, OrderSide, OrderStatus, OrderType, TimeInForce,
-        TrailingOffsetType,
+        ContingencyType, LiquiditySide, OmsType, OrderListType, OrderSide, OrderStatus, OrderType,
+        TimeInForce, TrailingOffsetType,
     },
     events::{
         AccountState, OrderAccepted, OrderCancelRejected, OrderCanceled, OrderEventAny,
@@ -78,7 +78,7 @@ pub fn binance_spot_execution_capabilities() -> ExecutionClientCapabilities {
             OrderType::LimitIfTouched,
             OrderType::TrailingStopMarket,
         ],
-        order_list_types: vec![OrderListType::Oco, OrderListType::Opoco],
+        order_list_types: vec![OrderListType::Oco, OrderListType::Opoco, OrderListType::Opo],
         time_in_force: vec![TimeInForce::Gtc, TimeInForce::Ioc, TimeInForce::Fok],
         trailing_offset_types: vec![TrailingOffsetType::BasisPoints],
         submit_order: true,
@@ -146,7 +146,8 @@ use crate::{
             models::{BatchCancelResult, BinanceOrderListResponse},
             query::{
                 BatchCancelItem, CancelOrderListParams, CancelOrderParams,
-                CancelReplaceOrderParams, NewOcoOrderListParams, NewOpocoOrderListParams,
+                CancelReplaceOrderParams, NewOcoOrderListParams, NewOpoOrderListParams,
+                NewOpocoOrderListParams,
             },
         },
         sbe::spot::list_order_status::ListOrderStatus,
@@ -1230,6 +1231,18 @@ impl ExecutionClient for BinanceSpotExecutionClient {
             }
         };
 
+        if matches!(
+            cmd.order_list.order_list_type,
+            OrderListType::Opo | OrderListType::Opoco
+        ) {
+            for order in &orders {
+                if order.parent_order_id().is_some() {
+                    self.dispatch_state
+                        .mark_pending_new(order.client_order_id());
+                }
+            }
+        }
+
         for order in &orders {
             log::info!(
                 "Binance Spot submit_order_list child_submitted_emitted client_order_id={}",
@@ -1276,6 +1289,9 @@ impl ExecutionClient for BinanceSpotExecutionClient {
                             );
                             continue;
                         };
+                        if dispatch_state.is_pending_new(&acceptance.client_order_id) {
+                            continue;
+                        }
 
                         let ts_event = acceptance
                             .transact_time
@@ -2507,6 +2523,10 @@ fn dispatch_list_status(
             continue;
         }
 
+        if dispatch_state.is_pending_new(&client_order_id) {
+            continue;
+        }
+
         let venue_order_id = VenueOrderId::new(child.order_id.to_string());
         emit_order_accepted_once(
             client_order_id,
@@ -2538,6 +2558,7 @@ fn emit_order_list_denied(
 #[derive(Debug)]
 enum BinanceSpotOrderListParams {
     Oco(NewOcoOrderListParams),
+    Opo(NewOpoOrderListParams),
     Opoco(NewOpocoOrderListParams),
 }
 
@@ -2545,6 +2566,7 @@ impl BinanceSpotOrderListParams {
     const fn task_name(&self) -> &'static str {
         match self {
             Self::Oco(_) => "submit_oco_order_list_http",
+            Self::Opo(_) => "submit_opo_order_list_http",
             Self::Opoco(_) => "submit_opoco_order_list_http",
         }
     }
@@ -2555,6 +2577,7 @@ impl BinanceSpotOrderListParams {
     ) -> BinanceSpotHttpResult<BinanceOrderListResponse> {
         match self {
             Self::Oco(params) => http_client.submit_oco_order_list(&params).await,
+            Self::Opo(params) => http_client.submit_opo_order_list(&params).await,
             Self::Opoco(params) => http_client.submit_opoco_order_list(&params).await,
         }
     }
@@ -2569,10 +2592,15 @@ fn build_spot_order_list_params(
         OrderListType::Oco => {
             build_oco_order_list_params(command_params, orders).map(BinanceSpotOrderListParams::Oco)
         }
+        OrderListType::Opo => {
+            build_opo_order_list_params(command_params, orders).map(BinanceSpotOrderListParams::Opo)
+        }
         OrderListType::Opoco => build_opoco_order_list_params(command_params, orders)
             .map(BinanceSpotOrderListParams::Opoco),
-        OrderListType::Standard | OrderListType::ProtectedEntry => {
-            anyhow::bail!("Binance Spot submit_order_list requires OCO or OPOCO order_list_type")
+        OrderListType::Standard => {
+            anyhow::bail!(
+                "Binance Spot submit_order_list requires OCO, OPO or OPOCO order_list_type"
+            )
         }
     }
 }
@@ -2716,6 +2744,125 @@ fn build_oco_order_list_params(
     Ok(params)
 }
 
+fn build_opo_order_list_params(
+    command_params: Option<&nautilus_core::params::Params>,
+    orders: &[nautilus_model::orders::OrderAny],
+) -> anyhow::Result<NewOpoOrderListParams> {
+    if orders.len() != 2 {
+        anyhow::bail!(
+            "Binance Spot OPO order list requires exactly 2 child orders, received {}",
+            orders.len()
+        );
+    }
+
+    let working = &orders[0];
+    let pending = &orders[1];
+    if working.instrument_id() != pending.instrument_id() {
+        anyhow::bail!("Binance Spot OPO child orders must use the same instrument");
+    }
+    if working.quantity() != pending.quantity() {
+        anyhow::bail!("Binance Spot OPO child orders must use the same requested quantity");
+    }
+    if working.is_quote_quantity() || pending.is_quote_quantity() {
+        anyhow::bail!("Binance Spot OPO does not support quoteOrderQty child orders");
+    }
+    if working.order_side() != OrderSide::Buy || working.order_type() != OrderType::Limit {
+        anyhow::bail!("Binance Spot OPO requires a BUY LIMIT or LIMIT_MAKER working order");
+    }
+    if pending.order_side() != OrderSide::Sell
+        || !matches!(
+            pending.order_type(),
+            OrderType::StopMarket | OrderType::StopLimit
+        )
+    {
+        anyhow::bail!(
+            "Binance Spot OPO requires a SELL STOP_LOSS or STOP_LOSS_LIMIT pending order"
+        );
+    }
+    if working.contingency_type() != Some(ContingencyType::Oto)
+        || working.parent_order_id().is_some()
+        || pending.parent_order_id() != Some(working.client_order_id())
+    {
+        anyhow::bail!("Binance Spot OPO child orders require native OTO metadata");
+    }
+
+    let working_type = if working.is_post_only() {
+        BinanceSpotOrderType::LimitMaker
+    } else {
+        BinanceSpotOrderType::Limit
+    };
+    let working_time_in_force = if working_type == BinanceSpotOrderType::Limit {
+        Some(time_in_force_to_binance_spot(working.time_in_force())?)
+    } else {
+        None
+    };
+    let pending_type = match pending.order_type() {
+        OrderType::StopMarket => BinanceSpotOrderType::StopLoss,
+        OrderType::StopLimit => BinanceSpotOrderType::StopLossLimit,
+        _ => unreachable!("pending order type checked above"),
+    };
+    let pending_price = match pending.order_type() {
+        OrderType::StopMarket => None,
+        OrderType::StopLimit => Some(
+            pending
+                .price()
+                .ok_or_else(|| {
+                    anyhow::anyhow!("Binance Spot OPO STOP_LOSS_LIMIT pending order requires price")
+                })?
+                .to_string(),
+        ),
+        _ => unreachable!("pending order type checked above"),
+    };
+    let pending_time_in_force = if pending.order_type() == OrderType::StopLimit {
+        Some(time_in_force_to_binance_spot(pending.time_in_force())?)
+    } else {
+        None
+    };
+
+    let mut params = NewOpoOrderListParams {
+        symbol: working.instrument_id().symbol.to_string(),
+        list_client_order_id: None,
+        working_type,
+        working_side: BinanceSide::Buy,
+        working_client_order_id: Some(encode_binance_client_order_id(
+            &working.client_order_id(),
+            BINANCE_NAUTILUS_SPOT_BROKER_ID,
+        )?),
+        working_price: working
+            .price()
+            .ok_or_else(|| anyhow::anyhow!("Binance Spot OPO working order requires price"))?
+            .to_string(),
+        working_quantity: working.quantity().to_string(),
+        working_time_in_force,
+        pending_type,
+        pending_side: BinanceSide::Sell,
+        pending_client_order_id: Some(encode_binance_client_order_id(
+            &pending.client_order_id(),
+            BINANCE_NAUTILUS_SPOT_BROKER_ID,
+        )?),
+        pending_price,
+        pending_stop_price: Some(
+            pending
+                .trigger_price()
+                .ok_or_else(|| {
+                    anyhow::anyhow!("Binance Spot OPO pending order requires stop price")
+                })?
+                .to_string(),
+        ),
+        pending_time_in_force,
+        new_order_resp_type: Some(BinanceOrderResponseType::Full),
+        self_trade_prevention_mode: None,
+    };
+    if let Some(list_client_order_id) = order_list_client_order_id(command_params) {
+        params.list_client_order_id = Some(encode_binance_client_order_id(
+            &ClientOrderId::new(list_client_order_id),
+            BINANCE_NAUTILUS_SPOT_BROKER_ID,
+        )?);
+    }
+
+    Ok(params)
+}
+
 fn build_opoco_order_list_params(
     command_params: Option<&nautilus_core::params::Params>,
     orders: &[nautilus_model::orders::OrderAny],
@@ -2744,41 +2891,21 @@ fn build_opoco_order_list_params(
         anyhow::bail!("Binance Spot OPOCO does not support quoteOrderQty child orders");
     }
 
-    let buy_count = orders
-        .iter()
-        .filter(|order| order.order_side() == OrderSide::Buy)
-        .count();
-    let sell_count = orders
-        .iter()
-        .filter(|order| order.order_side() == OrderSide::Sell)
-        .count();
-    if buy_count + sell_count != orders.len() {
-        anyhow::bail!("Binance Spot OPOCO child orders must use BUY or SELL sides");
+    let working = &orders[0];
+    let pending_side = OrderSide::Sell;
+    if working.order_side() != OrderSide::Buy {
+        anyhow::bail!("Binance Spot OPOCO requires a BUY working order");
     }
-    let (working_side, pending_side) = match (buy_count, sell_count) {
-        (1, 2) => (OrderSide::Buy, OrderSide::Sell),
-        (2, 1) => (OrderSide::Sell, OrderSide::Buy),
-        _ => anyhow::bail!(
-            "Binance Spot OPOCO requires exactly one working-side child and two pending-side children"
-        ),
-    };
-    let working = orders
-        .iter()
-        .find(|order| order.order_side() == working_side)
-        .ok_or_else(|| anyhow::anyhow!("Binance Spot OPOCO requires one working order"))?;
     if working.order_type() != OrderType::Limit {
         anyhow::bail!("Binance Spot OPOCO requires one LIMIT or LIMIT_MAKER working order");
     }
-    let pending: Vec<_> = orders
-        .iter()
-        .filter(|order| order.client_order_id() != working.client_order_id())
-        .collect();
+    let pending: Vec<_> = orders[1..].iter().collect();
     if pending.len() != 2
         || pending
             .iter()
             .any(|order| order.order_side() != pending_side)
     {
-        anyhow::bail!("Binance Spot OPOCO pending child orders must use the opposite working side");
+        anyhow::bail!("Binance Spot OPOCO pending child orders must use the SELL side");
     }
     let target = pending
         .iter()
@@ -2887,31 +3014,15 @@ fn build_opoco_order_list_params(
         )?);
     }
 
-    match pending_side {
-        OrderSide::Sell => {
-            params.pending_above_type = BinanceSpotOrderType::LimitMaker;
-            params.pending_above_client_order_id = Some(target_client_id);
-            params.pending_above_price = Some(target_price);
+    params.pending_above_type = BinanceSpotOrderType::LimitMaker;
+    params.pending_above_client_order_id = Some(target_client_id);
+    params.pending_above_price = Some(target_price);
 
-            params.pending_below_type = Some(stop_type);
-            params.pending_below_client_order_id = Some(stop_client_id);
-            params.pending_below_price = stop_limit_price;
-            params.pending_below_stop_price = Some(stop_trigger_price);
-            params.pending_below_time_in_force = stop_time_in_force;
-        }
-        OrderSide::Buy => {
-            params.pending_above_type = stop_type;
-            params.pending_above_client_order_id = Some(stop_client_id);
-            params.pending_above_price = stop_limit_price;
-            params.pending_above_stop_price = Some(stop_trigger_price);
-            params.pending_above_time_in_force = stop_time_in_force;
-
-            params.pending_below_type = Some(BinanceSpotOrderType::LimitMaker);
-            params.pending_below_client_order_id = Some(target_client_id);
-            params.pending_below_price = Some(target_price);
-        }
-        side => anyhow::bail!("Unsupported Binance Spot OPOCO pending order side: {side:?}"),
-    }
+    params.pending_below_type = Some(stop_type);
+    params.pending_below_client_order_id = Some(stop_client_id);
+    params.pending_below_price = stop_limit_price;
+    params.pending_below_stop_price = Some(stop_trigger_price);
+    params.pending_below_time_in_force = stop_time_in_force;
 
     Ok(params)
 }
@@ -3189,6 +3300,21 @@ fn dispatch_tracked_execution_report(
                 emitter.send_order_event(OrderEventAny::Updated(updated));
                 return;
             }
+            if !emit_pending_new_quantity_update(
+                report,
+                emitter,
+                account_id,
+                state,
+                client_order_id,
+                identity,
+                venue_order_id,
+                price_precision,
+                size_precision,
+                ts_event,
+                ts_init,
+            ) {
+                return;
+            }
             emit_order_accepted_once(
                 client_order_id,
                 account_id,
@@ -3216,6 +3342,21 @@ fn dispatch_tracked_execution_report(
                 return;
             }
 
+            if !emit_pending_new_quantity_update(
+                report,
+                emitter,
+                account_id,
+                state,
+                client_order_id,
+                identity,
+                venue_order_id,
+                price_precision,
+                size_precision,
+                ts_event,
+                ts_init,
+            ) {
+                return;
+            }
             ensure_accepted_emitted(
                 client_order_id,
                 account_id,
@@ -3319,15 +3460,17 @@ fn dispatch_tracked_execution_report(
             );
         }
         BinanceSpotExecutionType::Canceled | BinanceSpotExecutionType::TradePrevention => {
-            ensure_accepted_emitted(
-                client_order_id,
-                account_id,
-                venue_order_id,
-                identity,
-                emitter,
-                state,
-                ts_init,
-            );
+            if !state.is_pending_new(&client_order_id) {
+                ensure_accepted_emitted(
+                    client_order_id,
+                    account_id,
+                    venue_order_id,
+                    identity,
+                    emitter,
+                    state,
+                    ts_init,
+                );
+            }
             let canceled = OrderCanceled::new(
                 emitter.trader_id(),
                 identity.strategy_id,
@@ -3344,15 +3487,17 @@ fn dispatch_tracked_execution_report(
             emitter.send_order_event(OrderEventAny::Canceled(canceled));
         }
         BinanceSpotExecutionType::Expired => {
-            ensure_accepted_emitted(
-                client_order_id,
-                account_id,
-                venue_order_id,
-                identity,
-                emitter,
-                state,
-                ts_init,
-            );
+            if !state.is_pending_new(&client_order_id) {
+                ensure_accepted_emitted(
+                    client_order_id,
+                    account_id,
+                    venue_order_id,
+                    identity,
+                    emitter,
+                    state,
+                    ts_init,
+                );
+            }
             state.cleanup_terminal(client_order_id);
 
             if treat_expired_as_canceled {
@@ -3405,6 +3550,65 @@ fn dispatch_tracked_execution_report(
             );
         }
     }
+}
+
+#[expect(clippy::too_many_arguments)]
+fn emit_pending_new_quantity_update(
+    report: &BinanceSpotExecutionReport,
+    emitter: &ExecutionEventEmitter,
+    account_id: AccountId,
+    state: &WsDispatchState,
+    client_order_id: ClientOrderId,
+    identity: &OrderIdentity,
+    venue_order_id: VenueOrderId,
+    price_precision: u8,
+    size_precision: u8,
+    ts_event: UnixNanos,
+    ts_init: UnixNanos,
+) -> bool {
+    if !state.is_pending_new(&client_order_id) {
+        return true;
+    }
+
+    let Some(quantity) = parse_spot_execution_report_quantity(
+        report,
+        &report.original_qty,
+        size_precision,
+        "original_qty",
+    ) else {
+        return false;
+    };
+    let Some((price, trigger)) =
+        parse_order_update_prices(report, identity.order_type, price_precision)
+    else {
+        return false;
+    };
+
+    if quantity != identity.quantity {
+        let updated = OrderUpdated::new(
+            emitter.trader_id(),
+            identity.strategy_id,
+            identity.instrument_id,
+            client_order_id,
+            quantity,
+            UUID4::new(),
+            ts_event,
+            ts_init,
+            false,
+            Some(venue_order_id),
+            Some(account_id),
+            price,
+            trigger,
+            None,
+            false,
+        );
+        emitter.send_order_event(OrderEventAny::Updated(updated));
+        if let Some(mut tracked) = state.order_identities.get_mut(&client_order_id) {
+            tracked.quantity = quantity;
+        }
+    }
+    state.clear_pending_new(&client_order_id);
+    true
 }
 
 fn parse_order_update_prices(
@@ -4076,6 +4280,64 @@ mod tests {
             _ => unreachable!(),
         }
         let _ = client_order_id;
+    }
+
+    #[rstest]
+    fn test_pending_new_venue_quantity_updates_before_acceptance() {
+        let clock = get_atomic_clock_realtime();
+        let (emitter, mut rx) = create_test_emitter(clock);
+        let client_order_id = ClientOrderId::from("O-20200101-000000-000-000-0");
+        let instrument_id = InstrumentId::from("ETHUSDT.BINANCE");
+        let dispatch_state = WsDispatchState::default();
+        let seen_trade_ids = Arc::new(Mutex::new(FifoCache::new()));
+        let identity = OrderIdentity {
+            instrument_id,
+            strategy_id: StrategyId::from("TEST-STRATEGY"),
+            order_side: OrderSide::Sell,
+            order_type: OrderType::StopLimit,
+            price: Some(Price::from("2400.00")),
+            quantity: Quantity::from("1.00000"),
+        };
+        dispatch_state
+            .order_identities
+            .insert(client_order_id, identity.clone());
+        dispatch_state.mark_pending_new(client_order_id);
+
+        let json = crate::common::testing::load_fixture_string(
+            "spot/user_data_json/execution_report_new.json",
+        );
+        let mut report: BinanceSpotExecutionReport = serde_json::from_str(&json).unwrap();
+        report.original_qty = "0.99900000".to_string();
+        report.price = "2400.00000000".to_string();
+        report.stop_price = "2450.00000000".to_string();
+
+        dispatch_tracked_execution_report(
+            &report,
+            &emitter,
+            AccountId::from("BINANCE-001"),
+            false,
+            &dispatch_state,
+            &seen_trade_ids,
+            client_order_id,
+            &identity,
+            instrument_id,
+            2,
+            5,
+            clock.get_time_ns(),
+        );
+
+        let updated = rx.try_recv().expect("quantity update expected");
+        assert!(matches!(
+            updated,
+            ExecutionEvent::Order(OrderEventAny::Updated(event))
+                if event.quantity == Quantity::from("0.99900")
+        ));
+        let accepted = rx.try_recv().expect("acceptance expected");
+        assert!(matches!(
+            accepted,
+            ExecutionEvent::Order(OrderEventAny::Accepted(_))
+        ));
+        assert!(!dispatch_state.is_pending_new(&client_order_id));
     }
 
     #[rstest]

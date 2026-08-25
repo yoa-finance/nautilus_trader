@@ -200,7 +200,7 @@ impl EmaCross {
             None,
             None,
         );
-        self.submit_order(order, None, None, None)
+        self.submit_order(order, None, None, None).map(|_| ())
     }
 }
 
@@ -280,7 +280,7 @@ impl SnapshotNettingFlip {
             None,
             None,
         );
-        self.submit_order(order, None, None, None)
+        self.submit_order(order, None, None, None).map(|_| ())
     }
 }
 
@@ -374,7 +374,7 @@ impl DataActor for OpenOptionOnQuote {
             None,
             None,
         );
-        self.submit_order(order, None, None, None)
+        self.submit_order(order, None, None, None).map(|_| ())
     }
 }
 
@@ -2884,6 +2884,7 @@ impl DataActor for EmulatedStopEntryOnQuote {
             None,
         );
         self.submit_order(order, self.position_id, None, None)
+            .map(|_| ())
     }
 }
 
@@ -3017,7 +3018,7 @@ impl DataActor for EmulatedTrailingStopOnQuote {
             None,
             None,
         );
-        self.submit_order(order, None, None, None)
+        self.submit_order(order, None, None, None).map(|_| ())
     }
 
     fn on_trade(&mut self, _tick: &TradeTick) -> anyhow::Result<()> {
@@ -3140,6 +3141,7 @@ impl DataActor for EmulatedBracketOnQuote {
             None,
             None,
         )
+        .map(|_| ())
     }
 }
 
@@ -4013,6 +4015,7 @@ impl DataActor for CloseOnStop {
 
     fn on_stop(&mut self) -> anyhow::Result<()> {
         self.close_all_positions(self.instrument_id, None, None, None, None, None, None)
+            .map(|_| ())
     }
 
     fn on_quote(&mut self, _quote: &QuoteTick) -> anyhow::Result<()> {
@@ -4034,7 +4037,7 @@ impl DataActor for CloseOnStop {
             None,
             None,
         );
-        self.submit_order(order, None, None, None)
+        self.submit_order(order, None, None, None).map(|_| ())
     }
 }
 
@@ -4216,6 +4219,7 @@ impl DataActor for CancelOnStop {
 
     fn on_stop(&mut self) -> anyhow::Result<()> {
         self.cancel_all_orders(self.instrument_id, None, None, None)
+            .map(|_| ())
     }
 
     fn on_quote(&mut self, _quote: &QuoteTick) -> anyhow::Result<()> {
@@ -4244,7 +4248,7 @@ impl DataActor for CancelOnStop {
             None,
             None,
         );
-        self.submit_order(order, None, None, None)
+        self.submit_order(order, None, None, None).map(|_| ())
     }
 }
 
@@ -4476,7 +4480,7 @@ impl DataActor for OpenOnEveryQuote {
             None,
             None,
         );
-        self.submit_order(order, None, None, None)
+        self.submit_order(order, None, None, None).map(|_| ())
     }
 }
 
@@ -4697,7 +4701,7 @@ impl DataActor for MultiInstrumentCloseOnStop {
             None,
             None,
         );
-        self.submit_order(order, None, None, None)
+        self.submit_order(order, None, None, None).map(|_| ())
     }
 }
 

@@ -82,6 +82,7 @@ pub struct WsDispatchState {
     pub order_identities: DashMap<ClientOrderId, OrderIdentity>,
     pub venue_order_identities: DashMap<VenueOrderId, ClientOrderId>,
     pub pending_requests: DashMap<String, PendingRequest>,
+    pending_new_orders: DashMap<ClientOrderId, ()>,
     live_exit_cancel_gates: Mutex<HashMap<String, CancelAllGate>>,
     emitted_accepted: Mutex<FifoCache<ClientOrderId, 10_000>>,
     emitted_accepted_events: Box<Mutex<FifoCache<AcceptedOrderKey, 10_000>>>,
@@ -108,6 +109,7 @@ impl Default for WsDispatchState {
             order_identities: DashMap::new(),
             venue_order_identities: DashMap::new(),
             pending_requests: DashMap::new(),
+            pending_new_orders: DashMap::new(),
             live_exit_cancel_gates: Mutex::new(HashMap::new()),
             emitted_accepted: Mutex::new(FifoCache::new()),
             emitted_accepted_events: Box::new(Mutex::new(FifoCache::new())),
@@ -163,6 +165,18 @@ impl WsDispatchState {
 
     pub fn insert_pending_update(&self, cid: ClientOrderId) {
         self.pending_updates.lock().expect(MUTEX_POISONED).add(cid);
+    }
+
+    pub fn mark_pending_new(&self, cid: ClientOrderId) {
+        self.pending_new_orders.insert(cid, ());
+    }
+
+    pub fn is_pending_new(&self, cid: &ClientOrderId) -> bool {
+        self.pending_new_orders.contains_key(cid)
+    }
+
+    pub fn clear_pending_new(&self, cid: &ClientOrderId) {
+        self.pending_new_orders.remove(cid);
     }
 
     pub fn remove_pending_update(&self, cid: &ClientOrderId) -> bool {
@@ -246,6 +260,7 @@ impl WsDispatchState {
             .lock()
             .expect(MUTEX_POISONED)
             .remove(&cid);
+        self.pending_new_orders.remove(&cid);
         self.filled_orders
             .lock()
             .expect(MUTEX_POISONED)

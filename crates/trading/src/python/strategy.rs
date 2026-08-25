@@ -1641,7 +1641,6 @@ impl PyStrategy {
         let inner = self.inner_mut();
 
         Strategy::submit_order(inner, order, position_id, client_id, params_map)
-            .map(|_| ())
             .map_err(to_pyruntime_err)
     }
 
@@ -1676,7 +1675,6 @@ impl PyStrategy {
             client_id,
             params_map,
         )
-        .map(|_| ())
         .map_err(to_pyruntime_err)
     }
 
@@ -1708,7 +1706,6 @@ impl PyStrategy {
             client_id,
             params_map,
         )
-        .map(|_| ())
         .map_err(to_pyruntime_err)
     }
 
@@ -1728,7 +1725,6 @@ impl PyStrategy {
         })?;
 
         Strategy::modify_orders(self.inner_mut(), updates, client_id, params_map)
-            .map(|_| ())
             .map_err(to_pyruntime_err)
     }
 
@@ -1749,7 +1745,6 @@ impl PyStrategy {
         let inner = self.inner_mut();
 
         Strategy::cancel_order(inner, client_order_id, client_id, params_map)
-            .map(|_| ())
             .map_err(to_pyruntime_err)
     }
 
@@ -1779,7 +1774,6 @@ impl PyStrategy {
         })?;
 
         Strategy::cancel_orders(self.inner_mut(), client_order_ids, client_id, params_map)
-            .map(|_| ())
             .map_err(to_pyruntime_err)
     }
 
@@ -1805,7 +1799,6 @@ impl PyStrategy {
             client_id,
             params_map,
         )
-        .map(|_| ())
         .map_err(to_pyruntime_err)
     }
 
@@ -1830,7 +1823,6 @@ impl PyStrategy {
             reduce_only,
             quote_quantity,
         )
-        .map(|_| ())
         .map_err(to_pyruntime_err)
     }
 
@@ -1858,7 +1850,6 @@ impl PyStrategy {
             reduce_only,
             quote_quantity,
         )
-        .map(|_| ())
         .map_err(to_pyruntime_err)
     }
 

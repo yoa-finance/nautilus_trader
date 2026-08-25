@@ -66,7 +66,9 @@ use nautilus_core::UnixNanos;
 use nautilus_live::ExecutionClientCore;
 use nautilus_model::{
     accounts::{AccountAny, CashAccount},
-    enums::{AccountType, ContingencyType, OmsType, OrderSide, TimeInForce, TriggerType},
+    enums::{
+        AccountType, ContingencyType, OmsType, OrderListType, OrderSide, TimeInForce, TriggerType,
+    },
     events::{AccountState, OrderEventAny},
     identifiers::{
         AccountId, ClientOrderId, InstrumentId, OrderListId, StrategyId, TraderId, VenueOrderId,
@@ -744,6 +746,7 @@ fn create_exec_test_router_with_command_responses(state: CommandResponseState) -
                 .delete(handle_order_cancel),
         )
         .route("/api/v3/orderList/oco", post(handle_oco_order_list_submit))
+        .route("/api/v3/orderList/opo", post(handle_opo_order_list_submit))
         .route("/api/v3/batchOrders", delete(handle_batch_cancel))
         .with_state(state)
 }
@@ -919,6 +922,69 @@ async fn handle_oco_order_list_submit(
                     "symbol": "BTCUSDT",
                     "orderId": 1002,
                     "clientOrderId": below_client_order_id
+                }
+            ]
+        })),
+    )
+}
+
+async fn handle_opo_order_list_submit(
+    State(state): State<CommandResponseState>,
+    headers: HeaderMap,
+    Query(params): Query<HashMap<String, String>>,
+) -> Response {
+    if !has_auth_headers(&headers) {
+        return unauthorized_response().into_response();
+    }
+    state.request_count.fetch_add(1, Ordering::Relaxed);
+
+    let valid_opo = params.get("symbol").is_some_and(|value| value == "BTCUSDT")
+        && params
+            .get("workingSide")
+            .is_some_and(|value| value == "BUY")
+        && params
+            .get("pendingSide")
+            .is_some_and(|value| value == "SELL")
+        && params
+            .get("workingQuantity")
+            .is_some_and(|value| value == "0.001")
+        && params
+            .get("pendingType")
+            .is_some_and(|value| value == "STOP_LOSS_LIMIT")
+        && !params.contains_key("pendingQuantity");
+    if !valid_opo {
+        return venue_reject_response(-1102, "invalid OPO test request");
+    }
+
+    let working_client_order_id = params
+        .get("workingClientOrderId")
+        .cloned()
+        .unwrap_or_else(|| "working".to_string());
+    let pending_client_order_id = params
+        .get("pendingClientOrderId")
+        .cloned()
+        .unwrap_or_else(|| "pending".to_string());
+
+    command_response(
+        state.responses.submit,
+        json_response(&json!({
+            "orderListId": 43,
+            "contingencyType": "OPO",
+            "listStatusType": "EXEC_STARTED",
+            "listOrderStatus": "EXECUTING",
+            "listClientOrderId": "opo-list",
+            "transactionTime": 1710485608839_i64,
+            "symbol": "BTCUSDT",
+            "orders": [
+                {
+                    "symbol": "BTCUSDT",
+                    "orderId": 2001,
+                    "clientOrderId": working_client_order_id
+                },
+                {
+                    "symbol": "BTCUSDT",
+                    "orderId": 2002,
+                    "clientOrderId": pending_client_order_id
                 }
             ]
         })),
@@ -1472,7 +1538,7 @@ async fn test_submit_oco_order_list_routes_to_order_list_oco_endpoint() {
         connected_client_with_command_responses(CommandResponses::default()).await;
 
     let orders = add_spot_oco_orders_to_cache(&cache);
-    let submit_cmd = submit_order_list_command(&orders);
+    let submit_cmd = submit_typed_order_list_command(&orders, OrderListType::Oco);
 
     client.submit_order_list(submit_cmd).unwrap();
 
@@ -1496,6 +1562,34 @@ async fn test_submit_oco_order_list_routes_to_order_list_oco_endpoint() {
 
 #[rstest]
 #[tokio::test]
+async fn test_submit_opo_omits_pending_quantity_and_keeps_pending_submitted() {
+    let (client, mut rx, cache, request_count) =
+        connected_client_with_command_responses(CommandResponses::default()).await;
+
+    let orders = add_spot_opo_orders_to_cache(&cache);
+    let pending_client_order_id = orders[1].client_order_id();
+    let submit_cmd = submit_typed_order_list_command(&orders, OrderListType::Opo);
+    client.submit_order_list(submit_cmd).unwrap();
+
+    wait_for_command_requests(&request_count, 1).await;
+    let mut accepted_working = false;
+    wait_until_async(
+        || {
+            while let Ok(event) = rx.try_recv() {
+                if let ExecutionEvent::Order(OrderEventAny::Accepted(event)) = event {
+                    assert_ne!(event.client_order_id, pending_client_order_id);
+                    accepted_working = true;
+                }
+            }
+            async move { accepted_working }
+        },
+        Duration::from_secs(5),
+    )
+    .await;
+}
+
+#[rstest]
+#[tokio::test]
 async fn test_oco_order_list_response_parse_failure_does_not_emit_order_rejected() {
     let (client, mut rx, cache, request_count) =
         connected_client_with_command_responses(CommandResponses {
@@ -1505,7 +1599,7 @@ async fn test_oco_order_list_response_parse_failure_does_not_emit_order_rejected
         .await;
 
     let orders = add_spot_oco_orders_to_cache(&cache);
-    let submit_cmd = submit_order_list_command(&orders);
+    let submit_cmd = submit_typed_order_list_command(&orders, OrderListType::Oco);
     let client_order_ids = orders
         .iter()
         .map(|order| order.client_order_id())
@@ -2352,9 +2446,12 @@ async fn connected_client_with_command_responses(
     Arc<AtomicUsize>,
 ) {
     let (addr, request_count) = start_exec_test_server_with_command_responses(responses).await;
+    let (ws_addr, _ws_state) = start_ws_setup_test_server(WsSetupBehavior::CompleteSetup).await;
     let base_url = format!("http://{addr}");
+    let base_url_ws_trading = format!("ws://{ws_addr}/ws-api/v3");
 
-    let (mut client, rx, cache) = create_test_execution_client(base_url);
+    let (mut client, rx, cache) =
+        create_test_execution_client_with_ws_trading(base_url, base_url_ws_trading);
     add_test_account_to_cache(&cache, AccountId::from("BINANCE-001"));
 
     client.start().unwrap();
@@ -2477,6 +2574,78 @@ fn add_spot_oco_orders_to_cache(cache: &Rc<RefCell<Cache>>) -> Vec<OrderAny> {
     orders
 }
 
+fn add_spot_opo_orders_to_cache(cache: &Rc<RefCell<Cache>>) -> Vec<OrderAny> {
+    let order_list_id = OrderListId::from("OL-SPOT-OPO");
+    let working_id = ClientOrderId::new("spot-opo-working");
+    let pending_id = ClientOrderId::new("spot-opo-pending");
+
+    let working = OrderAny::Limit(LimitOrder::new(
+        test_trader_id(),
+        test_strategy_id(),
+        test_instrument_id(),
+        working_id,
+        OrderSide::Buy,
+        Quantity::from("0.001"),
+        Price::from("50000.00"),
+        TimeInForce::Gtc,
+        None,
+        false,
+        false,
+        false,
+        None,
+        None,
+        None,
+        Some(ContingencyType::Oto),
+        Some(order_list_id),
+        Some(vec![pending_id]),
+        None,
+        None,
+        None,
+        None,
+        None,
+        nautilus_core::UUID4::new(),
+        UnixNanos::default(),
+    ));
+    let pending = OrderAny::StopLimit(StopLimitOrder::new(
+        test_trader_id(),
+        test_strategy_id(),
+        test_instrument_id(),
+        pending_id,
+        OrderSide::Sell,
+        Quantity::from("0.001"),
+        Price::from("49000.00"),
+        Price::from("49500.00"),
+        TriggerType::Default,
+        TimeInForce::Gtc,
+        None,
+        false,
+        false,
+        false,
+        None,
+        None,
+        None,
+        Some(ContingencyType::NoContingency),
+        Some(order_list_id),
+        None,
+        Some(working_id),
+        None,
+        None,
+        None,
+        None,
+        nautilus_core::UUID4::new(),
+        UnixNanos::default(),
+    ));
+
+    let orders = vec![working, pending];
+    for order in &orders {
+        cache
+            .borrow_mut()
+            .add_order(order.clone(), None, None, false)
+            .unwrap();
+    }
+    orders
+}
+
 fn submit_order_command(order: &OrderAny) -> SubmitOrder {
     SubmitOrder::new(
         test_trader_id(),
@@ -2495,8 +2664,16 @@ fn submit_order_command(order: &OrderAny) -> SubmitOrder {
 }
 
 fn submit_order_list_command(orders: &[OrderAny]) -> SubmitOrderList {
-    let order_list = OrderList::new(
+    submit_typed_order_list_command(orders, OrderListType::Standard)
+}
+
+fn submit_typed_order_list_command(
+    orders: &[OrderAny],
+    order_list_type: OrderListType,
+) -> SubmitOrderList {
+    let order_list = OrderList::new_typed(
         OrderListId::from("OL-SPOT-TEST"),
+        order_list_type,
         test_instrument_id(),
         test_strategy_id(),
         orders.iter().map(|order| order.client_order_id()).collect(),

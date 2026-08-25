@@ -55,7 +55,7 @@ use nautilus_model::{
     instruments::{Instrument, InstrumentAny},
     orders::{
         LIMIT_ORDER_TYPES, Order, OrderAny, OrderCore, OrderError, OrderList, POSITION_CLOSE_TAG,
-        ProtectedEntryPolicy, STOP_ORDER_TYPES,
+        STOP_ORDER_TYPES,
     },
     position::Position,
     types::{Currency, Price, Quantity},
@@ -517,59 +517,7 @@ pub trait Strategy: DataActor {
     fn submit_order_list(
         &mut self,
         order_list_type: OrderListType,
-        orders: Vec<OrderAny>,
-        position_id: Option<PositionId>,
-        client_id: Option<ClientId>,
-        params: Option<Params>,
-    ) -> anyhow::Result<DispatchOutcome>
-    where
-        Self: StrategyNative,
-    {
-        self.submit_order_list_with_policy(
-            order_list_type,
-            orders,
-            None,
-            position_id,
-            client_id,
-            params,
-        )
-    }
-
-    /// Submits a local protected-entry order list.
-    ///
-    /// The first order is the entry parent and the second is its protective child. Nautilus keeps
-    /// the child local until the parent is terminal, then sizes it from the authoritative net
-    /// position before sending it through the normal risk and execution pipeline.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the strategy is not registered or the protected-entry list is invalid.
-    fn submit_protected_entry_order_list(
-        &mut self,
-        orders: Vec<OrderAny>,
-        policy: ProtectedEntryPolicy,
-        position_id: Option<PositionId>,
-        client_id: Option<ClientId>,
-        params: Option<Params>,
-    ) -> anyhow::Result<DispatchOutcome>
-    where
-        Self: StrategyNative,
-    {
-        self.submit_order_list_with_policy(
-            OrderListType::ProtectedEntry,
-            orders,
-            Some(policy),
-            position_id,
-            client_id,
-            params,
-        )
-    }
-
-    fn submit_order_list_with_policy(
-        &mut self,
-        order_list_type: OrderListType,
         mut orders: Vec<OrderAny>,
-        protected_entry_policy: Option<ProtectedEntryPolicy>,
         position_id: Option<PositionId>,
         client_id: Option<ClientId>,
         params: Option<Params>,
@@ -626,23 +574,10 @@ pub trait Strategy: DataActor {
 
         // TODO: Replace with fluent builder API for order list construction
         let order_list = if orders.first().is_some_and(|o| o.order_list_id().is_some()) {
-            OrderList::from_orders_with_type_and_policy(
-                order_list_type,
-                &orders,
-                protected_entry_policy,
-                ts_init,
-            )
+            OrderList::from_orders_with_type(order_list_type, &orders, ts_init)
         } else {
-            match protected_entry_policy {
-                Some(policy) => {
-                    core.order_factory()
-                        .create_protected_entry_list(&mut orders, policy, ts_init)
-                }
-                None => {
-                    core.order_factory()
-                        .create_list_typed(order_list_type, &mut orders, ts_init)
-                }
-            }
+            core.order_factory()
+                .create_list_typed(order_list_type, &mut orders, ts_init)
         };
         normalize_order_list_metadata(order_list.order_list_type, order_list.id, &mut orders)?;
 
@@ -689,7 +624,6 @@ pub trait Strategy: DataActor {
         let order_inits: Vec<_> = orders.iter().map(|o| o.init_event().clone()).collect();
         let exec_algorithm_id = first_order.and_then(|o| o.exec_algorithm_id());
 
-        let is_protected_entry = order_list.order_list_type == OrderListType::ProtectedEntry;
         let command = SubmitOrderList::new(
             trader_id,
             client_id,
@@ -709,7 +643,7 @@ pub trait Strategy: DataActor {
                 || o.is_emulated()
         });
 
-        if has_emulated_order || is_protected_entry {
+        if has_emulated_order {
             send_emulator_command(TradingCommand::SubmitOrderList(command));
         } else if let Some(algo_id) = exec_algorithm_id {
             let endpoint = format!("{algo_id}.execute");
@@ -2781,43 +2715,45 @@ fn normalize_order_list_metadata(
         OrderListType::Standard => Ok(()),
         OrderListType::Oco => normalize_oco_order_list_metadata(orders),
         OrderListType::Opoco => normalize_opoco_order_list_metadata(orders),
-        OrderListType::ProtectedEntry => normalize_protected_entry_order_list_metadata(orders),
+        OrderListType::Opo => normalize_opo_order_list_metadata(orders),
     }
 }
 
-fn normalize_protected_entry_order_list_metadata(orders: &mut [OrderAny]) -> anyhow::Result<()> {
+fn normalize_opo_order_list_metadata(orders: &mut [OrderAny]) -> anyhow::Result<()> {
     if orders.len() != 2 {
         anyhow::bail!(
-            "OrderList denied: protected entry requires exactly 2 orders, received {}",
+            "OrderList denied: OPO order list requires exactly 2 orders, received {}",
             orders.len()
         );
     }
 
-    let parent_id = orders[0].client_order_id();
-    let child_id = orders[1].client_order_id();
-
-    if !matches!(orders[0].order_type(), OrderType::Market | OrderType::Limit) {
-        anyhow::bail!("OrderList denied: protected entry parent must be MARKET or LIMIT");
-    }
-    if orders[1].order_type() != OrderType::StopMarket
-        || orders[1].time_in_force() != TimeInForce::Gtc
-        || orders[1].order_side() == orders[0].order_side()
-        || !orders[1].is_reduce_only()
-        || !orders[1]
-            .tags()
-            .is_some_and(|tags| tags.contains(&Ustr::from("STOP_LOSS")))
+    let working = &orders[0];
+    let pending = &orders[1];
+    if working.order_side() != OrderSide::Buy
+        || working.order_type() != OrderType::Limit
+        || pending.order_side() != OrderSide::Sell
+        || !matches!(
+            pending.order_type(),
+            OrderType::StopMarket | OrderType::StopLimit
+        )
     {
         anyhow::bail!(
-            "OrderList denied: protected entry child must be opposite STOP_MARKET, GTC, reduce-only and tagged STOP_LOSS"
+            "OrderList denied: OPO requires a BUY LIMIT/LIMIT_MAKER working order followed by a SELL STOP_LOSS/STOP_LOSS_LIMIT pending order"
         );
     }
+    if working.instrument_id() != pending.instrument_id()
+        || working.quantity() != pending.quantity()
+    {
+        anyhow::bail!("OrderList denied: OPO legs must use the same instrument and quantity");
+    }
 
+    let working_id = working.client_order_id();
+    let pending_id = pending.client_order_id();
     orders[0].set_contingency_type(ContingencyType::Oto);
     orders[0].set_parent_order_id(None);
-    orders[0].set_linked_order_ids(vec![child_id]);
-
+    orders[0].set_linked_order_ids(vec![pending_id]);
     orders[1].set_contingency_type(ContingencyType::NoContingency);
-    orders[1].set_parent_order_id(Some(parent_id));
+    orders[1].set_parent_order_id(Some(working_id));
     orders[1].set_linked_order_ids(Vec::new());
 
     Ok(())
@@ -2853,39 +2789,26 @@ fn normalize_opoco_order_list_metadata(orders: &mut [OrderAny]) -> anyhow::Resul
         );
     }
 
-    let buy_count = orders
-        .iter()
-        .filter(|order| order.order_side() == OrderSide::Buy)
-        .count();
-    let sell_count = orders
-        .iter()
-        .filter(|order| order.order_side() == OrderSide::Sell)
-        .count();
+    if orders[0].order_side() != OrderSide::Buy
+        || orders[0].order_type() != OrderType::Limit
+        || orders[1..]
+            .iter()
+            .any(|order| order.order_side() != OrderSide::Sell)
+    {
+        anyhow::bail!(
+            "OrderList denied: OPOCO requires a BUY LIMIT/LIMIT_MAKER working order followed by two SELL pending orders"
+        );
+    }
 
-    let working_side = match (buy_count, sell_count) {
-        (1, 2) => OrderSide::Buy,
-        (2, 1) => OrderSide::Sell,
-        _ => anyhow::bail!(
-            "OrderList denied: OPOCO order list requires exactly one working-side order and two pending-side orders"
-        ),
-    };
-
-    let working_index = orders
-        .iter()
-        .position(|order| order.order_side() == working_side)
-        .expect("working side count checked above");
-    let pending_indices: Vec<usize> = (0..orders.len())
-        .filter(|index| *index != working_index)
-        .collect();
-    let working_id = orders[working_index].client_order_id();
-    let first_pending_index = pending_indices[0];
-    let second_pending_index = pending_indices[1];
+    let working_id = orders[0].client_order_id();
+    let first_pending_index = 1;
+    let second_pending_index = 2;
     let first_pending_id = orders[first_pending_index].client_order_id();
     let second_pending_id = orders[second_pending_index].client_order_id();
 
-    orders[working_index].set_contingency_type(ContingencyType::Oto);
-    orders[working_index].set_parent_order_id(None);
-    orders[working_index].set_linked_order_ids(vec![first_pending_id, second_pending_id]);
+    orders[0].set_contingency_type(ContingencyType::Oto);
+    orders[0].set_parent_order_id(None);
+    orders[0].set_linked_order_ids(vec![first_pending_id, second_pending_id]);
 
     orders[first_pending_index].set_contingency_type(ContingencyType::Oco);
     orders[first_pending_index].set_parent_order_id(Some(working_id));

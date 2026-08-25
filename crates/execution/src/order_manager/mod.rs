@@ -19,7 +19,6 @@ use nautilus_common::messages::execution::SubmitOrder;
 use nautilus_model::{
     events::OrderEventAny, identifiers::ExecAlgorithmId, orders::OrderAny, types::Quantity,
 };
-use ustr::Ustr;
 
 pub mod manager;
 
@@ -34,13 +33,8 @@ pub enum OrderManagerAction {
         exec_algorithm_id: ExecAlgorithmId,
     },
     CancelLocal(OrderAny),
-    CancelToExecution(OrderAny),
     ModifyLocalQuantity {
         order: OrderAny,
         quantity: Quantity,
-    },
-    DenyLocal {
-        order: OrderAny,
-        reason: Ustr,
     },
 }
