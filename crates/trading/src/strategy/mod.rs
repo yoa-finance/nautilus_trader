@@ -39,8 +39,8 @@ use nautilus_core::{Params, UUID4};
 use nautilus_model::{
     accounts::AccountAny,
     enums::{
-        ContingencyType, OrderListType, OrderSide, OrderStatus, PositionSide, TimeInForce,
-        TriggerType,
+        ContingencyType, OrderListType, OrderSide, OrderStatus, OrderType, PositionSide,
+        TimeInForce, TriggerType,
     },
     events::{
         OrderAccepted, OrderCancelRejected, OrderDenied, OrderDeniedReason, OrderEmulated,
@@ -55,7 +55,7 @@ use nautilus_model::{
     instruments::{Instrument, InstrumentAny},
     orders::{
         LIMIT_ORDER_TYPES, Order, OrderAny, OrderCore, OrderError, OrderList, POSITION_CLOSE_TAG,
-        STOP_ORDER_TYPES,
+        ProtectedEntryPolicy, STOP_ORDER_TYPES,
     },
     position::Position,
     types::{Currency, Price, Quantity},
@@ -517,7 +517,59 @@ pub trait Strategy: DataActor {
     fn submit_order_list(
         &mut self,
         order_list_type: OrderListType,
+        orders: Vec<OrderAny>,
+        position_id: Option<PositionId>,
+        client_id: Option<ClientId>,
+        params: Option<Params>,
+    ) -> anyhow::Result<DispatchOutcome>
+    where
+        Self: StrategyNative,
+    {
+        self.submit_order_list_with_policy(
+            order_list_type,
+            orders,
+            None,
+            position_id,
+            client_id,
+            params,
+        )
+    }
+
+    /// Submits a local protected-entry order list.
+    ///
+    /// The first order is the entry parent and the second is its protective child. Nautilus keeps
+    /// the child local until the parent is terminal, then sizes it from the authoritative net
+    /// position before sending it through the normal risk and execution pipeline.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the strategy is not registered or the protected-entry list is invalid.
+    fn submit_protected_entry_order_list(
+        &mut self,
+        orders: Vec<OrderAny>,
+        policy: ProtectedEntryPolicy,
+        position_id: Option<PositionId>,
+        client_id: Option<ClientId>,
+        params: Option<Params>,
+    ) -> anyhow::Result<DispatchOutcome>
+    where
+        Self: StrategyNative,
+    {
+        self.submit_order_list_with_policy(
+            OrderListType::ProtectedEntry,
+            orders,
+            Some(policy),
+            position_id,
+            client_id,
+            params,
+        )
+    }
+
+    fn submit_order_list_with_policy(
+        &mut self,
+        order_list_type: OrderListType,
         mut orders: Vec<OrderAny>,
+        protected_entry_policy: Option<ProtectedEntryPolicy>,
         position_id: Option<PositionId>,
         client_id: Option<ClientId>,
         params: Option<Params>,
@@ -574,10 +626,23 @@ pub trait Strategy: DataActor {
 
         // TODO: Replace with fluent builder API for order list construction
         let order_list = if orders.first().is_some_and(|o| o.order_list_id().is_some()) {
-            OrderList::from_orders_with_type(order_list_type, &orders, ts_init)
+            OrderList::from_orders_with_type_and_policy(
+                order_list_type,
+                &orders,
+                protected_entry_policy,
+                ts_init,
+            )
         } else {
-            core.order_factory()
-                .create_list_typed(order_list_type, &mut orders, ts_init)
+            match protected_entry_policy {
+                Some(policy) => {
+                    core.order_factory()
+                        .create_protected_entry_list(&mut orders, policy, ts_init)
+                }
+                None => {
+                    core.order_factory()
+                        .create_list_typed(order_list_type, &mut orders, ts_init)
+                }
+            }
         };
         normalize_order_list_metadata(order_list.order_list_type, order_list.id, &mut orders)?;
 
@@ -624,6 +689,7 @@ pub trait Strategy: DataActor {
         let order_inits: Vec<_> = orders.iter().map(|o| o.init_event().clone()).collect();
         let exec_algorithm_id = first_order.and_then(|o| o.exec_algorithm_id());
 
+        let is_protected_entry = order_list.order_list_type == OrderListType::ProtectedEntry;
         let command = SubmitOrderList::new(
             trader_id,
             client_id,
@@ -643,7 +709,7 @@ pub trait Strategy: DataActor {
                 || o.is_emulated()
         });
 
-        if has_emulated_order {
+        if has_emulated_order || is_protected_entry {
             send_emulator_command(TradingCommand::SubmitOrderList(command));
         } else if let Some(algo_id) = exec_algorithm_id {
             let endpoint = format!("{algo_id}.execute");
@@ -2715,7 +2781,46 @@ fn normalize_order_list_metadata(
         OrderListType::Standard => Ok(()),
         OrderListType::Oco => normalize_oco_order_list_metadata(orders),
         OrderListType::Opoco => normalize_opoco_order_list_metadata(orders),
+        OrderListType::ProtectedEntry => normalize_protected_entry_order_list_metadata(orders),
     }
+}
+
+fn normalize_protected_entry_order_list_metadata(orders: &mut [OrderAny]) -> anyhow::Result<()> {
+    if orders.len() != 2 {
+        anyhow::bail!(
+            "OrderList denied: protected entry requires exactly 2 orders, received {}",
+            orders.len()
+        );
+    }
+
+    let parent_id = orders[0].client_order_id();
+    let child_id = orders[1].client_order_id();
+
+    if !matches!(orders[0].order_type(), OrderType::Market | OrderType::Limit) {
+        anyhow::bail!("OrderList denied: protected entry parent must be MARKET or LIMIT");
+    }
+    if orders[1].order_type() != OrderType::StopMarket
+        || orders[1].time_in_force() != TimeInForce::Gtc
+        || orders[1].order_side() == orders[0].order_side()
+        || !orders[1].is_reduce_only()
+        || !orders[1]
+            .tags()
+            .is_some_and(|tags| tags.contains(&Ustr::from("STOP_LOSS")))
+    {
+        anyhow::bail!(
+            "OrderList denied: protected entry child must be opposite STOP_MARKET, GTC, reduce-only and tagged STOP_LOSS"
+        );
+    }
+
+    orders[0].set_contingency_type(ContingencyType::Oto);
+    orders[0].set_parent_order_id(None);
+    orders[0].set_linked_order_ids(vec![child_id]);
+
+    orders[1].set_contingency_type(ContingencyType::NoContingency);
+    orders[1].set_parent_order_id(Some(parent_id));
+    orders[1].set_linked_order_ids(Vec::new());
+
+    Ok(())
 }
 
 fn normalize_oco_order_list_metadata(orders: &mut [OrderAny]) -> anyhow::Result<()> {

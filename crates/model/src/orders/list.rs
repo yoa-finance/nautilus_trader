@@ -20,6 +20,7 @@ use std::{
 
 use ahash::AHashSet;
 use nautilus_core::UnixNanos;
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -44,6 +45,33 @@ pub enum OrderListValidationError {
         /// The invalid order list ID.
         order_list_id: OrderListId,
     },
+    /// A protected-entry list does not have exactly one parent and one child.
+    #[error("OrderList {order_list_id} protected entry requires exactly 2 orders")]
+    InvalidProtectedEntryOrderCount {
+        /// The invalid order list ID.
+        order_list_id: OrderListId,
+    },
+    /// A protected-entry list is missing a valid policy.
+    #[error("OrderList {order_list_id} protected entry requires protection_ratio in (0, 1]")]
+    InvalidProtectedEntryPolicy {
+        /// The invalid order list ID.
+        order_list_id: OrderListId,
+    },
+    /// A non-protected order list unexpectedly carries a protected-entry policy.
+    #[error("OrderList {order_list_id} cannot carry a protected-entry policy")]
+    UnexpectedProtectedEntryPolicy {
+        /// The invalid order list ID.
+        order_list_id: OrderListId,
+    },
+}
+
+/// Policy for a local protected-entry order list.
+///
+/// Parent-terminal activation and authoritative net-position sizing are invariants of
+/// [`OrderListType::ProtectedEntry`], not configurable policy fields.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct ProtectedEntryPolicy {
+    pub protection_ratio: Decimal,
 }
 
 /// Lightweight identifier container for a group of related orders.
@@ -71,6 +99,8 @@ pub struct OrderList {
     pub instrument_id: InstrumentId,
     pub strategy_id: StrategyId,
     pub client_order_ids: Vec<ClientOrderId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protected_entry_policy: Option<ProtectedEntryPolicy>,
     pub ts_init: UnixNanos,
 }
 
@@ -109,12 +139,35 @@ impl OrderList {
         client_order_ids: Vec<ClientOrderId>,
         ts_init: UnixNanos,
     ) -> Self {
+        Self::new_typed_with_policy(
+            order_list_id,
+            order_list_type,
+            instrument_id,
+            strategy_id,
+            client_order_ids,
+            None,
+            ts_init,
+        )
+    }
+
+    /// Creates a new typed [`OrderList`] with a protected-entry policy.
+    #[must_use]
+    pub fn new_typed_with_policy(
+        order_list_id: OrderListId,
+        order_list_type: OrderListType,
+        instrument_id: InstrumentId,
+        strategy_id: StrategyId,
+        client_order_ids: Vec<ClientOrderId>,
+        protected_entry_policy: Option<ProtectedEntryPolicy>,
+        ts_init: UnixNanos,
+    ) -> Self {
         Self {
             id: order_list_id,
             order_list_type,
             instrument_id,
             strategy_id,
             client_order_ids,
+            protected_entry_policy,
             ts_init,
         }
     }
@@ -154,6 +207,17 @@ impl OrderList {
         orders: &[OrderAny],
         ts_init: UnixNanos,
     ) -> Self {
+        Self::from_orders_with_type_and_policy(order_list_type, orders, None, ts_init)
+    }
+
+    /// Creates a typed [`OrderList`] with a protected-entry policy from a slice of orders.
+    #[must_use]
+    pub fn from_orders_with_type_and_policy(
+        order_list_type: OrderListType,
+        orders: &[OrderAny],
+        protected_entry_policy: Option<ProtectedEntryPolicy>,
+        ts_init: UnixNanos,
+    ) -> Self {
         let first = orders
             .first()
             .expect("OrderList::from_orders requires non-empty orders");
@@ -182,6 +246,7 @@ impl OrderList {
             instrument_id,
             strategy_id,
             client_order_ids,
+            protected_entry_policy,
             ts_init,
         }
     }
@@ -203,6 +268,28 @@ impl OrderList {
             return Err(OrderListValidationError::DuplicateClientOrderIds {
                 order_list_id: self.id,
             });
+        }
+
+        match (self.order_list_type, self.protected_entry_policy) {
+            (OrderListType::ProtectedEntry, _) if self.client_order_ids.len() != 2 => {
+                return Err(OrderListValidationError::InvalidProtectedEntryOrderCount {
+                    order_list_id: self.id,
+                });
+            }
+            (OrderListType::ProtectedEntry, Some(policy))
+                if policy.protection_ratio > Decimal::ZERO
+                    && policy.protection_ratio <= Decimal::ONE => {}
+            (OrderListType::ProtectedEntry, _) => {
+                return Err(OrderListValidationError::InvalidProtectedEntryPolicy {
+                    order_list_id: self.id,
+                });
+            }
+            (_, Some(_)) => {
+                return Err(OrderListValidationError::UnexpectedProtectedEntryPolicy {
+                    order_list_id: self.id,
+                });
+            }
+            (_, None) => {}
         }
 
         Ok(())

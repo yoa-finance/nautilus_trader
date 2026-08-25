@@ -257,7 +257,7 @@ impl HurstVpinDirectional {
             None, // client_order_id
         );
         self.entry_order_id = Some(order.client_order_id());
-        self.submit_order(order, None, None, None)
+        self.submit_order(order, None, None, None).map(|_| ())
     }
 
     fn submit_close(&mut self) -> anyhow::Result<()> {

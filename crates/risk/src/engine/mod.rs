@@ -2109,6 +2109,19 @@ impl RiskEngine {
     }
 
     fn deny_order(&self, order: &OrderAny, reason: &str) {
+        let reason = if order.order_list_id().is_some_and(|order_list_id| {
+            self.cache
+                .borrow()
+                .order_list(&order_list_id)
+                .is_some_and(|order_list| {
+                    order_list.order_list_type == OrderListType::ProtectedEntry
+                        && order_list.client_order_ids.get(1) == Some(&order.client_order_id())
+                })
+        }) {
+            format!("PROTECTED_ENTRY: {reason}")
+        } else {
+            reason.to_string()
+        };
         log::warn!(
             "SubmitOrder for {} DENIED: {}",
             order.client_order_id(),

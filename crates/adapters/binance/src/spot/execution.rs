@@ -2571,7 +2571,7 @@ fn build_spot_order_list_params(
         }
         OrderListType::Opoco => build_opoco_order_list_params(command_params, orders)
             .map(BinanceSpotOrderListParams::Opoco),
-        OrderListType::Standard => {
+        OrderListType::Standard | OrderListType::ProtectedEntry => {
             anyhow::bail!("Binance Spot submit_order_list requires OCO or OPOCO order_list_type")
         }
     }

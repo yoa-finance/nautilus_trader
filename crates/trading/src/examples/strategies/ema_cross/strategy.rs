@@ -95,7 +95,7 @@ impl EmaCross {
             None, // tags
             None, // client_order_id
         );
-        self.submit_order(order, None, None, None)
+        self.submit_order(order, None, None, None).map(|_| ())
     }
 }
 

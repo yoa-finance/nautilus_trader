@@ -192,6 +192,7 @@ struct SubmitOrderList {
     positionId @2 :Identifiers.PositionId;
     params @3 :Base.StringMap;
     orderListType @4 :Enums.OrderListType;
+    protectedEntryRatio @5 :Text;
 }
 
 struct ModifyOrder {

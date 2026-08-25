@@ -17,7 +17,7 @@ use std::any::Any;
 
 use nautilus_common::{messages::execution::TradingCommand, msgbus::Handler};
 use nautilus_core::WeakCell;
-use nautilus_model::events::OrderEventAny;
+use nautilus_model::events::{OrderEventAny, PositionEvent};
 use ustr::Ustr;
 
 use super::emulator::OrderEmulator;
@@ -84,6 +84,37 @@ impl Handler<OrderEventAny> for OrderEmulatorOnEventHandler {
                         event
                     );
                 }
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct OrderEmulatorOnPositionEventHandler {
+    id: Ustr,
+    emulator: WeakCell<OrderEmulator>,
+}
+
+impl OrderEmulatorOnPositionEventHandler {
+    #[inline]
+    #[must_use]
+    pub const fn new(id: Ustr, emulator: WeakCell<OrderEmulator>) -> Self {
+        Self { id, emulator }
+    }
+}
+
+impl Handler<PositionEvent> for OrderEmulatorOnPositionEventHandler {
+    fn id(&self) -> Ustr {
+        self.id
+    }
+
+    fn handle(&self, event: &PositionEvent) {
+        if let Some(emulator) = self.emulator.upgrade() {
+            match emulator.try_borrow_mut() {
+                Ok(mut emulator) => emulator.on_position_event(event),
+                Err(_) => log::debug!(
+                    "Skipping reentrant position event while OrderEmulator is already handling an event: {event:?}"
+                ),
             }
         }
     }

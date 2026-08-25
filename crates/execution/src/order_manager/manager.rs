@@ -19,14 +19,17 @@ use ahash::AHashMap;
 use nautilus_common::{cache::Cache, clock::Clock, messages::execution::SubmitOrder};
 use nautilus_core::UUID4;
 use nautilus_model::{
-    enums::{ContingencyType, TriggerType},
+    enums::{ContingencyType, OrderListType, OrderStatus, TriggerType},
     events::{
-        OrderCanceled, OrderEventAny, OrderExpired, OrderFilled, OrderRejected, OrderUpdated,
+        OrderCanceled, OrderDenied, OrderEventAny, OrderExpired, OrderFilled, OrderRejected,
+        OrderUpdated, PositionClosed,
     },
     identifiers::{ClientId, ClientOrderId, PositionId},
+    instruments::Instrument,
     orders::{Order, OrderAny},
     types::Quantity,
 };
+use ustr::Ustr;
 
 use super::OrderManagerAction;
 
@@ -191,6 +194,7 @@ impl OrderManager {
     /// like `OrderSubmitted`, `OrderAccepted`, etc. are no-ops for the order manager.
     pub fn handle_event(&mut self, event: &OrderEventAny) -> Vec<OrderManagerAction> {
         match event {
+            OrderEventAny::Denied(event) => self.handle_order_denied(*event),
             OrderEventAny::Rejected(event) => self.handle_order_rejected(*event),
             OrderEventAny::Canceled(event) => self.handle_order_canceled(*event),
             OrderEventAny::Expired(event) => self.handle_order_expired(*event),
@@ -198,6 +202,11 @@ impl OrderManager {
             OrderEventAny::Filled(event) => self.handle_order_filled(*event),
             _ => Vec::new(),
         }
+    }
+
+    /// Handles an order denied event and manages any protected-entry child.
+    pub fn handle_order_denied(&mut self, denied: OrderDenied) -> Vec<OrderManagerAction> {
+        self.handle_terminal_order(denied.client_order_id, "OrderDenied")
     }
 
     /// Handles an order rejected event and manages any contingent orders.
@@ -209,6 +218,9 @@ impl OrderManager {
             .map(|o| o.clone());
 
         if let Some(order) = cloned_order {
+            if let Some(actions) = self.handle_protected_entry_parent(&order) {
+                return actions;
+            }
             if order.contingency_type() != Some(ContingencyType::NoContingency) {
                 return self.handle_contingencies(&order);
             }
@@ -231,6 +243,9 @@ impl OrderManager {
             .map(|o| o.clone());
 
         if let Some(order) = cloned_order {
+            if let Some(actions) = self.handle_protected_entry_parent(&order) {
+                return actions;
+            }
             if order.contingency_type() != Some(ContingencyType::NoContingency) {
                 return self.handle_contingencies(&order);
             }
@@ -252,6 +267,9 @@ impl OrderManager {
             .order(&expired.client_order_id)
             .map(|o| o.clone());
         if let Some(order) = cloned_order {
+            if let Some(actions) = self.handle_protected_entry_parent(&order) {
+                return actions;
+            }
             if order.contingency_type() != Some(ContingencyType::NoContingency) {
                 return self.handle_contingencies(&order);
             }
@@ -305,6 +323,10 @@ impl OrderManager {
         };
 
         let mut actions = Vec::new();
+
+        if let Some(protected_actions) = self.handle_protected_entry_parent(&order) {
+            return protected_actions;
+        }
 
         match order.contingency_type() {
             Some(ContingencyType::Oto) => {
@@ -425,6 +447,209 @@ impl OrderManager {
         }
 
         actions
+    }
+
+    /// Cancels open protected-entry children tied to a position Nautilus has closed.
+    pub fn handle_position_closed(&mut self, closed: &PositionClosed) -> Vec<OrderManagerAction> {
+        let children: Vec<OrderAny> = {
+            let cache = self.cache.borrow();
+            cache
+                .order_lists(None, None, Some(&closed.strategy_id), None)
+                .into_iter()
+                .filter(|list| list.order_list_type == OrderListType::ProtectedEntry)
+                .filter_map(|list| list.client_order_ids.get(1))
+                .filter_map(|id| cache.order(id).map(|order| order.clone()))
+                .filter(|order| {
+                    order.position_id() == Some(closed.position_id) && !order.is_closed()
+                })
+                .collect()
+        };
+
+        children
+            .into_iter()
+            .flat_map(|child| match child.status() {
+                OrderStatus::Initialized | OrderStatus::Emulated => self.cancel_order(&child),
+                _ => vec![OrderManagerAction::CancelToExecution(child)],
+            })
+            .collect()
+    }
+
+    /// Ensures terminal protected-entry parents are reconciled idempotently from cache state.
+    pub fn reconcile_protected_entries(&mut self) -> Vec<OrderManagerAction> {
+        let parents: Vec<OrderAny> = {
+            let cache = self.cache.borrow();
+            cache
+                .order_lists(None, None, None, None)
+                .into_iter()
+                .filter(|list| list.order_list_type == OrderListType::ProtectedEntry)
+                .filter_map(|list| list.first())
+                .filter_map(|id| cache.order(id).map(|order| order.clone()))
+                .filter(|order| order.is_closed())
+                .collect()
+        };
+
+        parents
+            .iter()
+            .flat_map(|parent| {
+                self.handle_protected_entry_parent(parent)
+                    .unwrap_or_default()
+            })
+            .collect()
+    }
+
+    fn handle_terminal_order(
+        &mut self,
+        client_order_id: ClientOrderId,
+        event_name: &str,
+    ) -> Vec<OrderManagerAction> {
+        let order = self
+            .cache
+            .borrow()
+            .order(&client_order_id)
+            .map(|order| order.clone());
+        match order {
+            Some(order) => {
+                if let Some(actions) = self.handle_protected_entry_parent(&order) {
+                    actions
+                } else if order.contingency_type() != Some(ContingencyType::NoContingency) {
+                    self.handle_contingencies(&order)
+                } else {
+                    Vec::new()
+                }
+            }
+            None => {
+                log::error!(
+                    "Cannot handle `{event_name}`: order for client_order_id: {client_order_id} not found"
+                );
+                Vec::new()
+            }
+        }
+    }
+
+    /// Returns `Some` only when `order` is the parent of a protected-entry list.
+    fn handle_protected_entry_parent(
+        &mut self,
+        order: &OrderAny,
+    ) -> Option<Vec<OrderManagerAction>> {
+        let order_list_id = order.order_list_id()?;
+        let order_list = self.cache.borrow().order_list(&order_list_id)?.clone();
+        if order_list.order_list_type != OrderListType::ProtectedEntry
+            || order_list.first() != Some(&order.client_order_id())
+        {
+            return None;
+        }
+
+        if !order.is_closed() {
+            return Some(Vec::new());
+        }
+
+        let child_id = *order_list
+            .client_order_ids
+            .get(1)
+            .expect("validated protected-entry list has child");
+        let child = self
+            .cache
+            .borrow()
+            .order(&child_id)
+            .map(|child| child.clone());
+        let Some(mut child) = child else {
+            log::error!("Protected-entry child {child_id} not found");
+            return Some(Vec::new());
+        };
+
+        if order.filled_qty().is_zero() {
+            return Some(self.cancel_order(&child));
+        }
+
+        // The child status is the idempotency key. Any state beyond Initialized means Nautilus
+        // already made (or completed) the submission decision.
+        if child.status() != OrderStatus::Initialized
+            || self
+                .submit_order_commands
+                .contains_key(&child.client_order_id())
+        {
+            return Some(Vec::new());
+        }
+
+        let position_id = self
+            .cache
+            .borrow()
+            .position_id(&order.client_order_id())
+            .copied();
+        let Some(position_id) = position_id else {
+            log::error!(
+                "Cannot activate protected-entry child {child_id}: parent has no position_id"
+            );
+            return Some(Vec::new());
+        };
+
+        let net_position = self
+            .cache
+            .borrow()
+            .position(&position_id)
+            .map(|position| position.quantity.as_decimal());
+        let Some(net_position) = net_position else {
+            log::error!(
+                "Cannot activate protected-entry child {child_id}: position {position_id} not found"
+            );
+            return Some(Vec::new());
+        };
+
+        let policy = order_list
+            .protected_entry_policy
+            .expect("validated protected-entry list has policy");
+        let instrument = self
+            .cache
+            .borrow()
+            .instrument(&order.instrument_id())
+            .cloned();
+        let Some(instrument) = instrument else {
+            log::error!(
+                "Cannot activate protected-entry child {child_id}: instrument {} not found",
+                order.instrument_id()
+            );
+            return Some(Vec::new());
+        };
+        let target_quantity =
+            match instrument.try_floor_qty_to_increment(net_position * policy.protection_ratio) {
+                Ok(quantity) => quantity,
+                Err(error) => {
+                    log::error!("Cannot size protected-entry child {child_id}: {error}");
+                    return Some(Vec::new());
+                }
+            };
+
+        if target_quantity.is_zero() {
+            return Some(vec![OrderManagerAction::DenyLocal {
+                order: child,
+                reason: Ustr::from(
+                    format!(
+                        "PROTECTED_ENTRY_NET_POSITION_BELOW_SIZE_INCREMENT: net_position={net_position}, protection_ratio={}",
+                        policy.protection_ratio
+                    )
+                    .as_str(),
+                ),
+            }]);
+        }
+
+        let client_id = self
+            .cache
+            .borrow()
+            .client_id(&order.client_order_id())
+            .copied();
+        child.set_position_id(Some(position_id));
+
+        let mut actions = Vec::new();
+        if child.quantity() != target_quantity {
+            actions.extend(self.modify_order_quantity(&child, target_quantity));
+            child.set_quantity(target_quantity);
+            child.set_leaves_qty(target_quantity);
+        }
+        match self.create_new_submit_order(&child, Some(position_id), client_id, None) {
+            Ok(submit_actions) => actions.extend(submit_actions),
+            Err(error) => log::error!("Failed to submit protected-entry child {child_id}: {error}"),
+        }
+        Some(actions)
     }
 
     pub fn handle_contingencies(&mut self, order: &OrderAny) -> Vec<OrderManagerAction> {
@@ -592,17 +817,26 @@ mod tests {
     use nautilus_common::{cache::Cache, clock::TestClock};
     use nautilus_core::{UUID4, UnixNanos};
     use nautilus_model::{
-        enums::{ContingencyType, OrderSide, OrderType, TriggerType},
+        enums::{
+            ContingencyType, OmsType, OrderListType, OrderSide, OrderType, TimeInForce, TriggerType,
+        },
         events::{OrderAccepted, OrderSubmitted},
         identifiers::{
-            AccountId, ClientOrderId, ExecAlgorithmId, InstrumentId, StrategyId, TraderId,
-            VenueOrderId,
+            AccountId, ClientOrderId, ExecAlgorithmId, InstrumentId, OrderListId, PositionId,
+            StrategyId, TradeId, TraderId, VenueOrderId,
         },
-        instruments::{Instrument, InstrumentAny, stubs::audusd_sim},
-        orders::{Order, OrderTestBuilder, stubs::TestOrderEventStubs},
-        types::{Price, Quantity},
+        instruments::{
+            Instrument, InstrumentAny,
+            stubs::{audusd_sim, currency_pair_btcusdt},
+        },
+        orders::{
+            Order, OrderList, OrderTestBuilder, ProtectedEntryPolicy, stubs::TestOrderEventStubs,
+        },
+        position::Position,
+        types::{Money, Price, Quantity},
     };
     use rstest::rstest;
+    use rust_decimal::Decimal;
 
     use super::*;
 
@@ -1228,6 +1462,173 @@ mod tests {
                 .submit_order_commands
                 .contains_key(&stale_order.client_order_id()),
             "closed-order gate should short-circuit even when the passed reference is stale",
+        );
+    }
+
+    #[rstest]
+    #[case(8, false, "0.00112")]
+    #[case(3, true, "0.00020")]
+    fn test_protected_entry_activates_once_from_terminal_net_position(
+        #[case] fill_count: usize,
+        #[case] cancel_parent: bool,
+        #[case] expected_protection_quantity: &str,
+    ) {
+        let (clock, cache) = create_test_components();
+        let mut manager = OrderManager::new(clock, cache.clone(), true);
+        let mut btcusdt = currency_pair_btcusdt();
+        btcusdt.size_precision = 8;
+        btcusdt.size_increment = Quantity::from("0.00001");
+        let instrument = InstrumentAny::CurrencyPair(btcusdt);
+        let account_id = AccountId::from("BINANCE-SPOT");
+        let position_id = PositionId::from("P-BTCUSDT-001");
+        let order_list_id = OrderListId::from("OL-PROTECTED-001");
+        let parent_id = ClientOrderId::from("O-PROTECTED-PARENT");
+        let child_id = ClientOrderId::from("O-PROTECTED-STOP");
+
+        let parent = OrderTestBuilder::new(OrderType::Market)
+            .instrument_id(instrument.id())
+            .client_order_id(parent_id)
+            .side(OrderSide::Buy)
+            .quantity(Quantity::from("0.00113"))
+            .order_list_id(order_list_id)
+            .contingency_type(ContingencyType::Oto)
+            .linked_order_ids(vec![child_id])
+            .build();
+        let child = OrderTestBuilder::new(OrderType::StopMarket)
+            .instrument_id(instrument.id())
+            .client_order_id(child_id)
+            .side(OrderSide::Sell)
+            .quantity(Quantity::from("0.00113"))
+            .trigger_price(Price::from("80000.00"))
+            .time_in_force(TimeInForce::Gtc)
+            .reduce_only(true)
+            .order_list_id(order_list_id)
+            .parent_order_id(parent_id)
+            .emulation_trigger(TriggerType::NoTrigger)
+            .build();
+        let order_list = OrderList::from_orders_with_type_and_policy(
+            OrderListType::ProtectedEntry,
+            &[parent.clone(), child.clone()],
+            Some(ProtectedEntryPolicy {
+                protection_ratio: Decimal::ONE,
+            }),
+            UnixNanos::default(),
+        );
+        order_list.validate().unwrap();
+
+        {
+            let mut cache = cache.borrow_mut();
+            cache.add_instrument(instrument.clone()).unwrap();
+            cache.add_order_list(order_list).unwrap();
+            cache
+                .add_order(parent.clone(), Some(position_id), None, false)
+                .unwrap();
+            cache.add_order(child, None, None, false).unwrap();
+            cache
+                .update_order(&TestOrderEventStubs::submitted(&parent, account_id))
+                .unwrap();
+            cache
+                .update_order(&TestOrderEventStubs::accepted(
+                    &parent,
+                    account_id,
+                    VenueOrderId::from("V-PARENT"),
+                ))
+                .unwrap();
+        }
+
+        let fill_quantities = [
+            "0.00007", "0.00007", "0.00007", "0.00007", "0.00007", "0.00007", "0.00007", "0.00064",
+        ];
+        let mut position: Option<Position> = None;
+        let mut activation_actions = Vec::new();
+        for (index, fill_quantity) in fill_quantities.iter().take(fill_count).enumerate() {
+            let cached_parent = cache.borrow().order(&parent_id).unwrap().clone();
+            let commission = if *fill_quantity == "0.00064" {
+                Money::from("0.00000064 BTC")
+            } else {
+                Money::from("0.00000007 BTC")
+            };
+            let event = TestOrderEventStubs::filled(
+                &cached_parent,
+                &instrument,
+                Some(TradeId::from(format!("T-{index}").as_str())),
+                Some(position_id),
+                Some(Price::from("80000.00")),
+                Some(Quantity::from(*fill_quantity)),
+                None,
+                Some(commission),
+                Some(UnixNanos::from(index as u64 + 1)),
+                Some(account_id),
+            );
+            let OrderEventAny::Filled(filled) = event else {
+                unreachable!()
+            };
+            cache
+                .borrow_mut()
+                .update_order(&OrderEventAny::Filled(filled))
+                .unwrap();
+            match &mut position {
+                Some(position) => {
+                    position.apply(&filled);
+                    cache.borrow_mut().update_position(position).unwrap();
+                }
+                None => {
+                    let opened = Position::new(&instrument, filled);
+                    cache
+                        .borrow_mut()
+                        .add_position(&opened, OmsType::Netting)
+                        .unwrap();
+                    position = Some(opened);
+                }
+            }
+
+            let actions = manager.handle_order_filled(filled);
+            if index + 1 < 8 || cancel_parent {
+                assert!(actions.is_empty(), "child activated during a partial fill");
+            } else {
+                activation_actions = actions;
+            }
+        }
+
+        if cancel_parent {
+            let cached_parent = cache.borrow().order(&parent_id).unwrap().clone();
+            let event = TestOrderEventStubs::canceled(
+                &cached_parent,
+                account_id,
+                Some(VenueOrderId::from("V-PARENT")),
+            );
+            cache.borrow_mut().update_order(&event).unwrap();
+            let OrderEventAny::Canceled(canceled) = event else {
+                unreachable!()
+            };
+            activation_actions = manager.handle_order_canceled(canceled);
+        }
+
+        let expected = Quantity::from(expected_protection_quantity);
+        assert!(matches!(
+            activation_actions.as_slice(),
+            [
+                OrderManagerAction::ModifyLocalQuantity { quantity, .. },
+                OrderManagerAction::SubmitToRisk(command),
+            ] if *quantity == expected && command.client_order_id == child_id
+        ));
+        assert_eq!(
+            cache.borrow().position(&position_id).unwrap().quantity,
+            if cancel_parent {
+                Quantity::from("0.00020979")
+            } else {
+                Quantity::from("0.00112887")
+            },
+            "protection must be sized from base-commission-adjusted net position",
+        );
+
+        let cached_parent = cache.borrow().order(&parent_id).unwrap().clone();
+        assert!(
+            manager
+                .handle_protected_entry_parent(&cached_parent)
+                .unwrap()
+                .is_empty(),
+            "terminal replay must not submit the child twice",
         );
     }
 }

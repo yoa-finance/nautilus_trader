@@ -418,6 +418,7 @@ impl DeltaNeutralVol {
         );
 
         self.submit_order(order, None, Some(client_id), params)
+            .map(|_| ())
     }
 
     fn check_rehedge(&mut self) -> anyhow::Result<()> {

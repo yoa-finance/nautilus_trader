@@ -442,22 +442,26 @@ impl ExecTester {
         match order {
             OrderAny::StopMarket(_)
             | OrderAny::MarketIfTouched(_)
-            | OrderAny::TrailingStopMarket(_) => self.modify_order(
-                order.client_order_id(),
-                None,
-                None,
-                Some(trigger_price),
-                client_id,
-                None,
-            ),
-            OrderAny::StopLimit(_) | OrderAny::LimitIfTouched(_) => self.modify_order(
-                order.client_order_id(),
-                None,
-                limit_price,
-                Some(trigger_price),
-                client_id,
-                None,
-            ),
+            | OrderAny::TrailingStopMarket(_) => self
+                .modify_order(
+                    order.client_order_id(),
+                    None,
+                    None,
+                    Some(trigger_price),
+                    client_id,
+                    None,
+                )
+                .map(|_| ()),
+            OrderAny::StopLimit(_) | OrderAny::LimitIfTouched(_) => self
+                .modify_order(
+                    order.client_order_id(),
+                    None,
+                    limit_price,
+                    Some(trigger_price),
+                    client_id,
+                    None,
+                )
+                .map(|_| ()),
             _ => {
                 log_warn!("Cannot modify order of type {:?}", order.order_type());
                 Ok(())
@@ -470,8 +474,9 @@ impl ExecTester {
         let client_id = self.config.client_id;
         if let Some(params) = &self.config.order_params {
             self.submit_order(order, None, client_id, Some(params.clone()))
+                .map(|_| ())
         } else {
-            self.submit_order(order, None, client_id, None)
+            self.submit_order(order, None, client_id, None).map(|_| ())
         }
     }
 
@@ -1417,6 +1422,7 @@ impl ExecTester {
                 client_id,
                 Some(params.clone()),
             )
+            .map(|_| ())
         } else {
             self.submit_order_list(
                 nautilus_model::enums::OrderListType::Standard,
@@ -1425,6 +1431,7 @@ impl ExecTester {
                 client_id,
                 None,
             )
+            .map(|_| ())
         }
     }
 

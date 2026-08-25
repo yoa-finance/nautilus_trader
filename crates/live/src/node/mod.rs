@@ -182,6 +182,7 @@ pub struct StartupOrderListRecovery {
     pub order_list_id: OrderListId,
     pub order_list_type: OrderListType,
     pub client_order_ids: Vec<ClientOrderId>,
+    pub protected_entry_policy: Option<nautilus_model::orders::ProtectedEntryPolicy>,
 }
 
 impl LiveNode {
@@ -1969,20 +1970,39 @@ fn restore_startup_order_lists(
                 orders.len()
             ),
             OrderListType::Standard => {
-                anyhow::bail!("startup execution recovery only accepts OCO or OPOCO order lists")
+                anyhow::bail!(
+                    "startup execution recovery only accepts OCO, OPOCO or protected-entry order lists"
+                )
             }
+            OrderListType::ProtectedEntry if orders.len() == 2 => {
+                let parent_id = orders[0].client_order_id();
+                let child_id = orders[1].client_order_id();
+                orders[0].set_contingency_type(ContingencyType::Oto);
+                orders[0].set_parent_order_id(None);
+                orders[0].set_linked_order_ids(vec![child_id]);
+                orders[1].set_contingency_type(ContingencyType::NoContingency);
+                orders[1].set_parent_order_id(Some(parent_id));
+                orders[1].set_linked_order_ids(Vec::new());
+            }
+            OrderListType::ProtectedEntry => anyhow::bail!(
+                "startup protected-entry order list {} requires 2 orders, found {}",
+                recovery.order_list_id,
+                orders.len()
+            ),
         }
         let first = orders
             .first()
             .expect("validated startup order list is non-empty");
-        let order_list = OrderList::new_typed(
+        let order_list = OrderList::new_typed_with_policy(
             recovery.order_list_id,
             recovery.order_list_type,
             first.instrument_id(),
             strategy_id,
             recovery.client_order_ids.clone(),
+            recovery.protected_entry_policy,
             first.ts_init(),
         );
+        order_list.validate()?;
         let mut cache = cache.borrow_mut();
         for order in orders {
             cache.add_order(order, None, None, true)?;
