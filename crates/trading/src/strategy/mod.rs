@@ -39,8 +39,8 @@ use nautilus_core::{Params, UUID4};
 use nautilus_model::{
     accounts::AccountAny,
     enums::{
-        ContingencyType, OrderListType, OrderSide, OrderStatus, OrderType, PositionSide,
-        TimeInForce, TriggerType,
+        ContingencyType, OrderListType, OrderSide, OrderStatus, PositionSide, TimeInForce,
+        TriggerType,
     },
     events::{
         OrderAccepted, OrderCancelRejected, OrderDenied, OrderDeniedReason, OrderEmulated,
@@ -2714,49 +2714,7 @@ fn normalize_order_list_metadata(
     match order_list_type {
         OrderListType::Standard => Ok(()),
         OrderListType::Oco => normalize_oco_order_list_metadata(orders),
-        OrderListType::Opoco => normalize_opoco_order_list_metadata(orders),
-        OrderListType::Opo => normalize_opo_order_list_metadata(orders),
     }
-}
-
-fn normalize_opo_order_list_metadata(orders: &mut [OrderAny]) -> anyhow::Result<()> {
-    if orders.len() != 2 {
-        anyhow::bail!(
-            "OrderList denied: OPO order list requires exactly 2 orders, received {}",
-            orders.len()
-        );
-    }
-
-    let working = &orders[0];
-    let pending = &orders[1];
-    if working.order_side() != OrderSide::Buy
-        || working.order_type() != OrderType::Limit
-        || pending.order_side() != OrderSide::Sell
-        || !matches!(
-            pending.order_type(),
-            OrderType::StopMarket | OrderType::StopLimit
-        )
-    {
-        anyhow::bail!(
-            "OrderList denied: OPO requires a BUY LIMIT/LIMIT_MAKER working order followed by a SELL STOP_LOSS/STOP_LOSS_LIMIT pending order"
-        );
-    }
-    if working.instrument_id() != pending.instrument_id()
-        || working.quantity() != pending.quantity()
-    {
-        anyhow::bail!("OrderList denied: OPO legs must use the same instrument and quantity");
-    }
-
-    let working_id = working.client_order_id();
-    let pending_id = pending.client_order_id();
-    orders[0].set_contingency_type(ContingencyType::Oto);
-    orders[0].set_parent_order_id(None);
-    orders[0].set_linked_order_ids(vec![pending_id]);
-    orders[1].set_contingency_type(ContingencyType::NoContingency);
-    orders[1].set_parent_order_id(Some(working_id));
-    orders[1].set_linked_order_ids(Vec::new());
-
-    Ok(())
 }
 
 fn normalize_oco_order_list_metadata(orders: &mut [OrderAny]) -> anyhow::Result<()> {
@@ -2777,46 +2735,6 @@ fn normalize_oco_order_list_metadata(orders: &mut [OrderAny]) -> anyhow::Result<
     orders[1].set_contingency_type(ContingencyType::Oco);
     orders[1].set_parent_order_id(None);
     orders[1].set_linked_order_ids(vec![first_id]);
-
-    Ok(())
-}
-
-fn normalize_opoco_order_list_metadata(orders: &mut [OrderAny]) -> anyhow::Result<()> {
-    if orders.len() != 3 {
-        anyhow::bail!(
-            "OrderList denied: OPOCO order list requires exactly 3 orders, received {}",
-            orders.len()
-        );
-    }
-
-    if orders[0].order_side() != OrderSide::Buy
-        || orders[0].order_type() != OrderType::Limit
-        || orders[1..]
-            .iter()
-            .any(|order| order.order_side() != OrderSide::Sell)
-    {
-        anyhow::bail!(
-            "OrderList denied: OPOCO requires a BUY LIMIT/LIMIT_MAKER working order followed by two SELL pending orders"
-        );
-    }
-
-    let working_id = orders[0].client_order_id();
-    let first_pending_index = 1;
-    let second_pending_index = 2;
-    let first_pending_id = orders[first_pending_index].client_order_id();
-    let second_pending_id = orders[second_pending_index].client_order_id();
-
-    orders[0].set_contingency_type(ContingencyType::Oto);
-    orders[0].set_parent_order_id(None);
-    orders[0].set_linked_order_ids(vec![first_pending_id, second_pending_id]);
-
-    orders[first_pending_index].set_contingency_type(ContingencyType::Oco);
-    orders[first_pending_index].set_parent_order_id(Some(working_id));
-    orders[first_pending_index].set_linked_order_ids(vec![second_pending_id]);
-
-    orders[second_pending_index].set_contingency_type(ContingencyType::Oco);
-    orders[second_pending_index].set_parent_order_id(Some(working_id));
-    orders[second_pending_index].set_linked_order_ids(vec![first_pending_id]);
 
     Ok(())
 }

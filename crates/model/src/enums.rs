@@ -639,10 +639,6 @@ pub enum OrderListType {
     Standard = 0,
     /// One-Cancels-the-Other native order list.
     Oco = 1,
-    /// One-Places-the-Other-Cancels-the-Other native order list.
-    Opoco = 2,
-    /// One-Places-the-Other native order list.
-    Opo = 3,
 }
 
 /// The price-adjustment scheme applied when stitching segment contracts into a

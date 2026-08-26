@@ -6519,7 +6519,7 @@ fn test_submit_sell_when_reducing_and_net_long_then_allows(
 }
 
 #[rstest]
-fn test_opo_risk_checks_working_buy_funds_without_requiring_pending_base_balance(
+fn test_native_oto_risk_checks_root_funds_without_requiring_pending_base_balance(
     strategy_id_ema_cross: StrategyId,
     client_id_binance: ClientId,
     trader_id: TraderId,
@@ -6537,9 +6537,9 @@ fn test_opo_risk_checks_working_buy_funds_without_requiring_pending_base_balance
 
     let cache = Rc::new(RefCell::new(simple_cache));
     let mut risk_engine = get_risk_engine(Some(cache), None, None, false);
-    let list_id = OrderListId::new("L-OPO-001");
-    let working_id = ClientOrderId::new("O-OPO-WORKING");
-    let pending_id = ClientOrderId::new("O-OPO-PENDING");
+    let list_id = OrderListId::new("L-OTO-001");
+    let working_id = ClientOrderId::new("O-OTO-WORKING");
+    let pending_id = ClientOrderId::new("O-OTO-PENDING");
 
     let working = OrderTestBuilder::new(OrderType::Limit)
         .instrument_id(instrument.id())
@@ -6573,7 +6573,7 @@ fn test_opo_risk_checks_working_buy_funds_without_requiring_pending_base_balance
 
     let order_list = OrderList::new_typed(
         list_id,
-        OrderListType::Opo,
+        OrderListType::Standard,
         instrument.id(),
         strategy_id_ema_cross,
         vec![working_id, pending_id],
@@ -6599,7 +6599,7 @@ fn test_opo_risk_checks_working_buy_funds_without_requiring_pending_base_balance
     risk_engine.execute(TradingCommand::SubmitOrderList(submit));
 
     let saved = get_execute_order_event_handler_messages(&execute_order_event_handler);
-    assert_eq!(saved.len(), 1, "valid OPO should reach execution");
+    assert_eq!(saved.len(), 1, "valid native OTO should reach execution");
 }
 
 #[rstest]

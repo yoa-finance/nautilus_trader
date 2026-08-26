@@ -1944,48 +1944,14 @@ fn restore_startup_order_lists(
                 orders[1].set_parent_order_id(None);
                 orders[1].set_linked_order_ids(vec![first_id]);
             }
-            OrderListType::Opo if orders.len() == 2 => {
-                let working_id = orders[0].client_order_id();
-                let pending_id = orders[1].client_order_id();
-                orders[0].set_contingency_type(ContingencyType::Oto);
-                orders[0].set_parent_order_id(None);
-                orders[0].set_linked_order_ids(vec![pending_id]);
-                orders[1].set_contingency_type(ContingencyType::NoContingency);
-                orders[1].set_parent_order_id(Some(working_id));
-                orders[1].set_linked_order_ids(Vec::new());
-            }
-            OrderListType::Opoco if orders.len() == 3 => {
-                let working_id = orders[0].client_order_id();
-                let first_pending_id = orders[1].client_order_id();
-                let second_pending_id = orders[2].client_order_id();
-                orders[0].set_contingency_type(ContingencyType::Oto);
-                orders[0].set_parent_order_id(None);
-                orders[0].set_linked_order_ids(vec![first_pending_id, second_pending_id]);
-                orders[1].set_contingency_type(ContingencyType::Oco);
-                orders[1].set_parent_order_id(Some(working_id));
-                orders[1].set_linked_order_ids(vec![second_pending_id]);
-                orders[2].set_contingency_type(ContingencyType::Oco);
-                orders[2].set_parent_order_id(Some(working_id));
-                orders[2].set_linked_order_ids(vec![first_pending_id]);
-            }
             OrderListType::Oco => anyhow::bail!(
                 "startup OCO order list {} requires 2 orders, found {}",
                 recovery.order_list_id,
                 orders.len()
             ),
-            OrderListType::Opo => anyhow::bail!(
-                "startup OPO order list {} requires 2 orders, found {}",
-                recovery.order_list_id,
-                orders.len()
-            ),
-            OrderListType::Opoco => anyhow::bail!(
-                "startup OPOCO order list {} requires 3 orders, found {}",
-                recovery.order_list_id,
-                orders.len()
-            ),
             OrderListType::Standard => {
                 anyhow::bail!(
-                    "startup execution recovery only accepts OCO, OPO or OPOCO order lists"
+                    "startup order-list recovery requires venue-reported contingency metadata"
                 )
             }
         }

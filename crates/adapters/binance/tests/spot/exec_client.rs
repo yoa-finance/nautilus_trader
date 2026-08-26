@@ -1568,7 +1568,7 @@ async fn test_submit_opo_omits_pending_quantity_and_keeps_pending_submitted() {
 
     let orders = add_spot_opo_orders_to_cache(&cache);
     let pending_client_order_id = orders[1].client_order_id();
-    let submit_cmd = submit_typed_order_list_command(&orders, OrderListType::Opo);
+    let submit_cmd = submit_order_list_command(&orders);
     client.submit_order_list(submit_cmd).unwrap();
 
     wait_for_command_requests(&request_count, 1).await;

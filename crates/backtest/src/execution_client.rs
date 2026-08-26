@@ -57,12 +57,7 @@ pub fn backtest_execution_capabilities() -> ExecutionClientCapabilities {
             OrderType::TrailingStopMarket,
             OrderType::TrailingStopLimit,
         ],
-        order_list_types: vec![
-            OrderListType::Standard,
-            OrderListType::Oco,
-            OrderListType::Opoco,
-            OrderListType::Opo,
-        ],
+        order_list_types: vec![OrderListType::Standard, OrderListType::Oco],
         time_in_force: vec![
             TimeInForce::Gtc,
             TimeInForce::Ioc,

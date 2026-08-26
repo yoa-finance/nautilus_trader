@@ -120,8 +120,6 @@ enum ContingencyType {
 enum OrderListType {
     standard @0;
     oco @1;
-    opoco @2;
-    opo @3;
 }
 
 enum PositionSide {

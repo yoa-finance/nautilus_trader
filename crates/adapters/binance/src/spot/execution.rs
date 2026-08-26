@@ -78,7 +78,7 @@ pub fn binance_spot_execution_capabilities() -> ExecutionClientCapabilities {
             OrderType::LimitIfTouched,
             OrderType::TrailingStopMarket,
         ],
-        order_list_types: vec![OrderListType::Oco, OrderListType::Opoco, OrderListType::Opo],
+        order_list_types: vec![OrderListType::Standard, OrderListType::Oco],
         time_in_force: vec![TimeInForce::Gtc, TimeInForce::Ioc, TimeInForce::Fok],
         trailing_offset_types: vec![TrailingOffsetType::BasisPoints],
         submit_order: true,
@@ -153,6 +153,169 @@ use crate::{
         sbe::spot::list_order_status::ListOrderStatus,
     },
 };
+
+/// Venue-neutral order-list topology presented to execution capability checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrderListTopology {
+    Oto,
+    Oco,
+    OtoOco,
+}
+
+/// A leg's role within an order-list topology.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrderListLegRole {
+    Working,
+    Pending,
+}
+
+/// Quantity relationship requested between an order list's legs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrderListQuantityRelation {
+    SameAsWorking,
+    Independent,
+}
+
+/// Venue-neutral leg shape used by launch and submission validation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrderListLegShape {
+    pub role: OrderListLegRole,
+    pub side: OrderSide,
+    pub order_type: OrderType,
+    pub time_in_force: TimeInForce,
+    pub contingency_type: ContingencyType,
+    pub post_only: bool,
+    pub reduce_only: bool,
+}
+
+/// Venue-neutral order-list shape used by launch and submission validation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrderListShape {
+    pub topology: OrderListTopology,
+    pub quantity_relation: OrderListQuantityRelation,
+    pub legs: Vec<OrderListLegShape>,
+}
+
+/// Validates whether Binance Spot can serialize a venue-neutral order-list shape.
+///
+/// This performs no strategy rewriting and contains no position, commission, or quantity logic.
+pub fn validate_binance_spot_order_list_shape(shape: &OrderListShape) -> anyhow::Result<()> {
+    if shape.quantity_relation != OrderListQuantityRelation::SameAsWorking {
+        anyhow::bail!("Binance Spot native order lists require SAME_AS_WORKING quantities");
+    }
+    if shape.legs.iter().any(|leg| leg.reduce_only) {
+        anyhow::bail!("Binance Spot order lists do not support reduce-only legs");
+    }
+
+    match shape.topology {
+        OrderListTopology::Oto => validate_binance_spot_oto_shape(&shape.legs),
+        OrderListTopology::Oco => validate_binance_spot_oco_shape(&shape.legs),
+        OrderListTopology::OtoOco => validate_binance_spot_oto_oco_shape(&shape.legs),
+    }
+}
+
+fn validate_binance_spot_oto_shape(legs: &[OrderListLegShape]) -> anyhow::Result<()> {
+    let [working, pending] = legs else {
+        anyhow::bail!("Binance Spot OTO transport requires one working and one pending leg");
+    };
+    if working.role != OrderListLegRole::Working
+        || working.side != OrderSide::Buy
+        || working.order_type != OrderType::Limit
+        || working.contingency_type != ContingencyType::Oto
+    {
+        anyhow::bail!("Binance Spot OTO transport requires a BUY LIMIT working leg");
+    }
+    validate_binance_spot_working_time_in_force(working)?;
+    if pending.role != OrderListLegRole::Pending
+        || pending.side != OrderSide::Sell
+        || pending.contingency_type != ContingencyType::NoContingency
+        || !matches!(
+            pending.order_type,
+            OrderType::StopMarket | OrderType::StopLimit
+        )
+    {
+        anyhow::bail!("Binance Spot OTO transport requires a SELL stop pending leg");
+    }
+    validate_binance_spot_stop_time_in_force(pending)
+}
+
+fn validate_binance_spot_oco_shape(legs: &[OrderListLegShape]) -> anyhow::Result<()> {
+    let [first, second] = legs else {
+        anyhow::bail!("Binance Spot OCO requires exactly two linked legs");
+    };
+    if first.role != OrderListLegRole::Pending
+        || second.role != OrderListLegRole::Pending
+        || first.side != second.side
+        || first.contingency_type != ContingencyType::Oco
+        || second.contingency_type != ContingencyType::Oco
+    {
+        anyhow::bail!("Binance Spot OCO requires two same-side OCO legs");
+    }
+    validate_binance_spot_target_and_stop(first, second)
+}
+
+fn validate_binance_spot_oto_oco_shape(legs: &[OrderListLegShape]) -> anyhow::Result<()> {
+    let [working, first_pending, second_pending] = legs else {
+        anyhow::bail!("Binance Spot bracket transport requires one working and two pending legs");
+    };
+    if working.role != OrderListLegRole::Working
+        || working.side != OrderSide::Buy
+        || working.order_type != OrderType::Limit
+        || working.contingency_type != ContingencyType::Oto
+    {
+        anyhow::bail!("Binance Spot bracket transport requires a BUY LIMIT working leg");
+    }
+    validate_binance_spot_working_time_in_force(working)?;
+    if first_pending.role != OrderListLegRole::Pending
+        || second_pending.role != OrderListLegRole::Pending
+        || first_pending.side != OrderSide::Sell
+        || second_pending.side != OrderSide::Sell
+        || first_pending.contingency_type != ContingencyType::Oco
+        || second_pending.contingency_type != ContingencyType::Oco
+    {
+        anyhow::bail!("Binance Spot bracket transport requires two SELL OCO pending legs");
+    }
+    validate_binance_spot_target_and_stop(first_pending, second_pending)
+}
+
+fn validate_binance_spot_target_and_stop(
+    first: &OrderListLegShape,
+    second: &OrderListLegShape,
+) -> anyhow::Result<()> {
+    let target = [first, second]
+        .into_iter()
+        .find(|leg| leg.order_type == OrderType::Limit && leg.post_only)
+        .ok_or_else(|| anyhow::anyhow!("Binance Spot OCO requires a LIMIT_MAKER target leg"))?;
+    let stop = [first, second]
+        .into_iter()
+        .find(|leg| matches!(leg.order_type, OrderType::StopMarket | OrderType::StopLimit))
+        .ok_or_else(|| anyhow::anyhow!("Binance Spot OCO requires a stop leg"))?;
+    if std::ptr::eq(target, stop) {
+        anyhow::bail!("Binance Spot OCO target and stop legs must be distinct");
+    }
+    validate_binance_spot_stop_time_in_force(stop)
+}
+
+fn validate_binance_spot_working_time_in_force(leg: &OrderListLegShape) -> anyhow::Result<()> {
+    if leg.post_only
+        || matches!(
+            leg.time_in_force,
+            TimeInForce::Gtc | TimeInForce::Ioc | TimeInForce::Fok
+        )
+    {
+        Ok(())
+    } else {
+        anyhow::bail!("Binance Spot LIMIT working legs require GTC, IOC, or FOK")
+    }
+}
+
+fn validate_binance_spot_stop_time_in_force(leg: &OrderListLegShape) -> anyhow::Result<()> {
+    if leg.order_type != OrderType::StopLimit || leg.time_in_force == TimeInForce::Gtc {
+        Ok(())
+    } else {
+        anyhow::bail!("Binance Spot STOP_LIMIT legs require GTC")
+    }
+}
 
 const ORDER_LIST_CANCEL_PARAM: &str = "order_list_cancel";
 const ORDER_LIST_CLIENT_ORDER_ID_PARAM: &str = "list_client_order_id";
@@ -1231,10 +1394,7 @@ impl ExecutionClient for BinanceSpotExecutionClient {
             }
         };
 
-        if matches!(
-            cmd.order_list.order_list_type,
-            OrderListType::Opo | OrderListType::Opoco
-        ) {
+        if params.has_pending_children() {
             for order in &orders {
                 if order.parent_order_id().is_some() {
                     self.dispatch_state
@@ -2571,6 +2731,10 @@ impl BinanceSpotOrderListParams {
         }
     }
 
+    const fn has_pending_children(&self) -> bool {
+        matches!(self, Self::Opo(_) | Self::Opoco(_))
+    }
+
     async fn submit(
         self,
         http_client: &BinanceSpotHttpClient,
@@ -2588,21 +2752,96 @@ fn build_spot_order_list_params(
     command_params: Option<&nautilus_core::params::Params>,
     orders: &[nautilus_model::orders::OrderAny],
 ) -> anyhow::Result<BinanceSpotOrderListParams> {
-    match order_list_type {
-        OrderListType::Oco => {
+    let topology = match order_list_type {
+        OrderListType::Oco => OrderListTopology::Oco,
+        OrderListType::Standard if is_native_oto_with_one_pending(orders) => OrderListTopology::Oto,
+        OrderListType::Standard if is_native_oto_with_oco_pending(orders) => {
+            OrderListTopology::OtoOco
+        }
+        OrderListType::Standard => {
+            anyhow::bail!("Binance Spot does not support this native order-list topology")
+        }
+    };
+    validate_binance_spot_order_list_shape(&order_list_shape_from_orders(topology, orders))?;
+
+    match topology {
+        OrderListTopology::Oco => {
             build_oco_order_list_params(command_params, orders).map(BinanceSpotOrderListParams::Oco)
         }
-        OrderListType::Opo => {
+        OrderListTopology::Oto => {
             build_opo_order_list_params(command_params, orders).map(BinanceSpotOrderListParams::Opo)
         }
-        OrderListType::Opoco => build_opoco_order_list_params(command_params, orders)
+        OrderListTopology::OtoOco => build_opoco_order_list_params(command_params, orders)
             .map(BinanceSpotOrderListParams::Opoco),
-        OrderListType::Standard => {
-            anyhow::bail!(
-                "Binance Spot submit_order_list requires OCO, OPO or OPOCO order_list_type"
-            )
-        }
     }
+}
+
+fn order_list_shape_from_orders(
+    topology: OrderListTopology,
+    orders: &[nautilus_model::orders::OrderAny],
+) -> OrderListShape {
+    let same_quantity = orders.first().is_none_or(|first| {
+        orders
+            .iter()
+            .all(|order| order.quantity() == first.quantity())
+    });
+    OrderListShape {
+        topology,
+        quantity_relation: if same_quantity {
+            OrderListQuantityRelation::SameAsWorking
+        } else {
+            OrderListQuantityRelation::Independent
+        },
+        legs: orders
+            .iter()
+            .map(|order| OrderListLegShape {
+                role: if topology != OrderListTopology::Oco && order.parent_order_id().is_none() {
+                    OrderListLegRole::Working
+                } else {
+                    OrderListLegRole::Pending
+                },
+                side: order.order_side(),
+                order_type: order.order_type(),
+                time_in_force: order.time_in_force(),
+                contingency_type: order
+                    .contingency_type()
+                    .unwrap_or(ContingencyType::NoContingency),
+                post_only: order.is_post_only(),
+                reduce_only: order.is_reduce_only(),
+            })
+            .collect(),
+    }
+}
+
+fn is_native_oto_with_one_pending(orders: &[nautilus_model::orders::OrderAny]) -> bool {
+    orders.len() == 2
+        && orders[0].contingency_type() == Some(ContingencyType::Oto)
+        && orders[0].parent_order_id().is_none()
+        && orders[1].parent_order_id() == Some(orders[0].client_order_id())
+        && orders[0]
+            .linked_order_ids()
+            .is_some_and(|ids| ids == [orders[1].client_order_id()])
+}
+
+fn is_native_oto_with_oco_pending(orders: &[nautilus_model::orders::OrderAny]) -> bool {
+    orders.len() == 3
+        && orders[0].contingency_type() == Some(ContingencyType::Oto)
+        && orders[0].parent_order_id().is_none()
+        && orders[0].linked_order_ids().is_some_and(|ids| {
+            ids.len() == 2
+                && ids.contains(&orders[1].client_order_id())
+                && ids.contains(&orders[2].client_order_id())
+        })
+        && orders[1..].iter().all(|order| {
+            order.contingency_type() == Some(ContingencyType::Oco)
+                && order.parent_order_id() == Some(orders[0].client_order_id())
+        })
+        && orders[1]
+            .linked_order_ids()
+            .is_some_and(|ids| ids == [orders[2].client_order_id()])
+        && orders[2]
+            .linked_order_ids()
+            .is_some_and(|ids| ids == [orders[1].client_order_id()])
 }
 
 fn build_oco_order_list_params(
@@ -3883,6 +4122,37 @@ mod tests {
 
     use super::*;
     use crate::common::{encoder::encode_broker_id, enums::BinanceEnvironment};
+
+    #[rstest]
+    fn test_binance_spot_rejects_market_working_native_oto_shape() {
+        let shape = OrderListShape {
+            topology: OrderListTopology::Oto,
+            quantity_relation: OrderListQuantityRelation::SameAsWorking,
+            legs: vec![
+                OrderListLegShape {
+                    role: OrderListLegRole::Working,
+                    side: OrderSide::Buy,
+                    order_type: OrderType::Market,
+                    time_in_force: TimeInForce::Gtc,
+                    contingency_type: ContingencyType::Oto,
+                    post_only: false,
+                    reduce_only: false,
+                },
+                OrderListLegShape {
+                    role: OrderListLegRole::Pending,
+                    side: OrderSide::Sell,
+                    order_type: OrderType::StopMarket,
+                    time_in_force: TimeInForce::Gtc,
+                    contingency_type: ContingencyType::NoContingency,
+                    post_only: false,
+                    reduce_only: false,
+                },
+            ],
+        };
+
+        let error = validate_binance_spot_order_list_shape(&shape).unwrap_err();
+        assert!(error.to_string().contains("BUY LIMIT working leg"));
+    }
 
     #[rstest]
     fn test_dispatch_ws_trading_message_emits_cancel_rejected_and_clears_pending_request() {
